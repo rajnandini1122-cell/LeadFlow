@@ -8,6 +8,7 @@ import { LeadDetailPage } from './features/leads/lead-detail-page';
 import { FollowUpsPage } from './features/followups/follow-ups-page';
 import { TeamPage } from './features/team/team-page';
 import { ReportsPage } from './features/reports/reports-page';
+import { DailyReportPage } from './features/reports/daily-report-page';
 import { SettingsPage } from './features/settings/settings-page';
 import { AppShell } from './components/app-shell';
 import { ApiError } from './lib/api-client';
@@ -59,6 +60,7 @@ export function App(): React.JSX.Element {
                 <Route path="follow-ups" element={<FollowUpsPage />} />
                 <Route path="team" element={<TeamPage />} />
                 <Route path="reports" element={<ReportsPage />} />
+                <Route path="reports/daily" element={<DailyReportPage />} />
                 <Route path="settings" element={<SettingsPage />} />
               </Route>
             </Route>

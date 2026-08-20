@@ -16,3 +16,38 @@ body {
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
 }
+
+/*
+ * Print rules for the daily report.
+ *
+ * Chrome omits background colours when printing unless told otherwise, which
+ * would flatten every status and overdue badge to white-on-white — losing the
+ * one signal the report exists to convey.
+ */
+@media print {
+  @page {
+    margin: 12mm;
+  }
+
+  aside,
+  header {
+    display: none !important;
+  }
+
+
+  body {
+    background: #fff;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  main {
+    padding: 0 !important;
+  }
+
+  /* Keep a card and its table from splitting across a page break. */
+  table,
+  li {
+    break-inside: avoid;
+  }
+}

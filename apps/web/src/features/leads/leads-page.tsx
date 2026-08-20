@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { LEAD_STATUSES, type LeadStatus } from '@idea001/api-types';
-import { formatCurrencyCompact, formatDueDate, humanise } from '../../lib/format';
+import { formatCurrency, formatCurrencyCompact, formatDate, formatDueDate, humanise } from '../../lib/format';
 import {
   Avatar,
   Card,
@@ -15,6 +15,9 @@ import {
   StatusBadge,
 } from '../../components/ui';
 import { useLeads, type LeadSummary } from './use-leads';
+import { NewLeadDialog } from './new-lead-dialog';
+import { downloadCsv, exportFilename, toCsv } from '../../lib/export-csv';
+import { useAuth } from '../auth/auth-context';
 
 type SortKey = 'due' | 'value' | 'created';
 
@@ -22,6 +25,8 @@ export function LeadsPage(): React.JSX.Element {
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState<LeadStatus | 'ALL'>('ALL');
   const [sort, setSort] = useState<SortKey>('due');
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const { user, can } = useAuth();
 
   const leads = useLeads();
 
@@ -56,6 +61,26 @@ export function LeadsPage(): React.JSX.Element {
     );
   }, [leads.data]);
 
+  /** Exports exactly what is on screen — current filter, current sort. */
+  const exportRows = (): void => {
+    const csv = toCsv(rows, [
+      { header: 'Lead number', value: (lead) => lead.leadNumber },
+      { header: 'Name', value: (lead) => lead.name },
+      { header: 'Company', value: (lead) => lead.companyName },
+      { header: 'Mobile', value: (lead) => lead.mobile },
+      { header: 'Status', value: (lead) => humanise(lead.status) },
+      { header: 'Priority', value: (lead) => humanise(lead.priority) },
+      { header: 'Estimated value', value: (lead) => lead.estimatedValue ?? '' },
+      { header: 'Estimated value (formatted)', value: (lead) => formatCurrency(lead.estimatedValue) },
+      { header: 'Next follow-up', value: (lead) => formatDate(lead.nextFollowUpAt) },
+      { header: 'Follow-up status', value: (lead) => formatDueDate(lead.nextFollowUpAt) },
+      { header: 'Owner', value: (lead) => lead.assignedTo?.fullName ?? 'Unassigned' },
+      { header: 'Created', value: (lead) => formatDate(lead.createdAt) },
+    ]);
+
+    downloadCsv(exportFilename('leads', user?.organization.slug ?? 'export'), csv);
+  };
+
   return (
     <>
       <PageHeader
@@ -63,7 +88,30 @@ export function LeadsPage(): React.JSX.Element {
         subtitle={
           leads.data ? `${rows.length} of ${leads.data.items.length} leads` : 'Loading leads…'
         }
+        action={
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={exportRows}
+              disabled={rows.length === 0}
+              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
+            >
+              Export CSV
+            </button>
+            {can('lead.create') && (
+              <button
+                type="button"
+                onClick={() => setDialogOpen(true)}
+                className="rounded-lg bg-slate-900 px-3 py-2 text-sm font-medium text-white transition hover:bg-slate-800"
+              >
+                + New lead
+              </button>
+            )}
+          </div>
+        }
       />
+
+      <NewLeadDialog open={dialogOpen} onClose={() => setDialogOpen(false)} />
 
       <div className="mb-4 space-y-3">
         <div className="flex flex-wrap gap-2">
@@ -131,10 +179,10 @@ export function LeadsPage(): React.JSX.Element {
 
       <div className="mt-4">
         <PhaseNote phase="Phase 2">
-          Leads are read-only in Phase 1. Creating, editing, assigning and
-          duplicate detection arrive with the Lead CRM phase — the schema,
-          timeline and the database constraint that every active lead carries a
-          next follow-up are already in place.
+          Creating leads and duplicate detection are implemented. Editing an
+          existing lead, reassigning it and status-transition rules still belong
+          to the Lead CRM phase. Export runs in the browser over the rows
+          currently loaded, so it reflects your filter and sort.
         </PhaseNote>
       </div>
     </>

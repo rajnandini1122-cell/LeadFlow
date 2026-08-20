@@ -1,8 +1,17 @@
-import { Injectable } from '@nestjs/common';
-import type { LeadPriority, LeadStatus, Paginated } from '@idea001/api-types';
+import { HttpStatus, Injectable, Logger } from '@nestjs/common';
+import {
+  ERROR_CODES,
+  isTerminalLeadStatus,
+  type LeadPriority,
+  type LeadStatus,
+  type Paginated,
+} from '@idea001/api-types';
 import { AppException } from '../../common/errors/app.exception';
+import { AuditRepository } from '../../common/audit/audit.repository';
+import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
 import { LeadsRepository } from './leads.repository';
 import type { ListLeadsDto } from './dto/leads.dto';
+import type { CreateLeadDto } from './dto/create-lead.dto';
 
 export interface LeadSummary {
   id: string;
@@ -20,7 +29,12 @@ export interface LeadSummary {
 
 @Injectable()
 export class LeadsService {
-  constructor(private readonly repository: LeadsRepository) {}
+  private readonly logger = new Logger(LeadsService.name);
+
+  constructor(
+    private readonly repository: LeadsRepository,
+    private readonly audit: AuditRepository,
+  ) {}
 
   async list(dto: ListLeadsDto): Promise<Paginated<LeadSummary>> {
     const limit = dto.limit ?? 25;
@@ -59,6 +73,150 @@ export class LeadsService {
         createdAt: activity.createdAt.toISOString(),
       })),
     };
+  }
+
+  async assignableUsers(): Promise<{ id: string; fullName: string }[]> {
+    return this.repository.assignableUsers();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Create
+  // ---------------------------------------------------------------------------
+
+  async create(dto: CreateLeadDto, principal: TenantPrincipal): Promise<LeadSummary> {
+    const status = dto.status ?? 'NEW';
+    const nextFollowUpAt = this.resolveFollowUp(dto, status);
+
+    // --- duplicate detection (spec §23) -------------------------------------
+    // The rule is explicitly "do not silently create another lead". We return
+    // the existing one so the client can offer to open it; creating anyway
+    // requires the caller to opt in.
+    if (!dto.allowDuplicate) {
+      const existing = await this.repository.findActiveByMobile(dto.mobile);
+      if (existing) {
+        const name = [existing.firstName, existing.lastName].filter(Boolean).join(" ").trim();
+
+        // Details carry the existing lead so the client can offer
+        // "Open existing lead" without a second round trip.
+        throw new AppException(
+          ERROR_CODES.DUPLICATE_LEAD,
+          `A lead with mobile ${dto.mobile} already exists (${existing.leadNumber}).`,
+          HttpStatus.CONFLICT,
+          {
+            existingLeadId: [existing.id],
+            existingLeadNumber: [existing.leadNumber],
+            existingLeadName: [name || existing.companyName || existing.leadNumber],
+            existingLeadStatus: [existing.status],
+          },
+        );
+      }
+    }
+
+    const leadId = await this.createWithRetry(dto, status, nextFollowUpAt, principal);
+    const lead = await this.repository.findById(leadId);
+    if (!lead) throw AppException.leadNotFound();
+
+    await this.audit.record({
+      action: 'lead.created',
+      entityType: 'lead',
+      entityId: lead.id,
+      after: {
+        leadNumber: lead.leadNumber,
+        mobile: dto.mobile,
+        status,
+        assignedToId: dto.assignedToId ?? null,
+        duplicateOverridden: dto.allowDuplicate === true,
+      },
+    });
+
+    return toSummary(lead);
+  }
+
+  /**
+   * Enforces the "no lead left behind" rule at the API boundary.
+   *
+   * The database CHECK constraint is the real guarantee, but catching it here
+   * yields a field-level validation error instead of a 500 from Postgres.
+   */
+  private resolveFollowUp(dto: CreateLeadDto, status: LeadStatus): Date | null {
+    if (isTerminalLeadStatus(status)) return null;
+
+    if (!dto.nextFollowUpAt) {
+      throw AppException.validation(
+        'An active lead must have a next follow-up date.',
+        { nextFollowUpAt: ['is required unless the lead is created as WON or LOST'] },
+      );
+    }
+
+    const date = new Date(dto.nextFollowUpAt);
+    if (Number.isNaN(date.getTime())) {
+      throw AppException.validation('Invalid follow-up date.', {
+        nextFollowUpAt: ['must be a valid date'],
+      });
+    }
+
+    return date;
+  }
+
+  /**
+   * Retries on a lead-number collision.
+   *
+   * `nextLeadNumber` reads the current maximum, so two simultaneous creates can
+   * pick the same value. The unique index rejects the loser; recomputing and
+   * retrying is simpler and cheaper than a per-tenant sequence table, and the
+   * window is microseconds wide.
+   */
+  private async createWithRetry(
+    dto: CreateLeadDto,
+    status: LeadStatus,
+    nextFollowUpAt: Date | null,
+    principal: TenantPrincipal,
+    attempt = 1,
+  ): Promise<string> {
+    const leadNumber = await this.repository.nextLeadNumber();
+
+    try {
+      return await this.repository.createWithActivity({
+        leadNumber,
+        firstName: dto.firstName,
+        lastName: dto.lastName,
+        mobile: dto.mobile,
+        email: dto.email,
+        companyName: dto.companyName,
+        city: dto.city,
+        source: dto.source,
+        productInterest: dto.productInterest,
+        estimatedValue: dto.estimatedValue,
+        status,
+        priority: dto.priority ?? 'MEDIUM',
+        assignedToId: dto.assignedToId,
+        nextFollowUpAt,
+        actorId: principal.userId,
+      });
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      const constraint = String((error as { meta?: { target?: unknown } }).meta?.target ?? '');
+
+      // P2002 = unique constraint violation.
+      if (code === 'P2002' && attempt <= 5) {
+        // The mobile index firing means another request created the same
+        // customer between our duplicate check and this insert. That is the
+        // race the index exists to catch, and it is not retryable.
+        if (constraint.includes('mobile')) {
+          throw AppException.conflict(
+            ERROR_CODES.DUPLICATE_LEAD,
+            'A lead with this mobile number was just created.',
+          );
+        }
+
+        this.logger.warn(
+          `Lead number ${leadNumber} collided, retrying (attempt ${attempt})`,
+        );
+        return this.createWithRetry(dto, status, nextFollowUpAt, principal, attempt + 1);
+      }
+
+      throw error;
+    }
   }
 }
 

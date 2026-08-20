@@ -1,20 +1,29 @@
 import { Injectable } from '@nestjs/common';
-import type { LeadStatus } from '@idea001/api-types';
+import type { LeadPriority, LeadStatus } from '@idea001/api-types';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { TenantContextService } from '../../common/tenancy/tenant-context.service';
 
 /**
- * Lead data access — READ ONLY in Phase 1.
+ * Lead data access.
  *
- * `Lead` is auto-scoped by the Prisma tenant extension, so none of these
- * queries mention organizationId. That is the whole point: the scope is applied
- * whether or not the author remembered it.
+ * READS are auto-scoped by the Prisma tenant extension, so none of them mention
+ * organizationId. That is the whole point: the scope applies whether or not the
+ * author remembered it.
  *
- * Phase 2 adds create/update/assign along with duplicate detection and status
- * transition rules.
+ * WRITES name the tenant explicitly, because Prisma generated types cannot see
+ * the runtime extension and correctly refuse a create without it. The value
+ * still comes from the server-side context, never the client, and the extension
+ * remains the backstop if it were ever wrong.
+ *
+ * Creating a lead is implemented; editing, reassignment and status-transition
+ * rules remain Phase 2.
  */
 @Injectable()
 export class LeadsRepository {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly tenantContext: TenantContextService,
+  ) {}
 
   async list(filters: {
     status?: LeadStatus | undefined;
@@ -80,5 +89,143 @@ export class LeadsRepository {
       where: { deletedAt: null },
       _count: { _all: true },
     });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Create
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Finds an existing lead with the same mobile in THIS organization.
+   *
+   * Mobile is the primary duplicate key (spec §23). LOST and soft-deleted rows
+   * are excluded, matching the partial unique index — a genuinely lost enquiry
+   * may legitimately come back as a fresh one later.
+   */
+  async findActiveByMobile(mobile: string) {
+    return this.prisma.client.lead.findFirst({
+      where: { mobile, deletedAt: null, status: { not: 'LOST' } },
+      select: {
+        id: true,
+        leadNumber: true,
+        firstName: true,
+        lastName: true,
+        companyName: true,
+        status: true,
+      },
+    });
+  }
+
+  /**
+   * Next lead number for this organization, e.g. LD-00020.
+   *
+   * Read-then-write is inherently racy: two concurrent creates can compute the
+   * same number. The unique index on (organization_id, lead_number) turns that
+   * race into a constraint violation the service retries, rather than two leads
+   * silently sharing a number.
+   */
+  async nextLeadNumber(): Promise<string> {
+    const latest = await this.prisma.client.lead.findFirst({
+      orderBy: { leadNumber: 'desc' },
+      select: { leadNumber: true },
+    });
+
+    const current = latest ? Number(latest.leadNumber.replace(/\D/g, '')) : 0;
+    return `LD-${String(current + 1).padStart(5, '0')}`;
+  }
+
+  /**
+   * Creates the lead and its opening timeline entries in one transaction.
+   *
+   * Returns the id rather than the row: the caller re-reads through findById so
+   * a created lead has exactly the same shape as every other lead read.
+   */
+  async createWithActivity(input: {
+    leadNumber: string;
+    firstName: string;
+    lastName?: string | undefined;
+    mobile: string;
+    email?: string | undefined;
+    companyName?: string | undefined;
+    city?: string | undefined;
+    source?: string | undefined;
+    productInterest?: string | undefined;
+    estimatedValue?: number | undefined;
+    status: LeadStatus;
+    priority: LeadPriority;
+    assignedToId?: string | undefined;
+    nextFollowUpAt: Date | null;
+    actorId: string;
+  }) {
+    const organizationId = this.tenantContext.requireOrganizationId();
+
+    return this.prisma.client.$transaction(async (tx) => {
+      const created = await tx.lead.create({
+        data: {
+          organizationId,
+          leadNumber: input.leadNumber,
+          firstName: input.firstName,
+          lastName: input.lastName ?? null,
+          mobile: input.mobile,
+          email: input.email ?? null,
+          companyName: input.companyName ?? null,
+          city: input.city ?? null,
+          source: input.source ?? null,
+          productInterest: input.productInterest ?? null,
+          estimatedValue: input.estimatedValue ?? null,
+          status: input.status,
+          priority: input.priority,
+          assignedToId: input.assignedToId ?? null,
+          assignedById: input.assignedToId ? input.actorId : null,
+          nextFollowUpAt: input.nextFollowUpAt,
+          lastActivityAt: new Date(),
+          createdBy: input.actorId,
+          updatedBy: input.actorId,
+        },
+        select: { id: true },
+      });
+
+      await tx.leadActivity.create({
+        data: {
+          organizationId,
+          leadId: created.id,
+          activityType: 'LEAD_CREATED',
+          description: input.source ? `Lead captured from ${input.source}` : 'Lead created',
+          performedById: input.actorId,
+        },
+      });
+
+      if (input.assignedToId) {
+        await tx.leadActivity.create({
+          data: {
+            organizationId,
+            leadId: created.id,
+            activityType: 'LEAD_ASSIGNED',
+            description: 'Assigned for first contact',
+            performedById: input.actorId,
+          },
+        });
+      }
+
+      // Re-read through findById so the caller always gets the same shape as
+      // every other lead read, including the assignedTo relation.
+      return created.id;
+    });
+  }
+
+  /**
+   * Members of this organization who can own a lead.
+   *
+   * Goes through organizationUser — which IS tenant-scoped — rather than
+   * querying the global `user` table directly.
+   */
+  async assignableUsers() {
+    const memberships = await this.prisma.client.organizationUser.findMany({
+      where: { status: 'ACTIVE' },
+      include: { user: { select: { id: true, fullName: true } } },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    return memberships.map((membership) => membership.user);
   }
 }

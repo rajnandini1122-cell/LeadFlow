@@ -13,6 +13,12 @@ interface NavItem {
   permission?: Permission;
   /** Shows a live count; red when it represents something overdue. */
   badge?: 'overdue';
+  /**
+   * Exact-match only. Needed for /reports, which would otherwise stay
+   * highlighted while /reports/daily is open. Left off for /leads so the tab
+   * keeps its highlight on a lead detail page.
+   */
+  exact?: boolean;
 }
 
 /** Navigation from spec §25. */
@@ -21,7 +27,8 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/leads', label: 'Leads', icon: '☰' },
   { to: '/follow-ups', label: 'Follow-ups', icon: '◷', badge: 'overdue' },
   { to: '/team', label: 'Team', icon: '⚇', permission: PERMISSIONS.USER_VIEW },
-  { to: '/reports', label: 'Reports', icon: '▤', permission: PERMISSIONS.REPORT_VIEW },
+  { to: '/reports', label: 'Reports', icon: '▤', permission: PERMISSIONS.REPORT_VIEW, exact: true },
+  { to: '/reports/daily', label: 'Daily report', icon: '☀', permission: PERMISSIONS.REPORT_VIEW },
   { to: '/settings', label: 'Settings', icon: '⚙', permission: PERMISSIONS.ORG_VIEW },
 ];
 
@@ -59,7 +66,7 @@ export function AppShell(): React.JSX.Element {
             <NavLink
               key={item.to}
               to={item.to}
-              end={item.to === '/'}
+              end={item.to === '/' || item.exact === true}
               onClick={() => setMenuOpen(false)}
               className={({ isActive }) =>
                 `flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition ${
@@ -115,7 +122,7 @@ export function AppShell(): React.JSX.Element {
         />
       )}
 
-      <div className="lg:pl-60">
+      <div className="lg:pl-60 print:pl-0">
         <header className="sticky top-0 z-20 flex h-14 items-center justify-between border-b border-slate-200 bg-white/80 px-4 backdrop-blur lg:px-8">
           <button
             type="button"
