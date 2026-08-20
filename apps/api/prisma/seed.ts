@@ -6,8 +6,10 @@ import {
   PERMISSIONS,
   ROLE_KEYS,
   ROLE_PERMISSION_MATRIX,
+  type ActivityType,
   type RoleKey,
 } from '@idea001/api-types';
+import { DEMO_ORGANIZATIONS, type DemoLead, type DemoOrganization } from './demo-data';
 
 /**
  * Idempotent seed.
@@ -16,7 +18,8 @@ import {
  * organizations, which the tenant-scoping extension exists to prevent. This is
  * the migration-time equivalent of runAsSystem().
  *
- * Safe to run repeatedly — every write is an upsert.
+ * Safe to run repeatedly — organizations, users and memberships are upserted,
+ * and leads are keyed on (organization_id, lead_number).
  */
 
 const connectionString =
@@ -27,7 +30,7 @@ if (!connectionString) {
   process.exit(1);
 }
 
-const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString }) });
+const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString, max: 1 }) });
 
 const ROLE_DESCRIPTIONS: Record<RoleKey, string> = {
   OWNER: 'Full company access: dashboard, team, leads, reports, settings, billing',
@@ -36,11 +39,25 @@ const ROLE_DESCRIPTIONS: Record<RoleKey, string> = {
   SALES_REP: 'View and update assigned leads, log activity, schedule follow-ups',
 };
 
-async function seedPermissions(): Promise<Map<string, string>> {
-  const keys = Object.values(PERMISSIONS);
+const DAY_MS = 86_400_000;
 
+function daysFromNow(days: number, hour = 11): Date {
+  const date = new Date(Date.now() + days * DAY_MS);
+  date.setHours(hour, 0, 0, 0);
+  return date;
+}
+
+function daysAgo(days: number): Date {
+  return new Date(Date.now() - days * DAY_MS);
+}
+
+// -----------------------------------------------------------------------------
+// Reference data
+// -----------------------------------------------------------------------------
+
+async function seedPermissions(): Promise<Map<string, string>> {
   await prisma.permission.createMany({
-    data: keys.map((key) => ({ key, description: describePermission(key) })),
+    data: Object.values(PERMISSIONS).map((key) => ({ key, description: describe(key) })),
     skipDuplicates: true,
   });
 
@@ -49,7 +66,9 @@ async function seedPermissions(): Promise<Map<string, string>> {
   return new Map(rows.map((row) => [row.key, row.id]));
 }
 
-async function seedSystemRoles(permissionIds: Map<string, string>): Promise<void> {
+async function seedSystemRoles(permissionIds: Map<string, string>): Promise<Map<RoleKey, string>> {
+  const roleIds = new Map<RoleKey, string>();
+
   for (const key of ROLE_KEYS) {
     // System roles are shared by every tenant: organizationId is NULL.
     const existing = await prisma.role.findFirst({
@@ -68,30 +87,35 @@ async function seedSystemRoles(permissionIds: Map<string, string>): Promise<void
         },
       }));
 
-    const permissions = ROLE_PERMISSION_MATRIX[key];
     await prisma.rolePermission.createMany({
-      data: permissions
+      data: ROLE_PERMISSION_MATRIX[key]
         .map((permissionKey) => permissionIds.get(permissionKey))
         .filter((id): id is string => Boolean(id))
         .map((permissionId) => ({ roleId: role.id, permissionId })),
       skipDuplicates: true,
     });
 
-    console.log(`  role ${key}: ${permissions.length} permissions`);
+    roleIds.set(key, role.id);
+    console.log(`  role ${key}: ${ROLE_PERMISSION_MATRIX[key].length} permissions`);
   }
+
+  return roleIds;
 }
 
-async function seedDemoOrganization(input: {
-  name: string;
-  slug: string;
-  ownerEmail: string;
-  ownerName: string;
-  password: string;
-}): Promise<void> {
+// -----------------------------------------------------------------------------
+// Organizations
+// -----------------------------------------------------------------------------
+
+async function seedOrganization(
+  demo: DemoOrganization,
+  roleIds: Map<RoleKey, string>,
+  passwordHash: string,
+  orgIndex: number,
+): Promise<void> {
   const organization = await prisma.organization.upsert({
-    where: { slug: input.slug },
-    create: { name: input.name, slug: input.slug, status: 'ACTIVE' },
-    update: {},
+    where: { slug: demo.slug },
+    create: { name: demo.name, slug: demo.slug, status: 'ACTIVE' },
+    update: { name: demo.name, status: 'ACTIVE' },
   });
 
   await prisma.organizationSettings.upsert({
@@ -100,79 +124,251 @@ async function seedDemoOrganization(input: {
     update: {},
   });
 
-  const passwordHash = await argon2.hash(input.password, {
+  // --- members ---------------------------------------------------------------
+  const userIds = new Map<string, string>();
+
+  for (const member of demo.members) {
+    const user = await prisma.user.upsert({
+      where: { email: member.email },
+      create: {
+        email: member.email,
+        fullName: member.fullName,
+        mobile: member.mobile,
+        passwordHash,
+        status: 'ACTIVE',
+        // Staggered so "last active" reads plausibly rather than all-identical.
+        lastLoginAt: daysAgo(Math.random() * 3),
+      },
+      update: { fullName: member.fullName, passwordHash, status: 'ACTIVE' },
+    });
+
+    await prisma.organizationUser.upsert({
+      where: {
+        organizationId_userId: { organizationId: organization.id, userId: user.id },
+      },
+      create: {
+        organizationId: organization.id,
+        userId: user.id,
+        roleId: roleIds.get(member.role) as string,
+        status: 'ACTIVE',
+        joinedAt: daysAgo(90),
+      },
+      update: { status: 'ACTIVE', roleId: roleIds.get(member.role) as string },
+    });
+
+    userIds.set(member.role === 'SALES_REP' ? member.email : member.role, user.id);
+  }
+
+  const reps = demo.members.filter((m) => m.role === 'SALES_REP');
+  const assignees = {
+    rep1: userIds.get(reps[0]?.email ?? '') as string,
+    rep2: userIds.get(reps[1]?.email ?? reps[0]?.email ?? '') as string,
+    manager: userIds.get('MANAGER') as string,
+  };
+  const ownerId = userIds.get('OWNER') as string;
+
+  // --- leads -----------------------------------------------------------------
+  let created = 0;
+
+  for (const [index, lead] of demo.leads.entries()) {
+    const leadNumber = `LD-${String(index + 1).padStart(5, '0')}`;
+    const existing = await prisma.lead.findFirst({
+      where: { organizationId: organization.id, leadNumber },
+      select: { id: true },
+    });
+    if (existing) continue;
+
+    const isTerminal = lead.status === 'WON' || lead.status === 'LOST';
+    const createdAt = daysAgo(lead.createdDaysAgo);
+    const assignedToId = assignees[lead.assignTo];
+
+    const row = await prisma.lead.create({
+      data: {
+        organizationId: organization.id,
+        leadNumber,
+        firstName: lead.firstName,
+        lastName: lead.lastName,
+        // Deterministic and unique within the organization, so the partial
+        // unique index on (organization_id, mobile) is satisfied on re-runs.
+        mobile: `9${String(700000000 + orgIndex * 1_000_000 + index * 137).slice(0, 9)}`,
+        email: `${lead.firstName.toLowerCase()}@${slugify(lead.companyName)}.test`,
+        companyName: lead.companyName,
+        city: lead.city,
+        source: lead.source,
+        productInterest: lead.productInterest,
+        estimatedValue: lead.estimatedValue,
+        status: lead.status,
+        priority: lead.priority,
+        assignedToId,
+        assignedById: ownerId,
+        // The leads_active_requires_followup CHECK constraint permits NULL only
+        // for terminal statuses — the "no lead left behind" guarantee.
+        nextFollowUpAt: isTerminal ? null : daysFromNow(lead.followUpInDays),
+        lastActivityAt: daysAgo(Math.min(lead.createdDaysAgo, 2)),
+        lostReason: lead.lostReason ?? null,
+        wonAt: lead.status === 'WON' ? daysAgo(3) : null,
+        lostAt: lead.status === 'LOST' ? daysAgo(5) : null,
+        createdBy: ownerId,
+        createdAt,
+      },
+    });
+
+    await prisma.leadActivity.createMany({
+      data: timelineFor(lead, createdAt).map((entry) => ({
+        organizationId: organization.id,
+        leadId: row.id,
+        activityType: entry.type,
+        description: entry.description,
+        performedById: assignedToId,
+        createdAt: entry.at,
+      })),
+    });
+
+    created += 1;
+  }
+
+  console.log(
+    `  ${demo.name} (${demo.slug}) — ${demo.members.length} members, ${created} leads created`,
+  );
+}
+
+/**
+ * A plausible activity history for a lead, sized to its pipeline stage.
+ *
+ * A NEW lead with twelve activities, or a WON deal with one, would both look
+ * obviously synthetic on the timeline.
+ */
+function timelineFor(
+  lead: DemoLead,
+  createdAt: Date,
+): { type: ActivityType; description: string; at: Date }[] {
+  const entries: { type: ActivityType; description: string; at: Date }[] = [
+    {
+      type: 'LEAD_CREATED',
+      description: `Lead captured from ${lead.source}`,
+      at: createdAt,
+    },
+    {
+      type: 'LEAD_ASSIGNED',
+      description: 'Assigned for first contact',
+      at: new Date(createdAt.getTime() + 3_600_000),
+    },
+  ];
+
+  const stagesReached: Record<string, number> = {
+    NEW: 0,
+    CONTACTED: 1,
+    QUALIFIED: 2,
+    FOLLOW_UP: 3,
+    QUOTATION_SENT: 4,
+    NEGOTIATION: 5,
+    WON: 6,
+    LOST: 6,
+  };
+  const depth = stagesReached[lead.status] ?? 0;
+  let cursor = createdAt.getTime() + 2 * 3_600_000;
+  const step = (): Date => {
+    cursor += 1.5 * DAY_MS;
+    return new Date(cursor);
+  };
+
+  if (depth >= 1) {
+    entries.push({
+      type: 'CALL_COMPLETED',
+      description: `Spoke to ${lead.firstName} about ${lead.productInterest}`,
+      at: step(),
+    });
+  }
+  if (depth >= 2) {
+    entries.push({
+      type: 'WHATSAPP_SENT',
+      description: 'Shared product catalogue and pricing sheet',
+      at: step(),
+    });
+    entries.push({
+      type: 'STATUS_CHANGED',
+      description: 'Budget and timeline confirmed — marked qualified',
+      at: step(),
+    });
+  }
+  if (depth >= 3) {
+    entries.push({
+      type: 'CALL_NOT_ANSWERED',
+      description: 'Called, no answer — retry scheduled',
+      at: step(),
+    });
+  }
+  if (depth >= 4) {
+    entries.push({
+      type: 'NOTE_ADDED',
+      description: `Quotation sent for ${formatInr(lead.estimatedValue)}`,
+      at: step(),
+    });
+  }
+  if (depth >= 5) {
+    entries.push({
+      type: 'CALL_COMPLETED',
+      description: 'Negotiating payment terms and delivery schedule',
+      at: step(),
+    });
+  }
+
+  if (lead.status === 'WON') {
+    entries.push({ type: 'LEAD_WON', description: 'Purchase order received', at: step() });
+  }
+  if (lead.status === 'LOST') {
+    entries.push({
+      type: 'LEAD_LOST',
+      description: lead.lostReason ?? 'Marked lost',
+      at: step(),
+    });
+  }
+
+  return entries;
+}
+
+// -----------------------------------------------------------------------------
+
+async function main(): Promise<void> {
+  console.log('Seeding IDEA001…\n');
+
+  const permissionIds = await seedPermissions();
+  const roleIds = await seedSystemRoles(permissionIds);
+
+  const password = process.env['SEED_PASSWORD'] ?? 'ChangeMe!2026';
+  const passwordHash = await argon2.hash(password, {
     type: argon2.argon2id,
     memoryCost: 19456,
     timeCost: 2,
     parallelism: 1,
   });
 
-  const user = await prisma.user.upsert({
-    where: { email: input.ownerEmail },
-    create: {
-      email: input.ownerEmail,
-      fullName: input.ownerName,
-      passwordHash,
-      status: 'ACTIVE',
-    },
-    update: { passwordHash, status: 'ACTIVE' },
-  });
+  console.log('');
+  for (const [index, demo] of DEMO_ORGANIZATIONS.entries()) {
+    await seedOrganization(demo, roleIds, passwordHash, index);
+  }
 
-  const ownerRole = await prisma.role.findFirst({
-    where: { key: 'OWNER', organizationId: null, isSystem: true },
-  });
-  if (!ownerRole) throw new Error('OWNER role missing — seed roles first');
-
-  await prisma.organizationUser.upsert({
-    where: {
-      organizationId_userId: { organizationId: organization.id, userId: user.id },
-    },
-    create: {
-      organizationId: organization.id,
-      userId: user.id,
-      roleId: ownerRole.id,
-      status: 'ACTIVE',
-      joinedAt: new Date(),
-    },
-    update: { status: 'ACTIVE' },
-  });
-
-  console.log(`  organization ${input.name} (${input.slug}) — owner ${input.ownerEmail}`);
-}
-
-async function main(): Promise<void> {
-  console.log('Seeding IDEA001…');
-
-  const permissionIds = await seedPermissions();
-  await seedSystemRoles(permissionIds);
-
-  // Two organizations, so cross-tenant isolation can be exercised by hand in
-  // development the same way the e2e suite does automatically.
-  const password = process.env['SEED_PASSWORD'] ?? 'ChangeMe!2026';
-
-  await seedDemoOrganization({
-    name: 'Cravion',
-    slug: 'cravion',
-    ownerEmail: 'owner@cravion.test',
-    ownerName: 'Cravion Owner',
-    password,
-  });
-
-  await seedDemoOrganization({
-    name: 'ABC Foods',
-    slug: 'abc-foods',
-    ownerEmail: 'owner@abcfoods.test',
-    ownerName: 'ABC Foods Owner',
-    password,
-  });
-
-  console.log(`\nDone. Sign in with any owner email above and password: ${password}`);
+  console.log('\nSign in with any of these — password:', password);
+  for (const demo of DEMO_ORGANIZATIONS) {
+    console.log(`\n  ${demo.name}`);
+    for (const member of demo.members) {
+      console.log(`    ${member.role.padEnd(10)} ${member.email}`);
+    }
+  }
   if (!process.env['SEED_PASSWORD']) {
-    console.log('(Set SEED_PASSWORD to override. Never use this default outside development.)');
+    console.log('\n(Set SEED_PASSWORD to override. Never use this default outside development.)');
   }
 }
 
-function describePermission(key: string): string {
+function formatInr(value: number): string {
+  return `₹${new Intl.NumberFormat('en-IN').format(value)}`;
+}
+
+function slugify(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function describe(key: string): string {
   const [resource, ...rest] = key.split('.');
   return `${rest.join(' ')} ${resource}`.trim();
 }

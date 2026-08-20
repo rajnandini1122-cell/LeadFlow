@@ -3,8 +3,13 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AuthProvider, useAuth } from './features/auth/auth-context';
 import { LoginPage } from './features/auth/login-page';
 import { DashboardPage } from './features/dashboard/dashboard-page';
+import { LeadsPage } from './features/leads/leads-page';
+import { LeadDetailPage } from './features/leads/lead-detail-page';
+import { FollowUpsPage } from './features/followups/follow-ups-page';
+import { TeamPage } from './features/team/team-page';
+import { ReportsPage } from './features/reports/reports-page';
+import { SettingsPage } from './features/settings/settings-page';
 import { AppShell } from './components/app-shell';
-import { PlaceholderPage } from './components/placeholder-page';
 import { ApiError } from './lib/api-client';
 
 const queryClient = new QueryClient({
@@ -49,56 +54,12 @@ export function App(): React.JSX.Element {
             <Route element={<RequireAuth />}>
               <Route element={<AppShell />}>
                 <Route index element={<DashboardPage />} />
-                <Route
-                  path="leads"
-                  element={
-                    <PlaceholderPage
-                      title="Leads"
-                      phase="Phase 2"
-                      description="Lead list, search, filters, assignment and duplicate detection."
-                    />
-                  }
-                />
-                <Route
-                  path="follow-ups"
-                  element={
-                    <PlaceholderPage
-                      title="Follow-ups"
-                      phase="Phase 6"
-                      description="Today, upcoming and overdue follow-ups, backed by the follow-up engine."
-                    />
-                  }
-                />
-                <Route
-                  path="team"
-                  element={
-                    <PlaceholderPage
-                      title="Team"
-                      phase="Phase 4"
-                      description="Invite users, assign roles and monitor team activity."
-                    />
-                  }
-                />
-                <Route
-                  path="reports"
-                  element={
-                    <PlaceholderPage
-                      title="Reports"
-                      phase="Phase 4"
-                      description="Team performance, lead conversion and activity reporting."
-                    />
-                  }
-                />
-                <Route
-                  path="settings"
-                  element={
-                    <PlaceholderPage
-                      title="Settings"
-                      phase="Phase 4"
-                      description="Organization profile, working hours and follow-up escalation rules."
-                    />
-                  }
-                />
+                <Route path="leads" element={<LeadsPage />} />
+                <Route path="leads/:id" element={<LeadDetailPage />} />
+                <Route path="follow-ups" element={<FollowUpsPage />} />
+                <Route path="team" element={<TeamPage />} />
+                <Route path="reports" element={<ReportsPage />} />
+                <Route path="settings" element={<SettingsPage />} />
               </Route>
             </Route>
 
