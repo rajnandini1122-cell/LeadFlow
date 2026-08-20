@@ -125,3 +125,26 @@ NestJS import to `import type`, which erases the class and leaves
 
 **Login returns 429 in tests.** The strict `auth` throttler. Raise
 `AUTH_THROTTLE_LIMIT` for the environment; do not hardcode limits in decorators.
+
+**Web shows `502` / "Request failed with status code 502" on login.** The Vite
+dev server is up but the API behind its `/api` proxy is not. Almost always the
+API process died rather than a proxy misconfiguration — check `curl
+http://127.0.0.1:3000/health` first.
+
+The usual cause is running `npm run build` (or the full gate) in another
+terminal while `npm run dev:api` is watching: `prebuild` runs `rimraf dist`,
+deleting `dist/main.js` out from under the running watcher, which exits with
+`MODULE_NOT_FOUND`. Restart `npm run dev:api`.
+
+To avoid it entirely, stop the dev servers before building, or build into a
+separate checkout. Tests are safe to run alongside — `npm run test` and
+`npm run test:e2e` do not touch `dist`.
+
+**Blank page on the web app after changing shared-package resolution.** The
+browser loads dependencies as native ES modules and cannot read named exports
+from a CommonJS build. `vite build` hides this, because Rollup converts CJS
+during bundling — so the production build stays green while `npm run dev` serves
+a blank page with a console `SyntaxError`. `apps/web/vite.config.ts` aliases
+`@idea001/api-types` to its TypeScript source to prevent it. The Vitest smoke
+test does NOT catch this class of failure (Vitest performs CJS interop); load
+the page in a real browser once after touching module resolution.
