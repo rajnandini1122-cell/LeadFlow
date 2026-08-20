@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A newer push supersedes an in-flight run on the same branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '24'
+
+jobs:
+  quality:
+    name: Lint, typecheck, unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build -w packages/api-types
+      - run: npm run db:generate -w apps/api
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run test -w apps/api
+
+  e2e:
+    name: End-to-end (incl. mandatory tenant isolation)
+    runs-on: ubuntu-latest
+
+    # Unlike local development, CI runs the same images as production.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: idea001
+          POSTGRES_PASSWORD: idea001_ci
+          POSTGRES_DB: idea001_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U idea001"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:8-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://idea001:idea001_ci@localhost:5432/idea001_test
+      DIRECT_DATABASE_URL: postgresql://idea001:idea001_ci@localhost:5432/idea001_test
+      REDIS_URL: redis://localhost:6379
+      JWT_ACCESS_SECRET: ci-access-secret-at-least-32-characters-long
+      JWT_REFRESH_SECRET: ci-refresh-secret-at-least-32-characters-diff
+      NODE_ENV: test
+      LOG_LEVEL: fatal
+      CORS_ORIGINS: http://localhost:5173
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build -w packages/api-types
+      - run: npm run db:generate -w apps/api
+      - run: npm run db:migrate:deploy -w apps/api
+
+      # CI_USE_EXTERNAL_DB tells the Jest global setup to use the service
+      # containers above instead of booting the in-process PGlite fallback that
+      # exists for Docker-less development machines.
+      - name: Run e2e suite
+        run: npm run test:e2e -w apps/api
+        env:
+          CI_USE_EXTERNAL_DB: '1'
+
+  web:
+    name: Web build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build -w packages/api-types
+      - run: npm run build -w apps/web

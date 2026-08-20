@@ -1,0 +1,7 @@
+{
+  "name": "@idea001/shared-config",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Shared tsconfig / lint presets for IDEA001 workspaces",
+  "files": ["tsconfig.node.json", "tsconfig.react.json"]
+}

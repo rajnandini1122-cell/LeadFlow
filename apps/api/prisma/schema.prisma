@@ -1,0 +1,432 @@
+// =============================================================================
+// IDEA001 — Prisma schema
+//
+// Conventions:
+//   * snake_case in Postgres (@map), camelCase in TypeScript.
+//   * UUIDv7 primary keys via the uuidv7() SQL function created in migration
+//     000_uuidv7. Time-ordered, so index locality stays good on high-write
+//     tables such as lead_activities.
+//   * Every tenant table carries a NON-NULL organization_id as its first index
+//     column. This is what makes the tenant predicate selective, and it is also
+//     the precondition for switching on Postgres RLS later without an
+//     application change.
+//   * Emails are normalised to lowercase in the application layer rather than
+//     using the citext extension — one less extension to provision, and the
+//     normalisation point is explicit and testable.
+//
+// See docs/database.md and docs/tenancy.md.
+// =============================================================================
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "cjs"
+  runtime      = "nodejs"
+}
+
+// Prisma 7 removed `url` from the schema. Migration connection details live in
+// prisma.config.ts; the runtime connection is supplied by the driver adapter
+// (@prisma/adapter-pg) passed to the PrismaClient constructor.
+datasource db {
+  provider = "postgresql"
+}
+
+// =============================================================================
+// ENUMS
+// =============================================================================
+
+enum OrganizationStatus {
+  TRIAL
+  ACTIVE
+  SUSPENDED
+
+  @@map("organization_status")
+}
+
+enum UserStatus {
+  ACTIVE
+  INVITED
+  SUSPENDED
+
+  @@map("user_status")
+}
+
+enum MembershipStatus {
+  ACTIVE
+  INVITED
+  SUSPENDED
+
+  @@map("membership_status")
+}
+
+enum RoleKey {
+  OWNER
+  ADMIN
+  MANAGER
+  SALES_REP
+
+  @@map("role_key")
+}
+
+enum DevicePlatform {
+  WEB
+  ANDROID
+  IOS
+
+  @@map("device_platform")
+}
+
+/// Fixed pipeline (spec §8). A custom pipeline builder is explicitly excluded
+/// from the MVP (§31), so this enum is the pipeline.
+enum LeadStatus {
+  NEW
+  CONTACTED
+  QUALIFIED
+  FOLLOW_UP
+  QUOTATION_SENT
+  NEGOTIATION
+  WON
+  LOST
+
+  @@map("lead_status")
+}
+
+enum LeadPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+
+  @@map("lead_priority")
+}
+
+enum ActivityType {
+  LEAD_CREATED
+  LEAD_UPDATED
+  LEAD_ASSIGNED
+  LEAD_REASSIGNED
+  CALL_COMPLETED
+  CALL_NOT_ANSWERED
+  CALL_BACK_LATER
+  WHATSAPP_OPENED
+  WHATSAPP_SENT
+  WHATSAPP_DELIVERED
+  WHATSAPP_READ
+  WHATSAPP_RECEIVED
+  NOTE_ADDED
+  STATUS_CHANGED
+  FOLLOW_UP_CREATED
+  FOLLOW_UP_COMPLETED
+  FOLLOW_UP_RESCHEDULED
+  LEAD_WON
+  LEAD_LOST
+
+  @@map("activity_type")
+}
+
+// =============================================================================
+// TENANCY & IDENTITY
+// =============================================================================
+
+model Organization {
+  id       String             @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  name     String             @db.VarChar(200)
+  slug     String             @unique @db.VarChar(80)
+  timezone String             @default("Asia/Kolkata") @db.VarChar(64)
+  currency String             @default("INR") @db.VarChar(3)
+  status   OrganizationStatus @default(TRIAL)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  settings    OrganizationSettings?
+  memberships OrganizationUser[]
+  roles       Role[]
+  sessions    Session[]
+  auditLogs   AuditLog[]
+  leads       Lead[]
+  activities  LeadActivity[]
+
+  @@index([status])
+  @@map("organizations")
+}
+
+/// Per-tenant configuration. Follow-up escalation thresholds live here rather
+/// than in code, per spec §10 — so escalation can become tenant-specific
+/// without a deploy.
+model OrganizationSettings {
+  organizationId String @id @map("organization_id") @db.Uuid
+
+  followupReminderMinutes Int     @default(30) @map("followup_reminder_minutes")
+  followupOverdueMinutes  Int     @default(120) @map("followup_overdue_minutes")
+  escalateToManager       Boolean @default(false) @map("escalate_to_manager")
+  workingHoursStart       String  @default("09:30") @map("working_hours_start") @db.VarChar(5)
+  workingHoursEnd         String  @default("18:30") @map("working_hours_end") @db.VarChar(5)
+  whatsappProvider        String? @map("whatsapp_provider") @db.VarChar(40)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("organization_settings")
+}
+
+/// Global identity — deliberately NOT tenant-scoped.
+///
+/// One person with one email can belong to several organizations (common for an
+/// SME's accountant or an external consultant). Tenancy lives entirely in
+/// OrganizationUser. This is why the access token is scoped to a single
+/// organization and why multi-org users get an org-selection step at login.
+model User {
+  id           String     @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  email        String     @unique @db.VarChar(320)
+  passwordHash String?    @map("password_hash") @db.VarChar(255)
+  fullName     String     @map("full_name") @db.VarChar(150)
+  mobile       String?    @db.VarChar(20)
+  avatarUrl    String?    @map("avatar_url") @db.VarChar(500)
+  status       UserStatus @default(INVITED)
+
+  lastLoginAt DateTime? @map("last_login_at") @db.Timestamptz(6)
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  memberships       OrganizationUser[] @relation("MembershipUser")
+  invitedMembers    OrganizationUser[] @relation("MembershipInviter")
+  sessions          Session[]
+  auditLogs         AuditLog[]
+  assignedLeads     Lead[]             @relation("LeadAssignee")
+  leadsAssignedByMe Lead[]             @relation("LeadAssigner")
+  activities        LeadActivity[]
+
+  @@index([status])
+  @@map("users")
+}
+
+/// The tenancy join. A row here is what makes a user a member of an org.
+model OrganizationUser {
+  id             String           @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String           @map("organization_id") @db.Uuid
+  userId         String           @map("user_id") @db.Uuid
+  roleId         String           @map("role_id") @db.Uuid
+  status         MembershipStatus @default(INVITED)
+
+  /// Single-use, SHA-256 hashed. Raw invite token is never stored.
+  inviteTokenHash String?   @unique @map("invite_token_hash") @db.VarChar(64)
+  inviteExpiresAt DateTime? @map("invite_expires_at") @db.Timestamptz(6)
+  invitedById     String?   @map("invited_by") @db.Uuid
+  joinedAt        DateTime? @map("joined_at") @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation("MembershipUser", fields: [userId], references: [id], onDelete: Cascade)
+  invitedBy    User?        @relation("MembershipInviter", fields: [invitedById], references: [id], onDelete: SetNull)
+  role         Role         @relation(fields: [roleId], references: [id])
+
+  @@unique([organizationId, userId])
+  @@index([userId])
+  @@index([organizationId, status])
+  @@map("organization_users")
+}
+
+/// System roles have organizationId = NULL and are shared by every tenant.
+/// Org-specific custom roles are possible later without a schema change.
+model Role {
+  id             String  @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String? @map("organization_id") @db.Uuid
+  key            RoleKey
+  name           String  @db.VarChar(80)
+  description    String? @db.VarChar(255)
+  isSystem       Boolean @default(false) @map("is_system")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization?      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  permissions  RolePermission[]
+  memberships  OrganizationUser[]
+
+  @@unique([organizationId, key])
+  @@map("roles")
+}
+
+model Permission {
+  id          String  @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  key         String  @unique @db.VarChar(80)
+  description String? @db.VarChar(255)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  roles RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       String @map("role_id") @db.Uuid
+  permissionId String @map("permission_id") @db.Uuid
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+// =============================================================================
+// SESSIONS — refresh token families
+// =============================================================================
+
+/// One row per issued refresh token.
+///
+/// `familyId` links every rotation of a single login together. Replaying a
+/// revoked token means the token leaked, so the whole family is revoked at
+/// once. Only the SHA-256 hash is stored — the raw token exists solely in
+/// transit and on the client.
+model Session {
+  id               String @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId   String @map("organization_id") @db.Uuid
+  userId           String @map("user_id") @db.Uuid
+  refreshTokenHash String @unique @map("refresh_token_hash") @db.VarChar(64)
+  familyId         String @map("family_id") @db.Uuid
+
+  deviceId   String?        @map("device_id") @db.VarChar(128)
+  deviceName String?        @map("device_name") @db.VarChar(128)
+  platform   DevicePlatform @default(WEB)
+  fcmToken   String?        @map("fcm_token") @db.VarChar(500)
+  ipAddress  String?        @map("ip_address") @db.VarChar(64)
+  userAgent  String?        @map("user_agent") @db.VarChar(400)
+
+  expiresAt    DateTime  @map("expires_at") @db.Timestamptz(6)
+  revokedAt    DateTime? @map("revoked_at") @db.Timestamptz(6)
+  revokedReason String?  @map("revoked_reason") @db.VarChar(80)
+  replacedById String?   @map("replaced_by_id") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt])
+  @@index([familyId])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+// =============================================================================
+// AUDIT
+// =============================================================================
+
+/// Append-only. organizationId is nullable because some auditable events
+/// (a failed login against an unknown email) have no resolvable tenant.
+model AuditLog {
+  id             String  @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String? @map("organization_id") @db.Uuid
+  actorUserId    String? @map("actor_user_id") @db.Uuid
+
+  action     String  @db.VarChar(80)
+  entityType String? @map("entity_type") @db.VarChar(60)
+  entityId   String? @map("entity_id") @db.Uuid
+
+  before Json?
+  after  Json?
+
+  ipAddress String? @map("ip_address") @db.VarChar(64)
+  userAgent String? @map("user_agent") @db.VarChar(400)
+  requestId String? @map("request_id") @db.VarChar(64)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  actor        User?         @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt(sort: Desc)])
+  @@index([actorUserId, createdAt(sort: Desc)])
+  @@index([action, createdAt(sort: Desc)])
+  @@map("audit_logs")
+}
+
+// =============================================================================
+// CRM
+//
+// The tables below are migrated in Phase 1 so that tenant isolation is proven
+// against a REAL business table rather than only against identity tables, which
+// have special-case handling. Lead business rules (duplicate detection, status
+// transitions, assignment) are Phase 2 — Phase 1 exposes read-only endpoints
+// only.
+// =============================================================================
+
+model Lead {
+  id             String @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String @map("organization_id") @db.Uuid
+  /// Per-organization human-readable identifier, e.g. "LD-000123".
+  leadNumber     String @map("lead_number") @db.VarChar(20)
+
+  firstName       String?  @map("first_name") @db.VarChar(80)
+  lastName        String?  @map("last_name") @db.VarChar(80)
+  mobile          String?  @db.VarChar(20)
+  email           String?  @db.VarChar(320)
+  companyName     String?  @map("company_name") @db.VarChar(200)
+  city            String?  @db.VarChar(80)
+  source          String?  @db.VarChar(60)
+  productInterest String?  @map("product_interest") @db.VarChar(200)
+  estimatedValue  Decimal? @map("estimated_value") @db.Decimal(14, 2)
+
+  status   LeadStatus   @default(NEW)
+  priority LeadPriority @default(MEDIUM)
+
+  assignedToId String? @map("assigned_to") @db.Uuid
+  assignedById String? @map("assigned_by") @db.Uuid
+
+  /// The "NO LEAD LEFT BEHIND" column. A CHECK constraint added in the
+  /// migration makes this NOT NULL for every non-terminal status.
+  nextFollowUpAt DateTime? @map("next_follow_up_at") @db.Timestamptz(6)
+  lastActivityAt DateTime? @map("last_activity_at") @db.Timestamptz(6)
+
+  lostReason String?   @map("lost_reason") @db.VarChar(255)
+  wonAt      DateTime? @map("won_at") @db.Timestamptz(6)
+  lostAt     DateTime? @map("lost_at") @db.Timestamptz(6)
+
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+  createdBy String?   @map("created_by") @db.Uuid
+  updatedBy String?   @map("updated_by") @db.Uuid
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  assignedTo   User?          @relation("LeadAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+  assignedBy   User?          @relation("LeadAssigner", fields: [assignedById], references: [id], onDelete: SetNull)
+  activities   LeadActivity[]
+
+  @@unique([organizationId, leadNumber])
+  @@index([organizationId, status])
+  @@index([organizationId, assignedToId, status])
+  @@index([organizationId, nextFollowUpAt])
+  @@index([organizationId, mobile])
+  @@index([organizationId, createdAt(sort: Desc)])
+  @@map("leads")
+}
+
+/// Append-only timeline. Never updated, never hard-deleted — spec §9,
+/// "do not destroy historical business activity".
+model LeadActivity {
+  id             String       @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String       @map("organization_id") @db.Uuid
+  leadId         String       @map("lead_id") @db.Uuid
+  activityType   ActivityType @map("activity_type")
+  description    String?      @db.VarChar(1000)
+  metadata       Json?
+  performedById  String?      @map("performed_by") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  lead         Lead         @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  performedBy  User?        @relation(fields: [performedById], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, leadId, createdAt(sort: Desc)])
+  @@index([organizationId, createdAt(sort: Desc)])
+  @@map("lead_activities")
+}

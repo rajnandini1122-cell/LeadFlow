@@ -1,0 +1,18 @@
+# Normalise line endings so a Windows checkout and a Linux CI runner agree.
+# Without this, every file a Windows developer touches shows as fully rewritten.
+* text=auto eol=lf
+
+# Windows-only scripts must keep CRLF to remain executable by cmd.exe.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Never normalise binaries.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.jar binary
+*.keystore binary
+*.jks binary

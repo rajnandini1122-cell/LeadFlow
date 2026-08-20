@@ -1,0 +1,18 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src",
+    // Must live INSIDE outDir. nest-cli's `deleteOutDir` wipes dist on every
+    // build; if the incremental state survived elsewhere, tsc would conclude
+    // the output was still current and emit nothing — producing a silent,
+    // exit-code-0 build with an empty dist.
+    "tsBuildInfoFile": "./dist/.tsbuildinfo",
+    // No `baseUrl`/`paths`: it is deprecated in TypeScript 7, and relative
+    // imports keep the module graph obvious to Node at runtime without a
+    // resolver shim.
+    "types": ["node", "jest"]
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "test", "**/*.spec.ts"]
+}

@@ -1,0 +1,38 @@
+node_modules/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+# Local in-process Postgres data (scripts/local-db.mjs)
+.tmp/
+
+# Environment — NEVER commit real credentials
+.env
+.env.*
+!.env.example
+
+# Prisma generated client (generated at build time, not committed)
+apps/api/src/generated/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Android (Phase 1b)
+apps/android/local.properties
+apps/android/.gradle/
+apps/android/build/
+apps/android/**/build/
+*.keystore
+*.jks
+google-services.json
+
+# Firebase / cloud service accounts
+**/service-account*.json

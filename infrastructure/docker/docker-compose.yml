@@ -1,0 +1,72 @@
+# Local infrastructure for anyone who has Docker, and for CI.
+#
+# The primary development machine for this project has no Docker and no WSL2,
+# so day-to-day work uses managed services (Neon + Upstash) or the in-process
+# Postgres in scripts/local-db.mjs. This file exists so that a teammate with
+# Docker, and CI, can run the exact images that staging and production use.
+#
+#   docker compose -f infrastructure/docker/docker-compose.yml up -d
+#
+# See docs/runbook.md for which option to pick.
+
+name: idea001
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: idea001
+      POSTGRES_PASSWORD: idea001_local_only
+      POSTGRES_DB: idea001
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      # Migrations run as soon as this reports healthy, so the check must prove
+      # the server accepts queries, not merely that the port is open.
+      test: ['CMD-SHELL', 'pg_isready -U idea001 -d idea001']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:8-alpine
+    restart: unless-stopped
+    # appendonly keeps the token deny list across restarts. Losing it would let
+    # a logged-out access token work again until it expired.
+    command: ['redis-server', '--appendonly', 'yes']
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # S3-compatible object storage for Phase 8 (file attachments).
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: ['server', '/data', '--console-address', ':9001']
+    environment:
+      MINIO_ROOT_USER: idea001
+      MINIO_ROOT_PASSWORD: idea001_local_only
+    ports:
+      - '9000:9000'
+      - '9001:9001'
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ['CMD', 'mc', 'ready', 'local']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
