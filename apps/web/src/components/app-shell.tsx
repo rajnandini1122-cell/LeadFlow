@@ -4,6 +4,7 @@ import { PERMISSIONS, type Permission } from '@leadflow/api-types';
 import { useAuth } from '../features/auth/auth-context';
 import { useLeads, bucketLeads } from '../features/leads/use-leads';
 import { Avatar } from './ui';
+import { OrganizationSwitcher } from './organization-switcher';
 
 interface NavItem {
   to: string;
@@ -95,6 +96,7 @@ export function AppShell(): React.JSX.Element {
 
         {user && (
           <div className="absolute inset-x-0 bottom-0 border-t border-slate-100 p-3">
+            <OrganizationSwitcher />
             <div className="flex items-center gap-2.5 rounded-lg px-2 py-2">
               <Avatar name={user.fullName} size="sm" />
               <div className="min-w-0 flex-1">

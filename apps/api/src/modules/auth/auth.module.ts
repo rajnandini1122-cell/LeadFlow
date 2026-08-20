@@ -6,6 +6,9 @@ import { AuthRepository } from './auth.repository';
 import { PasswordService } from './password.service';
 import { TokenService } from './token.service';
 import { MembershipCacheService } from './membership-cache.service';
+import { SessionService } from './session.service';
+import { RegistrationService } from './registration.service';
+import { RegistrationRepository } from './registration.repository';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { PermissionsGuard } from './guards/permissions.guard';
 
@@ -23,9 +26,19 @@ import { PermissionsGuard } from './guards/permissions.guard';
     PasswordService,
     TokenService,
     MembershipCacheService,
+    SessionService,
+    RegistrationService,
+    RegistrationRepository,
     JwtAuthGuard,
     PermissionsGuard,
   ],
-  exports: [AuthService, TokenService, PasswordService, MembershipCacheService, AuthRepository],
+  exports: [
+    AuthService,
+    TokenService,
+    PasswordService,
+    MembershipCacheService,
+    AuthRepository,
+    SessionService,
+  ],
 })
 export class AuthModule {}

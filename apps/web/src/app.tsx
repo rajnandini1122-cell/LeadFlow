@@ -2,6 +2,8 @@ import { BrowserRouter, Navigate, Outlet, Route, Routes } from 'react-router-dom
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AuthProvider, useAuth } from './features/auth/auth-context';
 import { LoginPage } from './features/auth/login-page';
+import { RegisterPage } from './features/auth/register-page';
+import { AcceptInvitationPage } from './features/auth/accept-invitation-page';
 import { DashboardPage } from './features/dashboard/dashboard-page';
 import { LeadsPage } from './features/leads/leads-page';
 import { LeadDetailPage } from './features/leads/lead-detail-page';
@@ -50,7 +52,10 @@ export function App(): React.JSX.Element {
       <BrowserRouter>
         <AuthProvider>
           <Routes>
+            {/* Public: no session required. */}
             <Route path="/login" element={<LoginPage />} />
+            <Route path="/register" element={<RegisterPage />} />
+            <Route path="/invite/:token" element={<AcceptInvitationPage />} />
 
             <Route element={<RequireAuth />}>
               <Route element={<AppShell />}>

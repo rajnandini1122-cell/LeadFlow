@@ -9,14 +9,25 @@ import {
   EmptyState,
   ErrorNotice,
   PageHeader,
-  PhaseNote,
   RoleBadge,
   SkeletonRows,
   StatTile,
 } from '../../components/ui';
 import { bucketLeads, useLeads } from '../leads/use-leads';
+import { useAuth } from '../auth/auth-context';
+import { InviteMemberDialog } from './invite-member-dialog';
+import { PendingInvitations } from './pending-invitations';
+import { LeaveOrganizationButton, MemberActions } from './member-actions';
+import { useState } from 'react';
 
 export function TeamPage(): React.JSX.Element {
+  const { can } = useAuth();
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const canInvite = can('user.invite');
+
   const team = useQuery({
     queryKey: ['users'],
     queryFn: () => apiGet<UserListItem[]>('/users'),
@@ -58,7 +69,38 @@ export function TeamPage(): React.JSX.Element {
 
   return (
     <>
-      <PageHeader title="Team" subtitle={`${members.length} members in this organization`} />
+      <PageHeader
+        title="Team"
+        subtitle={`${members.length} members in this organization`}
+        action={
+          canInvite ? (
+            <button
+              type="button"
+              onClick={() => setDialogOpen(true)}
+              className="rounded-lg bg-slate-900 px-3 py-2 text-sm font-medium text-white transition hover:bg-slate-800"
+            >
+              + Invite member
+            </button>
+          ) : undefined
+        }
+      />
+
+      <InviteMemberDialog open={dialogOpen} onClose={() => setDialogOpen(false)} />
+
+      {(notice || error) && (
+        <div className="mb-4">
+          {notice && (
+            <p role="status" aria-live="polite" className="rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+              {notice}
+            </p>
+          )}
+          {error && (
+            <p role="alert" aria-live="assertive" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
+              {error}
+            </p>
+          )}
+        </div>
+      )}
 
       <div className="mb-6 grid gap-4 sm:grid-cols-3">
         <StatTile label="Members" value={members.length} />
@@ -123,6 +165,18 @@ export function TeamPage(): React.JSX.Element {
                     </p>
                   </div>
 
+                  <MemberActions
+                    member={member}
+                    onError={(message) => {
+                      setError(message);
+                      setNotice(null);
+                    }}
+                    onSuccess={(message) => {
+                      setNotice(message);
+                      setError(null);
+                    }}
+                  />
+
                   <div className="hidden w-28 text-right lg:block">
                     <p className="text-xs text-slate-500">Last active</p>
                     <p className="text-sm text-slate-700">
@@ -139,12 +193,16 @@ export function TeamPage(): React.JSX.Element {
         )}
       </Card>
 
-      <div className="mt-4">
-        <PhaseNote phase="Phase 4">
-          Inviting users, changing roles and suspending accounts are already
-          implemented in the API and covered by the authorization tests. The
-          management UI for them lands with the web console phase.
-        </PhaseNote>
+      <div className="mt-6">
+        <PendingInvitations canManage={canInvite} />
+      </div>
+
+      <div className="mt-6 rounded-xl border border-slate-200 bg-white p-5">
+        <h2 className="text-sm font-semibold text-slate-900">Leave this organization</h2>
+        <p className="mt-1 mb-3 text-sm text-slate-500">
+          You will lose access immediately. Your other organizations are unaffected.
+        </p>
+        <LeaveOrganizationButton />
       </div>
     </>
   );

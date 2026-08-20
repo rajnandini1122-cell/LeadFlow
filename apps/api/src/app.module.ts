@@ -19,6 +19,7 @@ import { PermissionsGuard } from './modules/auth/guards/permissions.guard';
 import { UsersModule } from './modules/users/users.module';
 import { OrganizationsModule } from './modules/organizations/organizations.module';
 import { LeadsModule } from './modules/leads/leads.module';
+import { InvitationsModule } from './modules/invitations/invitations.module';
 import { HealthModule } from './modules/health/health.module';
 
 @Module({
@@ -85,6 +86,7 @@ import { HealthModule } from './modules/health/health.module';
     AuthModule,
     UsersModule,
     OrganizationsModule,
+    InvitationsModule,
     LeadsModule,
     HealthModule,
   ],

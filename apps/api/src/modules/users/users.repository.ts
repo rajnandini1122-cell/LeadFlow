@@ -22,6 +22,9 @@ export class UsersRepository {
   /** Members of the current organization. Scoped automatically. */
   async listMembers() {
     return this.prisma.client.organizationUser.findMany({
+      // Removed members are retained for referential integrity but are no
+      // longer part of the team.
+      where: { status: { not: 'REMOVED' } },
       include: {
         user: {
           select: {
@@ -47,7 +50,7 @@ export class UsersRepository {
    */
   async findMember(userId: string) {
     return this.prisma.client.organizationUser.findFirst({
-      where: { userId },
+      where: { userId, status: { not: 'REMOVED' } },
       include: {
         user: {
           select: {
@@ -130,6 +133,37 @@ export class UsersRepository {
     return this.prisma.client.organizationUser.count({
       where: { status: 'ACTIVE', role: { key: 'OWNER' } },
     });
+  }
+
+  /**
+   * Soft-removes a member.
+   *
+   * Tenant-scoped updateMany, so a foreign userId affects zero rows. The row
+   * is RETAINED: leads.assigned_to and lead_activities.performed_by point at
+   * this user, and hard-deleting would either break those references or erase
+   * who did what. Access is refused by the guard on status, not by absence.
+   */
+  async removeMember(userId: string): Promise<number> {
+    const result = await this.prisma.client.organizationUser.updateMany({
+      where: { userId, status: { in: ['ACTIVE', 'INVITED', 'SUSPENDED'] } },
+      data: {
+        status: 'REMOVED',
+        removedAt: new Date(),
+        // A pending invitation for a removed member must not remain redeemable.
+        inviteTokenHash: null,
+        inviteExpiresAt: null,
+      },
+    });
+    return result.count;
+  }
+
+  /** Revokes every session this user holds in the CURRENT organization. */
+  async revokeSessions(userId: string, reason: string): Promise<number> {
+    const result = await this.prisma.client.session.updateMany({
+      where: { userId, revokedAt: null },
+      data: { revokedAt: new Date(), revokedReason: reason },
+    });
+    return result.count;
   }
 
   async membershipExists(userId: string): Promise<boolean> {

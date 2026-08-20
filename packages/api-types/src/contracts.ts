@@ -97,6 +97,8 @@ export interface InviteUserRequest {
 
 export interface InviteUserResponse {
   userId: string;
+  /** Address for resend and revoke. The membership row IS the invitation. */
+  invitationId: string;
   email: string;
   role: RoleKey;
   status: UserStatus;
@@ -150,4 +152,56 @@ export interface UpdateOrganizationRequest {
   name?: string;
   timezone?: string;
   settings?: Partial<OrganizationSettings>;
+}
+
+// -----------------------------------------------------------------------------
+// Registration, invitations and organization switching (Phase 2A)
+// -----------------------------------------------------------------------------
+
+export interface RegisterRequest {
+  organizationName: string;
+  /** Optional — derived from the organization name when omitted. */
+  organizationSlug?: string;
+  email: string;
+  password: string;
+  firstName: string;
+  lastName: string;
+  timezone?: string;
+  currency?: string;
+  country?: string;
+}
+
+export interface PendingInvitation {
+  id: string;
+  email: string;
+  fullName: string;
+  role: RoleKey;
+  invitedBy: string | null;
+  expiresAt: string | null;
+  createdAt: string;
+}
+
+export interface InvitationPreview {
+  organizationName: string;
+  role: RoleKey;
+  email: string;
+  /** True when the invitee already has an account and needs no new password. */
+  hasAccount: boolean;
+  expiresAt: string | null;
+}
+
+export interface AcceptInvitationRequest {
+  firstName?: string;
+  lastName?: string;
+  password?: string;
+}
+
+/** One organization the signed-in user may act in. */
+export interface MembershipSummary {
+  id: string;
+  name: string;
+  slug: string;
+  role: RoleKey;
+  /** True for the organization the current access token is scoped to. */
+  current: boolean;
 }

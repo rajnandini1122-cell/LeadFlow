@@ -26,6 +26,8 @@ export const PERMISSIONS = {
   USER_INVITE: 'user.invite',
   USER_UPDATE: 'user.update',
   USER_SUSPEND: 'user.suspend',
+  /** Soft removal from the organization. Separate from suspension on purpose. */
+  USER_REMOVE: 'user.remove',
   ROLE_ASSIGN: 'role.assign',
 
   ORG_VIEW: 'org.view',
@@ -71,6 +73,7 @@ const ADMIN_PERMISSIONS: Permission[] = [
   PERMISSIONS.USER_INVITE,
   PERMISSIONS.USER_UPDATE,
   PERMISSIONS.USER_SUSPEND,
+  PERMISSIONS.USER_REMOVE,
   PERMISSIONS.ROLE_ASSIGN,
   PERMISSIONS.ORG_UPDATE,
   PERMISSIONS.DASHBOARD_VIEW_ALL,

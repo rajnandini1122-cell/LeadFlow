@@ -1,10 +1,22 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Param,
+  ParseUUIDPipe,
+  Patch,
+  Post,
+} from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { PERMISSIONS, type InviteUserResponse, type UserListItem } from '@leadflow/api-types';
 import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { UsersService } from './users.service';
+import { InvitationsService } from '../invitations/invitations.service';
 import { InviteUserDto, UpdateUserDto } from './dto/users.dto';
 
 /**
@@ -14,7 +26,10 @@ import { InviteUserDto, UpdateUserDto } from './dto/users.dto';
 @ApiTags('users')
 @Controller('users')
 export class UsersController {
-  constructor(private readonly users: UsersService) {}
+  constructor(
+    private readonly users: UsersService,
+    private readonly invitations: InvitationsService,
+  ) {}
 
   @Get()
   @RequirePermissions(PERMISSIONS.USER_VIEW)
@@ -33,6 +48,37 @@ export class UsersController {
     return this.users.invite(dto, principal);
   }
 
+  /**
+   * Declared before the `:id` routes — Nest matches in declaration order, so
+   * `/users/invitations` would otherwise be captured by `/users/:id` and fail
+   * UUID validation.
+   */
+  @Get('invitations')
+  @RequirePermissions(PERMISSIONS.USER_VIEW)
+  @ApiOperation({ summary: 'Pending invitations for the current organization' })
+  async pendingInvitations() {
+    return this.invitations.listPending();
+  }
+
+  @Post('invitations/:id/resend')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSIONS.USER_INVITE)
+  @ApiOperation({
+    summary: 'Resend an invitation',
+    description: 'Rotates the token, which invalidates the previous link.',
+  })
+  async resendInvitation(@Param('id', new ParseUUIDPipe({ version: '7' })) id: string) {
+    return this.invitations.resend(id);
+  }
+
+  @Delete('invitations/:id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @RequirePermissions(PERMISSIONS.USER_INVITE)
+  @ApiOperation({ summary: 'Revoke a pending invitation' })
+  async revokeInvitation(@Param('id', new ParseUUIDPipe({ version: '7' })) id: string) {
+    await this.invitations.revoke(id);
+  }
+
   @Get(':id')
   @RequirePermissions(PERMISSIONS.USER_VIEW)
   @ApiOperation({ summary: 'Get one member of the current organization' })
@@ -49,5 +95,20 @@ export class UsersController {
     @CurrentUser() principal: TenantPrincipal,
   ): Promise<UserListItem> {
     return this.users.update(id, dto, principal);
+  }
+  @Delete(':id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @RequirePermissions(PERMISSIONS.USER_REMOVE)
+  @ApiOperation({
+    summary: 'Remove a member from the organization',
+    description:
+      'Soft removal. The membership row is retained so leads and activities ' +
+      'keep a valid assignee; access is revoked immediately.',
+  })
+  async remove(
+    @Param('id', new ParseUUIDPipe({ version: '7' })) id: string,
+    @CurrentUser() principal: TenantPrincipal,
+  ): Promise<void> {
+    await this.users.remove(id, principal);
   }
 }

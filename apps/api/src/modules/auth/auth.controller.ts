@@ -17,6 +17,9 @@ import { AppException } from '../../common/errors/app.exception';
 import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
 import { AuthService, type RequestMetadata } from './auth.service';
 import { LoginDto, RefreshDto } from './dto/auth.dto';
+import { RegisterDto } from './dto/register.dto';
+import { SwitchOrganizationDto } from './dto/switch-organization.dto';
+import { RegistrationService } from './registration.service';
 import { Public } from './decorators/public.decorator';
 import { CurrentUser, TokenClaims } from './decorators/current-user.decorator';
 import type { AccessTokenClaims } from './token.service';
@@ -38,8 +41,74 @@ const REFRESH_COOKIE = 'leadflow_rt';
 export class AuthController {
   constructor(
     private readonly auth: AuthService,
+    private readonly registration: RegistrationService,
     private readonly config: AppConfig,
   ) {}
+
+  @Public()
+  @Post('register')
+  @ApiOperation({
+    summary: 'Register a new organization and its first owner',
+    description:
+      'Creates organization, settings, user and OWNER membership in a single ' +
+      'transaction. A partial result would strand an organization nobody can ' +
+      'sign in to.',
+  })
+  async register(
+    @Body() dto: RegisterDto,
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const result = await this.registration.register(dto, metadataFrom(request));
+
+    if ((dto.platform ?? 'WEB') === 'WEB') {
+      this.setRefreshCookie(response, result.refreshToken);
+      return { tokens: result.tokens, user: result.user };
+    }
+
+    return {
+      tokens: { ...result.tokens, refreshToken: result.refreshToken },
+      user: result.user,
+    };
+  }
+
+  @Get('organizations')
+  @ApiOperation({ summary: 'Organizations the signed-in user may act in' })
+  async organizations(@CurrentUser() principal: TenantPrincipal) {
+    return this.auth.listOrganizations(principal);
+  }
+
+  @Post('switch-organization')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Switch to another organization without re-entering credentials',
+    description:
+      'The supplied organization id is validated against live membership, so ' +
+      'it can only select among organizations the caller already belongs to.',
+  })
+  async switchOrganization(
+    @Body() dto: SwitchOrganizationDto,
+    @CurrentUser() principal: TenantPrincipal,
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const result = await this.auth.switchOrganization(
+      principal,
+      dto.targetOrganizationId,
+      dto.platform ?? 'WEB',
+      metadataFrom(request),
+    );
+
+    if ((dto.platform ?? 'WEB') === 'WEB') {
+      this.setRefreshCookie(response, result.refreshToken);
+      return { tokens: result.tokens, user: result.user };
+    }
+
+    return {
+      tokens: { ...result.tokens, refreshToken: result.refreshToken },
+      user: result.user,
+    };
+  }
 
   @Public()
   @Post('login')

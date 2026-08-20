@@ -77,7 +77,7 @@ export const NOTIFICATION_TYPES = [
 ] as const;
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 
-export const USER_STATUSES = ['ACTIVE', 'INVITED', 'SUSPENDED'] as const;
+export const USER_STATUSES = ['ACTIVE', 'INVITED', 'SUSPENDED', 'REMOVED'] as const;
 export type UserStatus = (typeof USER_STATUSES)[number];
 
 export const ORGANIZATION_STATUSES = ['TRIAL', 'ACTIVE', 'SUSPENDED'] as const;

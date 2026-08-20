@@ -3,6 +3,7 @@ import { uuidv7 } from '../../common/utils/uuid';
 import type {
   AuthenticatedUser,
   LoginResponse,
+  MembershipSummary,
   OrganizationSummary,
   TokenPair,
 } from '@leadflow/api-types';
@@ -13,6 +14,7 @@ import { AuthRepository, type MembershipRecord } from './auth.repository';
 import { PasswordService } from './password.service';
 import { TokenService } from './token.service';
 import { MembershipCacheService } from './membership-cache.service';
+import { SessionService } from './session.service';
 import type { LoginDto } from './dto/auth.dto';
 
 export interface RequestMetadata {
@@ -36,6 +38,7 @@ export class AuthService {
     private readonly tokens: TokenService,
     private readonly membershipCache: MembershipCacheService,
     private readonly audit: AuditRepository,
+    private readonly sessions: SessionService,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -289,6 +292,74 @@ export class AuthService {
       ipAddress: meta.ipAddress,
       userAgent: meta.userAgent,
     });
+  }
+
+  /** Organizations the caller may act in, with the current one flagged. */
+  async listOrganizations(principal: TenantPrincipal): Promise<MembershipSummary[]> {
+    const memberships = await this.repository.findMembershipsForUser(principal.userId);
+
+    return memberships
+      .filter((m) => m.membershipStatus === 'ACTIVE' && m.organizationStatus !== 'SUSPENDED')
+      .map((m) => ({
+        id: m.organizationId,
+        name: m.organizationName,
+        slug: m.organizationSlug,
+        role: m.role,
+        current: m.organizationId === principal.organizationId,
+      }));
+  }
+
+  /**
+   * Issues a NEW session scoped to a different organization.
+   *
+   * The client supplies an organization id, which is exactly the input §4 says
+   * never to trust. It is not trusted: membership is re-read from the database
+   * and must be ACTIVE, so the id only selects among organizations the caller
+   * already belongs to. A foreign id yields 403 and no session.
+   *
+   * A fresh session is minted rather than the token being rewritten, so the
+   * old organization's session remains independently valid and revocable.
+   */
+  async switchOrganization(
+    principal: TenantPrincipal,
+    organizationId: string,
+    platform: 'WEB' | 'ANDROID' | 'IOS',
+    meta: RequestMetadata,
+  ): Promise<{ tokens: TokenPair; refreshToken: string; user: AuthenticatedUser }> {
+    const membership = await this.membershipCache.get(principal.userId, organizationId);
+
+    if (!membership || membership.membershipStatus !== 'ACTIVE') {
+      throw AppException.forbidden('You do not have access to that organization.');
+    }
+    if (membership.organizationStatus === 'SUSPENDED') throw AppException.organizationSuspended();
+    if (membership.userStatus === 'SUSPENDED') throw AppException.accountSuspended();
+
+    const session = await this.sessions.issue({
+      organizationId,
+      userId: principal.userId,
+      role: membership.role,
+      platform,
+      meta,
+    });
+
+    const user = await this.repository.findUserById(principal.userId);
+    if (!user) throw AppException.unauthorized();
+
+    await this.audit.record({
+      action: 'auth.organization.switched',
+      organizationId,
+      actorUserId: principal.userId,
+      entityType: 'organization',
+      entityId: organizationId,
+      ipAddress: meta.ipAddress,
+      userAgent: meta.userAgent,
+    });
+
+    return {
+      tokens: session.tokens,
+      refreshToken: session.refreshToken,
+      user: toAuthenticatedUser(membership, user),
+    };
   }
 
   async currentUser(principal: TenantPrincipal): Promise<AuthenticatedUser> {

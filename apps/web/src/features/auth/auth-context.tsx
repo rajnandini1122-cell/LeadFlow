@@ -21,6 +21,15 @@ interface AuthState {
   /** Set when the account belongs to several organizations and one must be picked. */
   pendingOrganizations: OrganizationSummary[] | null;
   login: (email: string, password: string, organizationId?: string) => Promise<LoginResponse>;
+  register: (input: {
+    organizationName: string;
+    firstName: string;
+    lastName: string;
+    email: string;
+    password: string;
+  }) => Promise<void>;
+  /** Switches tenant without re-entering credentials. Server validates membership. */
+  switchOrganization: (organizationId: string) => Promise<void>;
   logout: () => Promise<void>;
   can: (permission: Permission) => boolean;
 }
@@ -98,6 +107,40 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
     [],
   );
 
+  const register = useCallback(
+    async (input: {
+      organizationName: string;
+      firstName: string;
+      lastName: string;
+      email: string;
+      password: string;
+    }): Promise<void> => {
+      const result = await apiPost<RefreshResult>('/auth/register', {
+        ...input,
+        platform: 'WEB',
+      });
+
+      setAccessToken(result.tokens.accessToken);
+      applyOrganizationFormatting(result.user);
+      setUser(result.user);
+      setStatus('authenticated');
+    },
+    [],
+  );
+
+  const switchOrganization = useCallback(async (organizationId: string): Promise<void> => {
+    // The server re-reads membership; a foreign id is refused with 403 and no
+    // session is issued, so this is a selector rather than a claim.
+    const result = await apiPost<RefreshResult>('/auth/switch-organization', {
+      targetOrganizationId: organizationId,
+      platform: 'WEB',
+    });
+
+    setAccessToken(result.tokens.accessToken);
+    applyOrganizationFormatting(result.user);
+    setUser(result.user);
+  }, []);
+
   const logout = useCallback(async (): Promise<void> => {
     try {
       await apiPost('/auth/logout');
@@ -116,8 +159,8 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
   );
 
   const value = useMemo<AuthState>(
-    () => ({ user, status, pendingOrganizations, login, logout, can }),
-    [user, status, pendingOrganizations, login, logout, can],
+    () => ({ user, status, pendingOrganizations, login, register, switchOrganization, logout, can }),
+    [user, status, pendingOrganizations, login, register, switchOrganization, logout, can],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

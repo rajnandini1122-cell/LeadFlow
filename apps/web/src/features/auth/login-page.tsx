@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react';
-import { Navigate } from 'react-router-dom';
+import { Link, Navigate } from 'react-router-dom';
 import type { OrganizationSummary } from '@leadflow/api-types';
 import { ApiError } from '../../lib/api-client';
 import { useAuth } from './auth-context';
@@ -79,6 +79,18 @@ export function LoginPage(): React.JSX.Element {
               >
                 {submitting ? 'Signing in…' : 'Sign in'}
               </button>
+              <p className="text-center text-sm text-slate-500">
+
+                New here?{' '}
+
+                <Link to="/register" className="font-medium text-slate-900 hover:underline">
+
+                  Create an organization
+
+                </Link>
+
+              </p>
+
             </form>
           )}
         </div>

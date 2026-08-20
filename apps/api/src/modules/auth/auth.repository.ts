@@ -17,7 +17,7 @@ export interface MembershipRecord {
   userId: string;
   role: RoleKey;
   permissions: Permission[];
-  membershipStatus: 'ACTIVE' | 'INVITED' | 'SUSPENDED';
+  membershipStatus: 'ACTIVE' | 'INVITED' | 'SUSPENDED' | 'REMOVED';
   userStatus: 'ACTIVE' | 'INVITED' | 'SUSPENDED';
 }
 

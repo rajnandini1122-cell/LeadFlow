@@ -55,6 +55,9 @@ enum MembershipStatus {
   ACTIVE
   INVITED
   SUSPENDED
+  /// Soft removal. The row is retained so leads and activities keep a valid
+  /// assignee and sales history stays intact; access is refused by the guard.
+  REMOVED
 
   @@map("membership_status")
 }
@@ -224,8 +227,14 @@ model OrganizationUser {
   /// Single-use, SHA-256 hashed. Raw invite token is never stored.
   inviteTokenHash String?   @unique @map("invite_token_hash") @db.VarChar(64)
   inviteExpiresAt DateTime? @map("invite_expires_at") @db.Timestamptz(6)
+  /// Set once, when the token is consumed. Non-null means the token is spent.
+  inviteAcceptedAt DateTime? @map("invite_accepted_at") @db.Timestamptz(6)
+  /// Set when an admin revokes a pending invitation.
+  inviteRevokedAt  DateTime? @map("invite_revoked_at") @db.Timestamptz(6)
   invitedById     String?   @map("invited_by") @db.Uuid
   joinedAt        DateTime? @map("joined_at") @db.Timestamptz(6)
+  /// Soft removal timestamp. Paired with status = REMOVED.
+  removedAt       DateTime? @map("removed_at") @db.Timestamptz(6)
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -238,6 +247,8 @@ model OrganizationUser {
   @@unique([organizationId, userId])
   @@index([userId])
   @@index([organizationId, status])
+  /// Supports sweeping expired invitations without scanning the table.
+  @@index([inviteExpiresAt])
   @@map("organization_users")
 }
 

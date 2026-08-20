@@ -1,8 +1,11 @@
-import { Body, Controller, Get, Patch } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, HttpStatus, Patch, Post } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { PERMISSIONS, type OrganizationDetail } from '@leadflow/api-types';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { OrganizationsService } from './organizations.service';
+import { UsersService } from '../users/users.service';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
 import { UpdateOrganizationDto } from './dto/organizations.dto';
 
 /**
@@ -13,7 +16,10 @@ import { UpdateOrganizationDto } from './dto/organizations.dto';
 @ApiTags('organizations')
 @Controller('organizations')
 export class OrganizationsController {
-  constructor(private readonly organizations: OrganizationsService) {}
+  constructor(
+    private readonly organizations: OrganizationsService,
+    private readonly users: UsersService,
+  ) {}
 
   @Get('current')
   @RequirePermissions(PERMISSIONS.ORG_VIEW)
@@ -27,5 +33,16 @@ export class OrganizationsController {
   @ApiOperation({ summary: 'Update organization profile and follow-up settings' })
   async update(@Body() dto: UpdateOrganizationDto): Promise<OrganizationDetail> {
     return this.organizations.update(dto);
+  }
+  @Post('leave')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({
+    summary: 'Leave the current organization',
+    description:
+      'Refused for the last active owner, which would leave the organization ' +
+      'unadministrable. Memberships in other organizations are unaffected.',
+  })
+  async leave(@CurrentUser() principal: TenantPrincipal): Promise<void> {
+    await this.users.leave(principal);
   }
 }

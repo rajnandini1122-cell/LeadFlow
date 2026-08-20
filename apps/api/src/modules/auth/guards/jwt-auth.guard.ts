@@ -53,11 +53,19 @@ export class JwtAuthGuard implements CanActivate {
     const claims = await this.tokens.verifyAccessToken(token);
 
     const membership = await this.membershipCache.get(claims.sub, claims.org);
-    if (!membership || membership.membershipStatus !== 'ACTIVE') {
-      // Covers both "removed from the organization" and "token names an
-      // organization the user was never in".
+
+    // No membership at all, or one that has been REMOVED: the token names an
+    // organization this user is not in. 401 — the credential itself no longer
+    // identifies anyone here.
+    if (!membership || membership.membershipStatus === 'REMOVED') {
       throw AppException.unauthorized();
     }
+
+    // Suspended is different from removed: the person is still a member, and
+    // 403 tells them (and support) that access was withdrawn rather than that
+    // their session broke.
+    if (membership.membershipStatus === 'SUSPENDED') throw AppException.accountSuspended();
+    if (membership.membershipStatus !== 'ACTIVE') throw AppException.unauthorized();
     if (membership.userStatus === 'SUSPENDED') throw AppException.accountSuspended();
     if (membership.organizationStatus === 'SUSPENDED') throw AppException.organizationSuspended();
 
