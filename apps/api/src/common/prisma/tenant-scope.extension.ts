@@ -160,7 +160,7 @@ export function createTenantScopeExtension(source: TenantScopeSource) {
   const applyTenantScope = createTenantScopeHandler(source);
 
   return Prisma.defineExtension({
-    name: 'idea001-tenant-scope',
+    name: 'leadflow-tenant-scope',
     query: {
       $allModels: {
         async $allOperations({ model, operation, args, query }) {

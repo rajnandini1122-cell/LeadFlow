@@ -1,8 +1,8 @@
 import { SetMetadata } from '@nestjs/common';
-import type { Permission, RoleKey } from '@idea001/api-types';
+import type { Permission, RoleKey } from '@leadflow/api-types';
 
-export const PERMISSIONS_KEY = 'idea001:permissions';
-export const ROLES_KEY = 'idea001:roles';
+export const PERMISSIONS_KEY = 'leadflow:permissions';
+export const ROLES_KEY = 'leadflow:roles';
 
 /**
  * Requires every listed permission.

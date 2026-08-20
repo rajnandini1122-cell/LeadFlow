@@ -1,8 +1,8 @@
 {
-  "name": "idea001",
+  "name": "leadflow",
   "version": "0.1.0",
   "private": true,
-  "description": "IDEA001 — WhatsApp-First Sales CRM for Indian SMEs",
+  "description": "LeadFlow — simple lead management and follow-up for growing teams",
   "engines": {
     "node": ">=22.0.0"
   },

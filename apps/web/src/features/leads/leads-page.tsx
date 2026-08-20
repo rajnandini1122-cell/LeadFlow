@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { LEAD_STATUSES, type LeadStatus } from '@idea001/api-types';
+import { LEAD_STATUSES, type LeadStatus } from '@leadflow/api-types';
 import { formatCurrency, formatCurrencyCompact, formatDate, formatDueDate, humanise } from '../../lib/format';
 import {
   Avatar,

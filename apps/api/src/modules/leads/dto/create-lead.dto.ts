@@ -19,7 +19,7 @@ import {
   LEAD_STATUSES,
   type LeadPriority,
   type LeadStatus,
-} from '@idea001/api-types';
+} from '@leadflow/api-types';
 
 /**
  * Note what is NOT here: `organizationId`, `leadNumber`, `createdBy`.
@@ -43,15 +43,16 @@ export class CreateLeadDto {
   lastName?: string;
 
   /**
-   * Indian mobile: 10 digits starting 6-9, optionally +91 prefixed.
-   * Normalised to the bare 10 digits so duplicate detection compares like
-   * with like — "+91 98200 11001" and "9820011001" are the same customer.
+   * Raw phone input, in whatever form the user typed it.
+   *
+   * Normalised to E.164 by the service using the ORGANIZATION's country, not
+   * a hardcoded region — the same national number means different people in
+   * different countries. Validation is intentionally loose here and strict
+   * there, because only the service knows the tenant.
    */
   @IsString()
-  @Transform(({ value }) =>
-    typeof value === 'string' ? value.replace(/\D/g, '').slice(-10) : value,
-  )
-  @Matches(/^[6-9]\d{9}$/, { message: 'must be a valid 10-digit Indian mobile number' })
+  @MaxLength(32)
+  @Matches(/[0-9]/, { message: 'must contain digits' })
   mobile!: string;
 
   @IsOptional()

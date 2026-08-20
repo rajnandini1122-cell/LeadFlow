@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { ClsService, type ClsStore } from 'nestjs-cls';
-import type { Permission, RoleKey } from '@idea001/api-types';
+import type { Permission, RoleKey } from '@leadflow/api-types';
 import { TenantContextMissingError } from './tenancy.errors';
 
 /**

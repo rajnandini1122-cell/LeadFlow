@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import type { LeadPriority, LeadStatus } from '@idea001/api-types';
+import type { LeadPriority, LeadStatus } from '@leadflow/api-types';
 import { humanise, initials } from '../lib/format';
 
 /**

@@ -20,7 +20,7 @@ export default defineConfig({
       // page. Pointing at the source fixes both, mirrors the path mapping
       // already in tsconfig.json, removes the need to build api-types before
       // starting the dev server, and gives HMR on shared types.
-      '@idea001/api-types': fileURLToPath(
+      '@leadflow/api-types': fileURLToPath(
         new URL('../../packages/api-types/src/index.ts', import.meta.url),
       ),
     },

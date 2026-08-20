@@ -57,6 +57,10 @@ export interface AuthenticatedUser {
     slug: string;
     timezone: string;
     currency: string;
+    /** BCP 47 — drives all client-side number and date formatting. */
+    locale: string;
+    /** ISO 3166-1 alpha-2 — default dialling region for phone entry. */
+    country: string;
     status: OrganizationStatus;
   };
   role: RoleKey;
@@ -120,6 +124,8 @@ export interface OrganizationDetail {
   slug: string;
   timezone: string;
   currency: string;
+  locale: string;
+  country: string;
   status: OrganizationStatus;
   settings: OrganizationSettings;
   createdAt: string;
@@ -136,6 +142,8 @@ export interface OrganizationSettings {
   escalateToManager: boolean;
   workingHoursStart: string;
   workingHoursEnd: string;
+  /** Tenant-defined lead sources; empty means use the neutral built-in list. */
+  leadSources: string[];
 }
 
 export interface UpdateOrganizationRequest {

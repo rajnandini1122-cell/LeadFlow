@@ -11,7 +11,7 @@ import {
 import { SkipThrottle } from '@nestjs/throttler';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { Request, Response } from 'express';
-import type { AuthenticatedUser, LoginResponse, TokenPair } from '@idea001/api-types';
+import type { AuthenticatedUser, LoginResponse, TokenPair } from '@leadflow/api-types';
 import { AppConfig } from '../../common/config/config.module';
 import { AppException } from '../../common/errors/app.exception';
 import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
@@ -21,7 +21,7 @@ import { Public } from './decorators/public.decorator';
 import { CurrentUser, TokenClaims } from './decorators/current-user.decorator';
 import type { AccessTokenClaims } from './token.service';
 
-const REFRESH_COOKIE = 'idea001_rt';
+const REFRESH_COOKIE = 'leadflow_rt';
 
 /**
  * Credential endpoints are governed by the strict `auth` throttler rather than

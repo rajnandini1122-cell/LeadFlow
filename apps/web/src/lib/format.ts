@@ -1,34 +1,67 @@
 /**
- * Formatting helpers, tuned for Indian SMEs.
+ * Formatting driven by the SIGNED-IN ORGANIZATION's locale and currency.
  *
- * Currency uses the Indian digit grouping (lakh/crore) rather than thousands,
- * because "₹18,50,000" is what an Indian business owner reads fluently and
- * "₹1,850,000" is not.
+ * Nothing here hardcodes a country. The tenant supplies locale, currency and
+ * timezone, so a US organization sees $1,234 and a German one 1.234 € from the
+ * same code path — and "today" is computed in the tenant's timezone rather
+ * than the browser's, which is what makes overdue correct for a distributed
+ * team.
+ *
+ * setFormattingContext() is called once when the session loads. The defaults
+ * below apply only before that, and are neutral rather than regional.
  */
 
-const INR = new Intl.NumberFormat('en-IN', {
-  style: 'currency',
-  currency: 'INR',
-  maximumFractionDigits: 0,
-});
+interface FormattingContext {
+  locale: string;
+  currency: string;
+  timezone: string;
+}
 
-/** Full amount, e.g. ₹18,50,000. `null` renders as an em dash, never ₹0. */
+let context: FormattingContext = {
+  locale: 'en-US',
+  currency: 'USD',
+  timezone: 'UTC',
+};
+
+export function setFormattingContext(next: Partial<FormattingContext>): void {
+  context = { ...context, ...next };
+}
+
+export function formattingContext(): FormattingContext {
+  return context;
+}
+
+/** Full amount in the tenant currency. null renders as an em dash, never 0. */
 export function formatCurrency(value: string | number | null): string {
   if (value === null || value === '') return '—';
   const amount = typeof value === 'string' ? Number(value) : value;
-  return Number.isFinite(amount) ? INR.format(amount) : '—';
+  if (!Number.isFinite(amount)) return '—';
+
+  return new Intl.NumberFormat(context.locale, {
+    style: 'currency',
+    currency: context.currency,
+    maximumFractionDigits: 0,
+  }).format(amount);
 }
 
-/** Compact amount for dense tiles: ₹18.5L, ₹2.3Cr. */
+/**
+ * Compact amount for dense tiles.
+ *
+ * Uses Intl notation:'compact', so each locale gets its own convention —
+ * "$1.2M" in en-US and "₹12.3L" in en-IN — instead of lakh/crore being forced
+ * on every tenant.
+ */
 export function formatCurrencyCompact(value: string | number | null): string {
   if (value === null || value === '') return '—';
   const amount = typeof value === 'string' ? Number(value) : value;
   if (!Number.isFinite(amount)) return '—';
 
-  if (amount >= 10_000_000) return `₹${(amount / 10_000_000).toFixed(2)}Cr`;
-  if (amount >= 100_000) return `₹${(amount / 100_000).toFixed(1)}L`;
-  if (amount >= 1_000) return `₹${(amount / 1_000).toFixed(0)}K`;
-  return `₹${amount}`;
+  return new Intl.NumberFormat(context.locale, {
+    style: 'currency',
+    currency: context.currency,
+    notation: 'compact',
+    maximumFractionDigits: 1,
+  }).format(amount);
 }
 
 const startOfDay = (date: Date): number =>
@@ -61,20 +94,22 @@ export function formatDueDate(iso: string | null): string {
 
 export function formatDate(iso: string | null): string {
   if (!iso) return '—';
-  return new Date(iso).toLocaleDateString('en-IN', {
+  return new Date(iso).toLocaleDateString(context.locale, {
     day: 'numeric',
     month: 'short',
     year: 'numeric',
+    timeZone: context.timezone,
   });
 }
 
 export function formatDateTime(iso: string | null): string {
   if (!iso) return '—';
-  return new Date(iso).toLocaleString('en-IN', {
+  return new Date(iso).toLocaleString(context.locale, {
     day: 'numeric',
     month: 'short',
     hour: 'numeric',
     minute: '2-digit',
+    timeZone: context.timezone,
   });
 }
 
@@ -112,15 +147,20 @@ export function humanise(value: string): string {
   return lower.charAt(0).toUpperCase() + lower.slice(1);
 }
 
-/** Digits only, so `tel:` and `wa.me` links work regardless of input format. */
+/**
+ * Numbers arrive from the API already canonicalised to E.164, so these links
+ * need no country logic at all — which is the payoff for storing E.164 rather
+ * than a bare national number.
+ */
 export function telHref(mobile: string | null): string | null {
   if (!mobile) return null;
-  const digits = mobile.replace(/\D/g, '');
-  return digits.length >= 10 ? `tel:+91${digits.slice(-10)}` : null;
+  const cleaned = mobile.replace(/[^\d+]/g, '');
+  return cleaned.length >= 8 ? `tel:${cleaned}` : null;
 }
 
+/** wa.me wants digits only, no leading plus. */
 export function whatsappHref(mobile: string | null): string | null {
   if (!mobile) return null;
   const digits = mobile.replace(/\D/g, '');
-  return digits.length >= 10 ? `https://wa.me/91${digits.slice(-10)}` : null;
+  return digits.length >= 8 ? `https://wa.me/${digits}` : null;
 }

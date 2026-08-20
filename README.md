@@ -1,4 +1,4 @@
-# IDEA001 — WhatsApp-First Sales CRM for Indian SMEs
+# LeadFlow — WhatsApp-First Sales CRM for Indian SMEs
 
 **No lead left behind.**
 

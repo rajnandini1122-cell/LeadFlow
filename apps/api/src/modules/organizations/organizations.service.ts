@@ -3,7 +3,7 @@ import type {
   OrganizationDetail,
   OrganizationSettings,
   OrganizationStatus,
-} from '@idea001/api-types';
+} from '@leadflow/api-types';
 import { AppException } from '../../common/errors/app.exception';
 import { AUDIT_ACTIONS, AuditRepository } from '../../common/audit/audit.repository';
 import { OrganizationsRepository } from './organizations.repository';
@@ -16,6 +16,7 @@ const DEFAULT_SETTINGS: OrganizationSettings = {
   escalateToManager: false,
   workingHoursStart: '09:30',
   workingHoursEnd: '18:30',
+  leadSources: [],
 };
 
 @Injectable()
@@ -56,6 +57,8 @@ type OrganizationRow = {
   slug: string;
   timezone: string;
   currency: string;
+  locale: string;
+  country: string;
   status: string;
   createdAt: Date;
   settings: {
@@ -64,6 +67,7 @@ type OrganizationRow = {
     escalateToManager: boolean;
     workingHoursStart: string;
     workingHoursEnd: string;
+    leadSources: string[];
   } | null;
 };
 
@@ -74,6 +78,8 @@ function toDetail(organization: OrganizationRow): OrganizationDetail {
     slug: organization.slug,
     timezone: organization.timezone,
     currency: organization.currency,
+    locale: organization.locale,
+    country: organization.country,
     status: organization.status as OrganizationStatus,
     createdAt: organization.createdAt.toISOString(),
     settings: organization.settings
@@ -83,6 +89,7 @@ function toDetail(organization: OrganizationRow): OrganizationDetail {
           escalateToManager: organization.settings.escalateToManager,
           workingHoursStart: organization.settings.workingHoursStart,
           workingHoursEnd: organization.settings.workingHoursEnd,
+          leadSources: organization.settings.leadSources,
         }
       : DEFAULT_SETTINGS,
   };

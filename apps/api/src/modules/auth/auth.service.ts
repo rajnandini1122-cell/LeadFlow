@@ -5,7 +5,7 @@ import type {
   LoginResponse,
   OrganizationSummary,
   TokenPair,
-} from '@idea001/api-types';
+} from '@leadflow/api-types';
 import { AppException } from '../../common/errors/app.exception';
 import { AUDIT_ACTIONS, AuditRepository } from '../../common/audit/audit.repository';
 import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
@@ -321,6 +321,8 @@ function toAuthenticatedUser(
       slug: membership.organizationSlug,
       timezone: membership.organizationTimezone,
       currency: membership.organizationCurrency,
+      locale: membership.organizationLocale,
+      country: membership.organizationCountry,
       status: membership.organizationStatus,
     },
     role: membership.role,

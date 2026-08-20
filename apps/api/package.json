@@ -1,8 +1,8 @@
 {
-  "name": "@idea001/api",
+  "name": "@leadflow/api",
   "version": "0.1.0",
   "private": true,
-  "description": "IDEA001 backend — modular monolith (HTTP + worker entrypoints)",
+  "description": "LeadFlow backend — modular monolith (HTTP + worker entrypoints)",
   "scripts": {
     "prebuild": "rimraf dist",
     "build": "npm run db:generate && nest build",
@@ -25,7 +25,7 @@
     "db:reset": "prisma migrate reset --force"
   },
   "dependencies": {
-    "@idea001/api-types": "0.1.0",
+    "@leadflow/api-types": "0.1.0",
     "@nestjs/common": "11.2.1",
     "@nestjs/config": "4.0.4",
     "@nestjs/core": "11.2.1",

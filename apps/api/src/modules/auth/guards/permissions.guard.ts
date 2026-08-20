@@ -1,6 +1,6 @@
 import { Injectable, type CanActivate, type ExecutionContext } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import type { Permission, RoleKey } from '@idea001/api-types';
+import type { Permission, RoleKey } from '@leadflow/api-types';
 import { AppException } from '../../../common/errors/app.exception';
 import { TenantContextService } from '../../../common/tenancy/tenant-context.service';
 import { PERMISSIONS_KEY, ROLES_KEY } from '../decorators/permissions.decorator';

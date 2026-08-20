@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
-import { PERMISSIONS, type Permission } from '@idea001/api-types';
+import { PERMISSIONS, type Permission } from '@leadflow/api-types';
 import { useAuth } from '../features/auth/auth-context';
 import { useLeads, bucketLeads } from '../features/leads/use-leads';
 import { Avatar } from './ui';
@@ -56,7 +56,7 @@ export function AppShell(): React.JSX.Element {
             I
           </span>
           <div className="min-w-0">
-            <p className="truncate text-sm font-semibold text-slate-900">IDEA001</p>
+            <p className="truncate text-sm font-semibold text-slate-900">LeadFlow</p>
             <p className="truncate text-[11px] text-slate-400">No lead left behind</p>
           </div>
         </div>

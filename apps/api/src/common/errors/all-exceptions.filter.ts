@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { ThrottlerException } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
-import { ERROR_CODES, type ErrorCode, type ErrorResponse } from '@idea001/api-types';
+import { ERROR_CODES, type ErrorCode, type ErrorResponse } from '@leadflow/api-types';
 import { AppException } from './app.exception';
 import { TenantContextMissingError } from '../tenancy/tenancy.errors';
 

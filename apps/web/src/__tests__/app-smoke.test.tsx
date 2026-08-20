@@ -42,7 +42,7 @@ describe('App smoke test', () => {
     // A blank page passes any "did it throw?" check but fails this one.
     await waitFor(
       () => {
-        expect(screen.getByRole('heading', { name: 'IDEA001' })).toBeInTheDocument();
+        expect(screen.getByRole('heading', { name: 'LeadFlow' })).toBeInTheDocument();
       },
       { timeout: 5000 },
     );

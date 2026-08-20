@@ -47,7 +47,7 @@ export class PasswordService {
   /** Burns equivalent CPU time so an unknown email is timing-indistinguishable. */
   async verifyDummy(plain: string): Promise<false> {
     this.dummyHash ??= await argon2.hash(
-      'idea001-nonexistent-account-placeholder',
+      'leadflow-nonexistent-account-placeholder',
       this.options,
     );
     await this.verify(this.dummyHash, plain);

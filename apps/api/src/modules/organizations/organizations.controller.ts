@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Patch } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { PERMISSIONS, type OrganizationDetail } from '@idea001/api-types';
+import { PERMISSIONS, type OrganizationDetail } from '@leadflow/api-types';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { OrganizationsService } from './organizations.service';
 import { UpdateOrganizationDto } from './dto/organizations.dto';

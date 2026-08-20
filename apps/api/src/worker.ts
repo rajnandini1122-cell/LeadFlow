@@ -25,7 +25,7 @@ async function bootstrap(): Promise<void> {
   app.enableShutdownHooks();
 
   const logger = app.get(Logger);
-  logger.log('IDEA001 worker started — no queue processors registered until Phase 6');
+  logger.log('LeadFlow worker started — no queue processors registered until Phase 6');
 
   const shutdown = async (signal: string): Promise<void> => {
     logger.log(`Received ${signal}, shutting down worker`);

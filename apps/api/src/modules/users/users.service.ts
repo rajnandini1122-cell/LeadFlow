@@ -5,7 +5,7 @@ import type {
   RoleKey,
   UserListItem,
   UserStatus,
-} from '@idea001/api-types';
+} from '@leadflow/api-types';
 import { AppConfig } from '../../common/config/config.module';
 import { AppException } from '../../common/errors/app.exception';
 import { AUDIT_ACTIONS, AuditRepository } from '../../common/audit/audit.repository';
@@ -89,13 +89,37 @@ export class UsersService {
     const before = await this.repository.findMember(userId);
     if (!before) throw AppException.userNotFound();
 
-    // An owner demoting themselves could leave the organization with no owner
-    // at all, which is unrecoverable without support intervention.
     if (userId === principal.userId && dto.role && dto.role !== principal.role) {
       throw AppException.forbidden('You cannot change your own role.');
     }
     if (userId === principal.userId && dto.status === 'SUSPENDED') {
       throw AppException.forbidden('You cannot suspend your own account.');
+    }
+
+    // Only an owner may create or remove another owner. Without this an admin
+    // could promote themselves and take over the organization.
+    const grantingOwner = dto.role === 'OWNER';
+    const removingOwner = before.role.key === 'OWNER' && dto.role && dto.role !== 'OWNER';
+
+    if ((grantingOwner || removingOwner) && principal.role !== 'OWNER') {
+      throw AppException.forbidden('Only an owner can change owner access.');
+    }
+
+    // An organization with no active owner is unrecoverable without support
+    // intervention, so the last one cannot be demoted or suspended — by anyone,
+    // including themselves.
+    const losingOwner =
+      before.role.key === 'OWNER' &&
+      before.status === 'ACTIVE' &&
+      ((dto.role !== undefined && dto.role !== 'OWNER') || dto.status === 'SUSPENDED');
+
+    if (losingOwner) {
+      const owners = await this.repository.countActiveOwners();
+      if (owners <= 1) {
+        throw AppException.forbidden(
+          'This is the last active owner. Promote another owner first.',
+        );
+      }
     }
 
     const roleId = dto.role ? (await this.repository.findRoleByKey(dto.role))?.id : undefined;

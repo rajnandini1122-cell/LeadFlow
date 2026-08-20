@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { RoleKey, UserStatus } from '@idea001/api-types';
+import type { RoleKey, UserStatus } from '@leadflow/api-types';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { TenantContextService } from '../../common/tenancy/tenant-context.service';
 
@@ -122,6 +122,13 @@ export class UsersRepository {
       });
 
       return { user, membership };
+    });
+  }
+
+  /** Active OWNER memberships in this organization. Tenant-scoped. */
+  async countActiveOwners(): Promise<number> {
+    return this.prisma.client.organizationUser.count({
+      where: { status: 'ACTIVE', role: { key: 'OWNER' } },
     });
   }
 

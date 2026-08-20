@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { uuidv7 } from '../../common/utils/uuid';
-import type { RoleKey } from '@idea001/api-types';
+import type { RoleKey } from '@leadflow/api-types';
 import { AppConfig } from '../../common/config/config.module';
 import { RedisService } from '../../common/redis/redis.service';
 import { AppException } from '../../common/errors/app.exception';

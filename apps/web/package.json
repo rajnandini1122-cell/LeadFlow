@@ -1,9 +1,9 @@
 {
-  "name": "@idea001/web",
+  "name": "@leadflow/web",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "IDEA001 web management console — owners, admins and managers",
+  "description": "LeadFlow web management console — owners, admins and managers",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
@@ -13,7 +13,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@idea001/api-types": "0.1.0",
+    "@leadflow/api-types": "0.1.0",
     "@tanstack/react-query": "5.101.4",
     "axios": "1.19.0",
     "react": "19.2.8",

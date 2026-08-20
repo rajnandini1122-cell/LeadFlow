@@ -56,7 +56,7 @@ async function bootstrap(): Promise<void> {
     const document = SwaggerModule.createDocument(
       app,
       new DocumentBuilder()
-        .setTitle('IDEA001 API')
+        .setTitle('LeadFlow API')
         .setDescription('WhatsApp-first sales CRM for Indian SMEs')
         .setVersion('1.0')
         .addBearerAuth()
@@ -72,7 +72,7 @@ async function bootstrap(): Promise<void> {
   await app.listen(port);
 
   const logger = app.get(Logger);
-  logger.log(`IDEA001 API listening on :${port} [${config.get('NODE_ENV')}]`);
+  logger.log(`LeadFlow API listening on :${port} [${config.get('NODE_ENV')}]`);
   if (!config.isProduction) logger.log(`API docs at http://localhost:${port}/api/docs`);
 }
 

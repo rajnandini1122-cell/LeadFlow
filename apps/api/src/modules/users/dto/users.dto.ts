@@ -1,6 +1,6 @@
 import { IsEmail, IsIn, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 import { Transform } from 'class-transformer';
-import { ROLE_KEYS, USER_STATUSES, type RoleKey, type UserStatus } from '@idea001/api-types';
+import { ROLE_KEYS, USER_STATUSES, type RoleKey, type UserStatus } from '@leadflow/api-types';
 
 export class InviteUserDto {
   @IsEmail({}, { message: 'must be a valid email address' })

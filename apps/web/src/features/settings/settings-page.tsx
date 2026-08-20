@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { OrganizationDetail } from '@idea001/api-types';
+import type { OrganizationDetail } from '@leadflow/api-types';
 import { ApiError, apiGet, apiPatch } from '../../lib/api-client';
 import { formatDate } from '../../lib/format';
 import {

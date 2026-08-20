@@ -22,7 +22,7 @@
 
     "paths": {
       "@/*": ["./src/*"],
-      "@idea001/api-types": ["../../packages/api-types/src/index.ts"]
+      "@leadflow/api-types": ["../../packages/api-types/src/index.ts"]
     },
     "baseUrl": "."
   },

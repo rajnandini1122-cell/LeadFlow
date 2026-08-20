@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import type { UserListItem } from '@idea001/api-types';
+import type { UserListItem } from '@leadflow/api-types';
 import { apiGet } from '../../lib/api-client';
 import { formatCurrencyCompact, formatDate, formatRelative } from '../../lib/format';
 import {

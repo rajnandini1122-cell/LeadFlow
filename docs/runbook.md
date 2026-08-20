@@ -145,6 +145,6 @@ browser loads dependencies as native ES modules and cannot read named exports
 from a CommonJS build. `vite build` hides this, because Rollup converts CJS
 during bundling — so the production build stays green while `npm run dev` serves
 a blank page with a console `SyntaxError`. `apps/web/vite.config.ts` aliases
-`@idea001/api-types` to its TypeScript source to prevent it. The Vitest smoke
+`@leadflow/api-types` to its TypeScript source to prevent it. The Vitest smoke
 test does NOT catch this class of failure (Vitest performs CJS interop); load
 the page in a real browser once after touching module resolution.

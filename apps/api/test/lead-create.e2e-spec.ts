@@ -1,4 +1,4 @@
-import { ERROR_CODES } from '@idea001/api-types';
+import { ERROR_CODES } from '@leadflow/api-types';
 import { createTestContext, type TestContext } from './helpers/test-app';
 
 /**
@@ -11,9 +11,9 @@ describe('Lead creation', () => {
 
   const auth = (token: string) => ({ Authorization: `Bearer ${token}` });
 
-  /** Unique per run so repeated suites do not collide on the mobile index. */
+  /** Unique per call, and valid as a US national number for the test tenants. */
   const uniqueMobile = (): string =>
-    `9${String(Math.floor(100000000 + Math.random() * 899999999))}`;
+    `415${String(Math.floor(1000000 + Math.random() * 8999999))}`;
 
   const tomorrow = (): string => new Date(Date.now() + 86_400_000).toISOString();
 
@@ -84,17 +84,29 @@ describe('Lead creation', () => {
       expect(types).toContain('LEAD_ASSIGNED');
     });
 
-    it('normalises a +91-prefixed, space-separated mobile', async () => {
-      const digits = uniqueMobile();
+    it('stores the mobile in E.164 regardless of how it was typed', async () => {
       const response = await ctx
         .http()
         .post('/api/v1/leads')
         .set(auth(ctx.orgA.owner.accessToken))
-        .send({ ...validLead(), mobile: `+91 ${digits.slice(0, 5)} ${digits.slice(5)}` })
+        .send({ ...validLead(), mobile: '+1 (415) 555-0142' })
         .expect(201);
 
-      // Stored bare, so duplicate detection compares like with like.
-      expect(response.body.data.mobile).toBe(digits);
+      // Canonical form, so the same customer typed two ways is one record.
+      expect(response.body.data.mobile).toBe('+14155550142');
+    });
+
+    it('applies the ORGANIZATION country to a local-format number', async () => {
+      // The seeded test organizations default to US, so a bare national number
+      // resolves with +1 rather than a hardcoded region.
+      const response = await ctx
+        .http()
+        .post('/api/v1/leads')
+        .set(auth(ctx.orgA.owner.accessToken))
+        .send({ ...validLead(), mobile: '4155550188' })
+        .expect(201);
+
+      expect(response.body.data.mobile).toBe('+14155550188');
     });
 
     it('gives each new lead a distinct sequential number', async () => {

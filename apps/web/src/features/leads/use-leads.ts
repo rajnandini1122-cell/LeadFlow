@@ -1,5 +1,5 @@
 import { useQuery, type UseQueryResult } from '@tanstack/react-query';
-import type { LeadPriority, LeadStatus, Paginated } from '@idea001/api-types';
+import type { LeadPriority, LeadStatus, Paginated } from '@leadflow/api-types';
 import { apiGet } from '../../lib/api-client';
 import { daysUntil } from '../../lib/format';
 

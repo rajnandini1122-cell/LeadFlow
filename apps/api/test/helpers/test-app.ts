@@ -9,7 +9,7 @@ import {
   ROLE_KEYS,
   ROLE_PERMISSION_MATRIX,
   type RoleKey,
-} from '@idea001/api-types';
+} from '@leadflow/api-types';
 import { AppModule } from '../../src/app.module';
 import { RedisService } from '../../src/common/redis/redis.service';
 import { PrismaClient } from '../../src/generated/prisma/client';

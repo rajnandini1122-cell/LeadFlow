@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { LeadPriority, LeadStatus } from '@idea001/api-types';
+import type { LeadPriority, LeadStatus } from '@leadflow/api-types';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { TenantContextService } from '../../common/tenancy/tenant-context.service';
 
@@ -31,10 +31,17 @@ export class LeadsRepository {
     search?: string | undefined;
     cursor?: string | undefined;
     limit: number;
+    /**
+     * Owner restriction derived from the caller's permissions. Applied AFTER
+     * the caller-supplied assignedToId filter so a rep cannot widen their own
+     * visibility by passing someone else's id in the query string.
+     */
+    restrictToUserId?: string | undefined;
   }) {
     const where: Record<string, unknown> = { deletedAt: null };
     if (filters.status) where['status'] = filters.status;
     if (filters.assignedToId) where['assignedToId'] = filters.assignedToId;
+    if (filters.restrictToUserId) where['assignedToId'] = filters.restrictToUserId;
 
     if (filters.search) {
       where['OR'] = [
@@ -64,9 +71,13 @@ export class LeadsRepository {
    * foreign id whereas findUniqueOrThrow would raise a distinguishable error.
    * Null lets the service produce a plain 404 that leaks nothing.
    */
-  async findById(id: string) {
+  async findById(id: string, restrictToUserId?: string) {
     return this.prisma.client.lead.findFirst({
-      where: { id, deletedAt: null },
+      where: {
+        id,
+        deletedAt: null,
+        ...(restrictToUserId ? { assignedToId: restrictToUserId } : {}),
+      },
       include: {
         assignedTo: { select: { id: true, fullName: true } },
         assignedBy: { select: { id: true, fullName: true } },
@@ -211,6 +222,34 @@ export class LeadsRepository {
       // every other lead read, including the assignedTo relation.
       return created.id;
     });
+  }
+
+  /**
+   * The current organization's dialling country, for phone normalisation.
+   *
+   * Organization is tenant-scoped by the extension, so findFirst returns this
+   * tenant and no other.
+   */
+  async organizationCountry(): Promise<string> {
+    const organization = await this.prisma.client.organization.findFirst({
+      select: { country: true },
+    });
+    return organization?.country ?? 'US';
+  }
+
+  /**
+   * Confirms a user is an ACTIVE member of the current organization.
+   *
+   * Necessary because leads.assigned_to references the GLOBAL users table:
+   * nothing in the schema prevents assigning another organization's user, and
+   * the tenant extension cannot help because the id is valid, just foreign.
+   * This query goes through organizationUser, which IS tenant-scoped.
+   */
+  async isActiveMember(userId: string): Promise<boolean> {
+    const count = await this.prisma.client.organizationUser.count({
+      where: { userId, status: 'ACTIVE' },
+    });
+    return count > 0;
   }
 
   /**

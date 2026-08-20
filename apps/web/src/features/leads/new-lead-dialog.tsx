@@ -1,26 +1,31 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
+import type { OrganizationDetail } from '@leadflow/api-types';
 import {
   LEAD_PRIORITIES,
   LEAD_STATUSES,
   isTerminalLeadStatus,
   type LeadPriority,
   type LeadStatus,
-} from '@idea001/api-types';
+} from '@leadflow/api-types';
 import { ApiError, apiGet, apiPost } from '../../lib/api-client';
 import { humanise } from '../../lib/format';
 import type { LeadSummary } from './use-leads';
 
-const SOURCES = [
-  'WhatsApp',
-  'Referral',
-  'IndiaMART',
+/**
+ * Neutral fallback, used only when an organization has configured none of its
+ * own. Previously this was a fixed India-centric list baked into the client.
+ */
+const FALLBACK_SOURCES = [
   'Website',
-  'Walk-in',
-  'Trade Show',
-  'Cold Call',
-  'Instagram',
+  'Referral',
+  'Inbound call',
+  'Email',
+  'Trade show',
+  'Social media',
+  'Partner',
+  'Outbound',
   'Other',
 ];
 
@@ -54,7 +59,7 @@ export function NewLeadDialog({
   const [email, setEmail] = useState('');
   const [companyName, setCompanyName] = useState('');
   const [city, setCity] = useState('');
-  const [source, setSource] = useState('WhatsApp');
+  const [source, setSource] = useState('');
   const [productInterest, setProductInterest] = useState('');
   const [estimatedValue, setEstimatedValue] = useState('');
   const [status, setStatus] = useState<LeadStatus>('NEW');
@@ -63,6 +68,17 @@ export function NewLeadDialog({
   const [nextFollowUpAt, setNextFollowUpAt] = useState(defaultFollowUp());
 
   const [duplicate, setDuplicate] = useState<ExistingLead | null>(null);
+
+  const organization = useQuery({
+    queryKey: ['organization'],
+    queryFn: () => apiGet<OrganizationDetail>('/organizations/current'),
+    enabled: open,
+  });
+
+  const sources =
+    organization.data?.settings.leadSources.length
+      ? organization.data.settings.leadSources
+      : FALLBACK_SOURCES;
 
   const assignable = useQuery({
     queryKey: ['assignable-users'],
@@ -223,7 +239,7 @@ export function NewLeadDialog({
             <Field
               label="Mobile"
               required
-              hint="10 digits. Used to detect duplicates."
+              hint="Local or international format. Stored as E.164 and used to detect duplicates."
               error={fieldError('mobile')}
             >
               <input
@@ -231,7 +247,7 @@ export function NewLeadDialog({
                 onChange={(event) => setMobile(event.target.value)}
                 required
                 inputMode="tel"
-                placeholder="9820011001"
+                placeholder="Phone number"
                 className={inputClass}
               />
             </Field>
@@ -278,7 +294,8 @@ export function NewLeadDialog({
                 onChange={(event) => setSource(event.target.value)}
                 className={inputClass}
               >
-                {SOURCES.map((option) => (
+                <option value="">Not specified</option>
+                {sources.map((option) => (
                   <option key={option}>{option}</option>
                 ))}
               </select>

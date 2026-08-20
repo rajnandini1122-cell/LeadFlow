@@ -32,6 +32,23 @@ const csv = z
 
 export const envSchema = z
   .object({
+    // --- product identity ---------------------------------------------------
+    // Kept in configuration rather than in source so the same build can be
+    // rebranded per deployment without a code change.
+    PRODUCT_NAME: z.string().min(1).default('LeadFlow'),
+    PRODUCT_TAGLINE: z
+      .string()
+      .default('Simple lead management and follow-up for growing teams'),
+    PRODUCT_LOGO_URL: z.string().default(''),
+
+    // --- defaults for newly created organizations ---------------------------
+    // Fallbacks only. Each organization stores its own, and every
+    // tenant-visible figure is formatted from the tenant value, never these.
+    DEFAULT_TIMEZONE: z.string().default('UTC'),
+    DEFAULT_CURRENCY: z.string().length(3).default('USD'),
+    DEFAULT_LOCALE: z.string().default('en-US'),
+    DEFAULT_COUNTRY: z.string().length(2).default('US'),
+
     NODE_ENV: z.enum(['development', 'test', 'staging', 'production']).default('development'),
     PORT: z.coerce.number().int().positive().default(3000),
     API_BASE_URL: z.string().url().default('http://localhost:3000'),

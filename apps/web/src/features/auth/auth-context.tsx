@@ -5,9 +5,10 @@ import type {
   LoginResponse,
   OrganizationSummary,
   Permission,
-} from '@idea001/api-types';
-import type { TokenPair } from '@idea001/api-types';
+} from '@leadflow/api-types';
+import type { TokenPair } from '@leadflow/api-types';
 import { apiPost, setAccessToken, setSessionExpiredHandler } from '../../lib/api-client';
+import { setFormattingContext } from '../../lib/format';
 
 interface RefreshResult {
   tokens: TokenPair;
@@ -50,6 +51,7 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
 
         if (cancelled) return;
         setAccessToken(result.tokens.accessToken);
+        applyOrganizationFormatting(result.user);
         setUser(result.user);
         setStatus('authenticated');
       } catch {
@@ -88,7 +90,8 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
 
       setPendingOrganizations(null);
       setAccessToken(result.tokens.accessToken);
-      setUser(result.user);
+      applyOrganizationFormatting(result.user);
+        setUser(result.user);
       setStatus('authenticated');
       return result;
     },
@@ -118,6 +121,21 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+}
+
+/**
+ * Adopts the organization's locale, currency and timezone for all formatting.
+ *
+ * Called on every path that establishes a session, so switching between two
+ * organizations reformats every figure on screen rather than showing one
+ * tenant's numbers in another tenant's conventions.
+ */
+function applyOrganizationFormatting(user: AuthenticatedUser): void {
+  setFormattingContext({
+    locale: user.organization.locale,
+    currency: user.organization.currency,
+    timezone: user.organization.timezone,
+  });
 }
 
 export function useAuth(): AuthState {

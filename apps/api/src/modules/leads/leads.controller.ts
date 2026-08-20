@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Query } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { PERMISSIONS, type Paginated } from '@idea001/api-types';
+import { PERMISSIONS, type Paginated } from '@leadflow/api-types';
 import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
@@ -22,9 +22,18 @@ export class LeadsController {
 
   @Get()
   @RequirePermissions(PERMISSIONS.LEAD_VIEW_OWN)
-  @ApiOperation({ summary: 'List leads in the current organization' })
-  async list(@Query() dto: ListLeadsDto): Promise<Paginated<LeadSummary>> {
-    return this.leads.list(dto);
+  @ApiOperation({
+    summary: 'List leads visible to the caller',
+    description:
+      'A holder of lead.view.own sees only their own leads; lead.view.team and ' +
+      'lead.view.all widen this. The scope is derived server-side and cannot be ' +
+      'broadened by query parameters.',
+  })
+  async list(
+    @Query() dto: ListLeadsDto,
+    @CurrentUser() principal: TenantPrincipal,
+  ): Promise<Paginated<LeadSummary>> {
+    return this.leads.list(dto, principal);
   }
 
   /**
@@ -57,7 +66,10 @@ export class LeadsController {
   @Get(':id')
   @RequirePermissions(PERMISSIONS.LEAD_VIEW_OWN)
   @ApiOperation({ summary: 'Get one lead with its activity timeline' })
-  async findOne(@Param('id', new ParseUUIDPipe({ version: '7' })) id: string) {
-    return this.leads.findOne(id);
+  async findOne(
+    @Param('id', new ParseUUIDPipe({ version: '7' })) id: string,
+    @CurrentUser() principal: TenantPrincipal,
+  ) {
+    return this.leads.findOne(id, principal);
   }
 }

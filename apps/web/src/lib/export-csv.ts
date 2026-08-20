@@ -53,8 +53,8 @@ export function downloadCsv(filename: string, csv: string): void {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-/** e.g. idea001-leads-cravion-2026-08-20.csv */
+/** e.g. leadflow-leads-cravion-2026-08-20.csv */
 export function exportFilename(prefix: string, slug: string): string {
   const today = new Date().toISOString().slice(0, 10);
-  return `idea001-${prefix}-${slug}-${today}.csv`;
+  return `leadflow-${prefix}-${slug}-${today}.csv`;
 }

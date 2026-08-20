@@ -3,7 +3,7 @@ import axios, {
   type AxiosInstance,
   type InternalAxiosRequestConfig,
 } from 'axios';
-import type { ApiResponse, AuthenticatedUser, ErrorCode, TokenPair } from '@idea001/api-types';
+import type { ApiResponse, AuthenticatedUser, ErrorCode, TokenPair } from '@leadflow/api-types';
 
 /**
  * HTTP client.

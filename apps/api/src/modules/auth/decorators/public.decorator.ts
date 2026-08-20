@@ -1,6 +1,6 @@
 import { SetMetadata } from '@nestjs/common';
 
-export const IS_PUBLIC_KEY = 'idea001:isPublic';
+export const IS_PUBLIC_KEY = 'leadflow:isPublic';
 
 /**
  * Opts a route out of authentication.

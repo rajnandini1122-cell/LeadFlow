@@ -1,4 +1,4 @@
-import { ERROR_CODES } from '@idea001/api-types';
+import { ERROR_CODES } from '@leadflow/api-types';
 import { createTestContext, PASSWORD, type TestContext } from './helpers/test-app';
 
 /**

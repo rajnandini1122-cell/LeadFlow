@@ -5,13 +5,15 @@ import {
   type LeadPriority,
   type LeadStatus,
   type Paginated,
-} from '@idea001/api-types';
+} from '@leadflow/api-types';
 import { AppException } from '../../common/errors/app.exception';
 import { AuditRepository } from '../../common/audit/audit.repository';
 import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
 import { LeadsRepository } from './leads.repository';
 import type { ListLeadsDto } from './dto/leads.dto';
 import type { CreateLeadDto } from './dto/create-lead.dto';
+import { visibilityFilter } from './lead-visibility';
+import { PhoneParseError, toE164 } from '../../common/utils/phone';
 
 export interface LeadSummary {
   id: string;
@@ -36,14 +38,17 @@ export class LeadsService {
     private readonly audit: AuditRepository,
   ) {}
 
-  async list(dto: ListLeadsDto): Promise<Paginated<LeadSummary>> {
+  async list(dto: ListLeadsDto, principal: TenantPrincipal): Promise<Paginated<LeadSummary>> {
     const limit = dto.limit ?? 25;
+    const restriction = visibilityFilter(principal);
+
     const rows = await this.repository.list({
       status: dto.status,
       assignedToId: dto.assignedToId,
       search: dto.search,
       cursor: dto.cursor,
       limit,
+      restrictToUserId: restriction?.assignedToId,
     });
 
     const hasMore = rows.length > limit;
@@ -56,8 +61,13 @@ export class LeadsService {
     };
   }
 
-  async findOne(id: string): Promise<LeadSummary & { activities: unknown[] }> {
-    const lead = await this.repository.findById(id);
+  async findOne(
+    id: string,
+    principal: TenantPrincipal,
+  ): Promise<LeadSummary & { activities: unknown[] }> {
+    // A lead outside the caller's visibility is a 404, exactly like one in
+    // another tenant — the response must not confirm it exists.
+    const lead = await this.repository.findById(id, visibilityFilter(principal)?.assignedToId);
     // Another tenant's lead and a non-existent lead are the same 404.
     if (!lead) throw AppException.leadNotFound();
 
@@ -87,12 +97,18 @@ export class LeadsService {
     const status = dto.status ?? 'NEW';
     const nextFollowUpAt = this.resolveFollowUp(dto, status);
 
+    await this.assertAssignableTo(dto.assignedToId);
+
+    // Canonicalise BEFORE the duplicate check, so "+91 98200 11001" and
+    // "09820011001" are recognised as the same customer.
+    const mobile = await this.normaliseMobile(dto.mobile);
+
     // --- duplicate detection (spec §23) -------------------------------------
     // The rule is explicitly "do not silently create another lead". We return
     // the existing one so the client can offer to open it; creating anyway
     // requires the caller to opt in.
     if (!dto.allowDuplicate) {
-      const existing = await this.repository.findActiveByMobile(dto.mobile);
+      const existing = await this.repository.findActiveByMobile(mobile);
       if (existing) {
         const name = [existing.firstName, existing.lastName].filter(Boolean).join(" ").trim();
 
@@ -100,7 +116,7 @@ export class LeadsService {
         // "Open existing lead" without a second round trip.
         throw new AppException(
           ERROR_CODES.DUPLICATE_LEAD,
-          `A lead with mobile ${dto.mobile} already exists (${existing.leadNumber}).`,
+          `A lead with mobile ${mobile} already exists (${existing.leadNumber}).`,
           HttpStatus.CONFLICT,
           {
             existingLeadId: [existing.id],
@@ -112,7 +128,7 @@ export class LeadsService {
       }
     }
 
-    const leadId = await this.createWithRetry(dto, status, nextFollowUpAt, principal);
+    const leadId = await this.createWithRetry(dto, status, nextFollowUpAt, principal, mobile);
     const lead = await this.repository.findById(leadId);
     if (!lead) throw AppException.leadNotFound();
 
@@ -122,7 +138,7 @@ export class LeadsService {
       entityId: lead.id,
       after: {
         leadNumber: lead.leadNumber,
-        mobile: dto.mobile,
+        mobile,
         status,
         assignedToId: dto.assignedToId ?? null,
         duplicateOverridden: dto.allowDuplicate === true,
@@ -130,6 +146,48 @@ export class LeadsService {
     });
 
     return toSummary(lead);
+  }
+
+  /**
+   * Converts user input to E.164 using the ORGANIZATION's country.
+   *
+   * The country is tenant data, not a constant: a US organization and an
+   * Indian one interpret the same digits differently, and getting this wrong
+   * silently breaks duplicate detection.
+   */
+  private async normaliseMobile(input: string): Promise<string> {
+    const country = await this.repository.organizationCountry();
+
+    try {
+      return toE164(input, country);
+    } catch (error) {
+      if (error instanceof PhoneParseError) {
+        throw AppException.validation('Invalid phone number.', {
+          mobile: [error.message],
+        });
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Rejects an assignee who is not an active member of this organization.
+   *
+   * leads.assigned_to references the global users table, so a foreign or
+   * non-existent id would otherwise be accepted and another organization's
+   * user would surface as the owner of this lead.
+   */
+  private async assertAssignableTo(assignedToId?: string): Promise<void> {
+    if (!assignedToId) return;
+
+    const isMember = await this.repository.isActiveMember(assignedToId);
+    if (!isMember) {
+      // 400, not 404: the caller supplied a bad value. It deliberately does not
+      // reveal whether the id exists in some other organization.
+      throw AppException.validation('Cannot assign this lead.', {
+        assignedToId: ['must be an active member of your organization'],
+      });
+    }
   }
 
   /**
@@ -171,6 +229,7 @@ export class LeadsService {
     status: LeadStatus,
     nextFollowUpAt: Date | null,
     principal: TenantPrincipal,
+    mobile: string,
     attempt = 1,
   ): Promise<string> {
     const leadNumber = await this.repository.nextLeadNumber();
@@ -180,7 +239,7 @@ export class LeadsService {
         leadNumber,
         firstName: dto.firstName,
         lastName: dto.lastName,
-        mobile: dto.mobile,
+        mobile,
         email: dto.email,
         companyName: dto.companyName,
         city: dto.city,
@@ -212,7 +271,7 @@ export class LeadsService {
         this.logger.warn(
           `Lead number ${leadNumber} collided, retrying (attempt ${attempt})`,
         );
-        return this.createWithRetry(dto, status, nextFollowUpAt, principal, attempt + 1);
+        return this.createWithRetry(dto, status, nextFollowUpAt, principal, mobile, attempt + 1);
       }
 
       throw error;

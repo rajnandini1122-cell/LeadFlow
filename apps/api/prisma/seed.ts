@@ -8,8 +8,13 @@ import {
   ROLE_PERMISSION_MATRIX,
   type ActivityType,
   type RoleKey,
-} from '@idea001/api-types';
-import { DEMO_ORGANIZATIONS, type DemoLead, type DemoOrganization } from './demo-data';
+} from '@leadflow/api-types';
+import {
+  DEFAULT_LEAD_SOURCES,
+  DEMO_ORGANIZATIONS,
+  type DemoLead,
+  type DemoOrganization,
+} from './demo-data';
 
 /**
  * Idempotent seed.
@@ -110,18 +115,32 @@ async function seedOrganization(
   demo: DemoOrganization,
   roleIds: Map<RoleKey, string>,
   passwordHash: string,
-  orgIndex: number,
 ): Promise<void> {
   const organization = await prisma.organization.upsert({
     where: { slug: demo.slug },
-    create: { name: demo.name, slug: demo.slug, status: 'ACTIVE' },
-    update: { name: demo.name, status: 'ACTIVE' },
+    create: {
+      name: demo.name,
+      slug: demo.slug,
+      status: 'ACTIVE',
+      timezone: demo.timezone,
+      currency: demo.currency,
+      locale: demo.locale,
+      country: demo.country,
+    },
+    update: {
+      name: demo.name,
+      status: 'ACTIVE',
+      timezone: demo.timezone,
+      currency: demo.currency,
+      locale: demo.locale,
+      country: demo.country,
+    },
   });
 
   await prisma.organizationSettings.upsert({
     where: { organizationId: organization.id },
-    create: { organizationId: organization.id },
-    update: {},
+    create: { organizationId: organization.id, leadSources: DEFAULT_LEAD_SOURCES },
+    update: { leadSources: DEFAULT_LEAD_SOURCES },
   });
 
   // --- members ---------------------------------------------------------------
@@ -188,10 +207,11 @@ async function seedOrganization(
         leadNumber,
         firstName: lead.firstName,
         lastName: lead.lastName,
-        // Deterministic and unique within the organization, so the partial
-        // unique index on (organization_id, mobile) is satisfied on re-runs.
-        mobile: `9${String(700000000 + orgIndex * 1_000_000 + index * 137).slice(0, 9)}`,
-        email: `${lead.firstName.toLowerCase()}@${slugify(lead.companyName)}.test`,
+        // E.164, built from the organization's own dialling prefix. Unique
+        // within the organization so the partial unique index on
+        // (organization_id, mobile) is satisfied on re-runs.
+        mobile: `${demo.phonePrefix}${String(1000 + index * 7).slice(-4)}`,
+        email: `${lead.firstName.toLowerCase()}@${slugify(lead.companyName)}.example`,
         companyName: lead.companyName,
         city: lead.city,
         source: lead.source,
@@ -214,7 +234,7 @@ async function seedOrganization(
     });
 
     await prisma.leadActivity.createMany({
-      data: timelineFor(lead, createdAt).map((entry) => ({
+      data: timelineFor(lead, createdAt, demo.currency, demo.locale).map((entry) => ({
         organizationId: organization.id,
         leadId: row.id,
         activityType: entry.type,
@@ -241,6 +261,8 @@ async function seedOrganization(
 function timelineFor(
   lead: DemoLead,
   createdAt: Date,
+  currency: string,
+  locale: string,
 ): { type: ActivityType; description: string; at: Date }[] {
   const entries: { type: ActivityType; description: string; at: Date }[] = [
     {
@@ -301,7 +323,7 @@ function timelineFor(
   if (depth >= 4) {
     entries.push({
       type: 'NOTE_ADDED',
-      description: `Quotation sent for ${formatInr(lead.estimatedValue)}`,
+      description: `Quotation sent for ${formatMoney(lead.estimatedValue, currency, locale)}`,
       at: step(),
     });
   }
@@ -330,7 +352,7 @@ function timelineFor(
 // -----------------------------------------------------------------------------
 
 async function main(): Promise<void> {
-  console.log('Seeding IDEA001…\n');
+  console.log('Seeding LeadFlow…\n');
 
   const permissionIds = await seedPermissions();
   const roleIds = await seedSystemRoles(permissionIds);
@@ -344,8 +366,8 @@ async function main(): Promise<void> {
   });
 
   console.log('');
-  for (const [index, demo] of DEMO_ORGANIZATIONS.entries()) {
-    await seedOrganization(demo, roleIds, passwordHash, index);
+  for (const demo of DEMO_ORGANIZATIONS) {
+    await seedOrganization(demo, roleIds, passwordHash);
   }
 
   console.log('\nSign in with any of these — password:', password);
@@ -360,8 +382,13 @@ async function main(): Promise<void> {
   }
 }
 
-function formatInr(value: number): string {
-  return `₹${new Intl.NumberFormat('en-IN').format(value)}`;
+/** Formats in the ORGANIZATION's currency and locale, never a fixed one. */
+function formatMoney(value: number, currency: string, locale: string): string {
+  return new Intl.NumberFormat(locale, {
+    style: 'currency',
+    currency,
+    maximumFractionDigits: 0,
+  }).format(value);
 }
 
 function slugify(value: string): string {

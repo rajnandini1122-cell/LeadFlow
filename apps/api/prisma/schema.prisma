@@ -1,5 +1,5 @@
 // =============================================================================
-// IDEA001 — Prisma schema
+// LeadFlow — Prisma schema
 //
 // Conventions:
 //   * snake_case in Postgres (@map), camelCase in TypeScript.
@@ -132,8 +132,14 @@ model Organization {
   id       String             @id @default(dbgenerated("uuidv7()")) @db.Uuid
   name     String             @db.VarChar(200)
   slug     String             @unique @db.VarChar(80)
-  timezone String             @default("Asia/Kolkata") @db.VarChar(64)
-  currency String             @default("INR") @db.VarChar(3)
+  /// IANA zone. Drives "today", due dates and overdue logic for this tenant.
+  timezone String             @default("UTC") @db.VarChar(64)
+  /// ISO 4217. Every monetary amount is formatted in the tenant currency.
+  currency String             @default("USD") @db.VarChar(3)
+  /// BCP 47. Drives number, date and currency formatting.
+  locale   String             @default("en-US") @db.VarChar(16)
+  /// ISO 3166-1 alpha-2. Default dialling region for phone entry.
+  country  String             @default("US") @db.VarChar(2)
   status   OrganizationStatus @default(TRIAL)
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -163,6 +169,10 @@ model OrganizationSettings {
   workingHoursStart       String  @default("09:30") @map("working_hours_start") @db.VarChar(5)
   workingHoursEnd         String  @default("18:30") @map("working_hours_end") @db.VarChar(5)
   whatsappProvider        String? @map("whatsapp_provider") @db.VarChar(40)
+
+  /// Tenant-defined lead sources. Empty falls back to a neutral built-in list,
+  /// so a new organization is usable before anyone configures anything.
+  leadSources             String[] @default([]) @map("lead_sources")
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -366,6 +376,8 @@ model Lead {
 
   firstName       String?  @map("first_name") @db.VarChar(80)
   lastName        String?  @map("last_name") @db.VarChar(80)
+  /// E.164, e.g. +14155552671. Stored canonically so the same person entered
+  /// in two formats is still detected as one duplicate.
   mobile          String?  @db.VarChar(20)
   email           String?  @db.VarChar(320)
   companyName     String?  @map("company_name") @db.VarChar(200)

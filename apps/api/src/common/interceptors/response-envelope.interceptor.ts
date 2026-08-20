@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { map, type Observable } from 'rxjs';
 import type { Request } from 'express';
-import type { SuccessResponse } from '@idea001/api-types';
+import type { SuccessResponse } from '@leadflow/api-types';
 
 /** Handlers may return this to opt out of the envelope (used by /health). */
 export const RAW_RESPONSE = Symbol('RAW_RESPONSE');

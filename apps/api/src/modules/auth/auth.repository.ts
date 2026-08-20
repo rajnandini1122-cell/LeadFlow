@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { Permission, RoleKey } from '@idea001/api-types';
+import type { Permission, RoleKey } from '@leadflow/api-types';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { TenantContextService } from '../../common/tenancy/tenant-context.service';
 import type { DevicePlatform } from '../../generated/prisma/enums';
@@ -11,6 +11,8 @@ export interface MembershipRecord {
   organizationSlug: string;
   organizationTimezone: string;
   organizationCurrency: string;
+  organizationLocale: string;
+  organizationCountry: string;
   organizationStatus: 'TRIAL' | 'ACTIVE' | 'SUSPENDED';
   userId: string;
   role: RoleKey;
@@ -235,6 +237,8 @@ type MembershipRow = {
     slug: string;
     timezone: string;
     currency: string;
+    locale: string;
+    country: string;
     status: string;
   };
   user: { status: string };
@@ -249,6 +253,8 @@ function toMembershipRecord(row: MembershipRow): MembershipRecord {
     organizationSlug: row.organization.slug,
     organizationTimezone: row.organization.timezone,
     organizationCurrency: row.organization.currency,
+    organizationLocale: row.organization.locale,
+    organizationCountry: row.organization.country,
     organizationStatus: row.organization.status as MembershipRecord['organizationStatus'],
     userId: row.userId,
     role: row.role.key as RoleKey,

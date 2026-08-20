@@ -3,7 +3,7 @@
 > The single most important document in this repository. A bug here is a data
 > breach between paying customers, not a defect.
 
-IDEA001 is multi-tenant: one deployment, many organizations. Every business
+LeadFlow is multi-tenant: one deployment, many organizations. Every business
 record belongs to exactly one organization, and no user may ever read or write
 another organization's data.
 

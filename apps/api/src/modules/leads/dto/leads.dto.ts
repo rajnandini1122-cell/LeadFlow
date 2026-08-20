@@ -1,6 +1,6 @@
 import { Type } from 'class-transformer';
 import { IsIn, IsInt, IsOptional, IsString, IsUUID, Max, MaxLength, Min } from 'class-validator';
-import { LEAD_STATUSES, type LeadStatus } from '@idea001/api-types';
+import { LEAD_STATUSES, type LeadStatus } from '@leadflow/api-types';
 
 export class ListLeadsDto {
   @IsOptional()

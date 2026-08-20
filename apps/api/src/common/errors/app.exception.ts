@@ -1,5 +1,5 @@
 import { HttpException, HttpStatus } from '@nestjs/common';
-import { ERROR_CODES, type ErrorCode } from '@idea001/api-types';
+import { ERROR_CODES, type ErrorCode } from '@leadflow/api-types';
 
 /**
  * Every deliberate error in the application is one of these.

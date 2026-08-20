@@ -1,4 +1,4 @@
-import { LEAD_STATUSES } from '@idea001/api-types';
+import { LEAD_STATUSES } from '@leadflow/api-types';
 import { formatCurrency, formatCurrencyCompact, humanise } from '../../lib/format';
 import {
   Card,
