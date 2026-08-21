@@ -40,12 +40,12 @@ jobs:
       postgres:
         image: postgres:17-alpine
         env:
-          POSTGRES_USER: idea001
-          POSTGRES_PASSWORD: idea001_ci
-          POSTGRES_DB: idea001_test
+          POSTGRES_USER: leadflow
+          POSTGRES_PASSWORD: leadflow_ci
+          POSTGRES_DB: leadflow_test
         ports: ['5432:5432']
         options: >-
-          --health-cmd "pg_isready -U idea001"
+          --health-cmd "pg_isready -U leadflow"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
@@ -60,8 +60,10 @@ jobs:
           --health-retries 10
 
     env:
-      DATABASE_URL: postgresql://leadflow:idea001_ci@localhost:5432/idea001_test
-      DIRECT_DATABASE_URL: postgresql://leadflow:idea001_ci@localhost:5432/idea001_test
+      # Must match the postgres service credentials above exactly. These are
+      # throwaway CI values for an ephemeral container, not secrets.
+      DATABASE_URL: postgresql://leadflow:leadflow_ci@localhost:5432/leadflow_test
+      DIRECT_DATABASE_URL: postgresql://leadflow:leadflow_ci@localhost:5432/leadflow_test
       REDIS_URL: redis://localhost:6379
       JWT_ACCESS_SECRET: ci-access-secret-at-least-32-characters-long
       JWT_REFRESH_SECRET: ci-refresh-secret-at-least-32-characters-diff
@@ -79,7 +81,27 @@ jobs:
       - run: npm ci
       - run: npm run build -w packages/api-types
       - run: npm run db:generate -w apps/api
+
+      # Proves the service, the credentials and DATABASE_URL agree BEFORE any
+      # migration runs. A mismatch here previously surfaced as an opaque
+      # Prisma connection error several steps later.
+      - name: Verify database connectivity
+        run: |
+          for attempt in $(seq 1 20); do
+            if pg_isready -h localhost -p 5432 -U leadflow -d leadflow_test; then
+              break
+            fi
+            echo "waiting for postgres (attempt $attempt)"
+            sleep 2
+          done
+          PGPASSWORD=leadflow_ci psql -h localhost -U leadflow -d leadflow_test \
+            -c "select current_user, current_database(), version();"
+
       - run: npm run db:migrate:deploy -w apps/api
+
+      # The schema Prisma expects must match what the migrations produced.
+      - name: Verify migrations are complete
+        run: npx prisma migrate status --schema apps/api/prisma/schema.prisma
 
       # CI_USE_EXTERNAL_DB tells the Jest global setup to use the service
       # containers above instead of booting the in-process PGlite fallback that
