@@ -3,6 +3,7 @@ import { Link, Navigate } from 'react-router-dom';
 import type { OrganizationSummary } from '@leadflow/api-types';
 import { ApiError } from '../../lib/api-client';
 import { useAuth } from './auth-context';
+import { AuthLayout } from './auth-shell';
 
 export function LoginPage(): React.JSX.Element {
   const { login, status, pendingOrganizations } = useAuth();
@@ -31,15 +32,9 @@ export function LoginPage(): React.JSX.Element {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-50 px-4">
-      <div className="w-full max-w-sm">
-        <div className="mb-8 text-center">
-          <h1 className="text-2xl font-semibold tracking-tight text-slate-900">LeadFlow</h1>
-          <p className="mt-1 text-sm text-slate-500">No lead left behind.</p>
-        </div>
-
-        <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
-          {pendingOrganizations ? (
+    <AuthLayout title="LeadFlow" subtitle="No lead left behind.">
+      <>
+        {pendingOrganizations ? (
             <OrganizationChooser
               organizations={pendingOrganizations}
               disabled={submitting}
@@ -100,11 +95,10 @@ export function LoginPage(): React.JSX.Element {
 
               </p>
 
-            </form>
-          )}
-        </div>
-      </div>
-    </div>
+          </form>
+        )}
+      </>
+    </AuthLayout>
   );
 }
 
