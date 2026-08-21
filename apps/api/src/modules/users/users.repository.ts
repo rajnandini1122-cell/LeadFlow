@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import type { RoleKey, UserStatus } from '@leadflow/api-types';
-import { PrismaService } from '../../common/prisma/prisma.service';
+import { PrismaService, type PrismaTransaction } from '../../common/prisma/prisma.service';
 import { TenantContextService } from '../../common/tenancy/tenant-context.service';
 
 /**
@@ -151,8 +151,10 @@ export class UsersRepository {
    * this user, and hard-deleting would either break those references or erase
    * who did what. Access is refused by the guard on status, not by absence.
    */
-  async removeMember(userId: string): Promise<number> {
-    const result = await this.prisma.client.organizationUser.updateMany({
+  async removeMember(userId: string, tx?: PrismaTransaction): Promise<number> {
+    const client = tx ?? this.prisma.client;
+
+    const result = await client.organizationUser.updateMany({
       where: { userId, status: { in: ['ACTIVE', 'INVITED', 'SUSPENDED'] } },
       data: {
         status: 'REMOVED',
@@ -187,8 +189,16 @@ export class UsersRepository {
       roleId?: string | undefined;
       status?: UserStatus | undefined;
     },
+    /**
+     * Joins an existing transaction when given one.
+     *
+     * Without this the caller's transaction and this method's own would be two
+     * independent units of work, so a rollback outside would not undo the
+     * membership change made inside.
+     */
+    outerTx?: PrismaTransaction,
   ) {
-    return this.prisma.client.$transaction(async (tx) => {
+    const run = async (tx: PrismaTransaction) => {
       // Establish tenancy FIRST, unconditionally.
       //
       // `User` is a global model, so `tx.user.update({ where: { id } })` is NOT
@@ -238,6 +248,8 @@ export class UsersRepository {
           role: { select: { key: true } },
         },
       });
-    });
+    };
+
+    return outerTx ? run(outerTx) : this.prisma.client.$transaction(run);
   }
 }

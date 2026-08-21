@@ -14,6 +14,7 @@ import { MembershipCacheService } from '../auth/membership-cache.service';
 import { InvitationsService } from '../invitations/invitations.service';
 import { UsersRepository } from './users.repository';
 import { OffboardingService } from './offboarding.service';
+import { LastAdministratorError, OffboardingRepository } from './offboarding.repository';
 import { isAdministrativeRole, losesAdminStanding } from './administrators';
 import { EmailService } from '../../common/email/email.service';
 import type { InviteUserDto, UpdateUserDto } from './dto/users.dto';
@@ -28,6 +29,7 @@ export class UsersService {
     private readonly invitations: InvitationsService,
     private readonly email: EmailService,
     private readonly offboarding: OffboardingService,
+    private readonly offboardingRepository: OffboardingRepository,
   ) {}
 
   async list(): Promise<UserListItem[]> {
@@ -151,6 +153,29 @@ export class UsersService {
   }
 
   /**
+   * Turns the repository's rollback signal into the API's refusal.
+   *
+   * The invariant is enforced by aborting the transaction, which is the only
+   * thing that works under concurrency. Callers still need the same 403 they
+   * would have got from the pre-check, so the two paths converge here.
+   */
+  private async guardAdministrators<T>(run: () => Promise<T>): Promise<T> {
+    try {
+      return await run();
+    } catch (error) {
+      if (error instanceof LastAdministratorError) {
+        throw new AppException(
+          ERROR_CODES.LAST_ADMINISTRATOR,
+          'This is the last active administrator. Promote someone else first, or ' +
+            'transfer admin responsibility.',
+          HttpStatus.FORBIDDEN,
+        );
+      }
+      throw error;
+    }
+  }
+
+  /**
    * Soft-removes a member and revokes their access immediately.
    */
   async remove(userId: string, principal: TenantPrincipal): Promise<void> {
@@ -178,7 +203,14 @@ export class UsersService {
     // being anybody's job.
     await this.offboarding.assertNoOrphanedWork(userId);
 
-    const removed = await this.repository.removeMember(userId);
+    // Mutate inside the guard: the pre-check above is a courtesy that gives a
+    // clear message in the ordinary case, but only this can survive two
+    // administrators removing each other at the same instant.
+    const removed = await this.guardAdministrators(() =>
+      this.offboardingRepository.mutateGuardingAdministrators((tx) =>
+        this.repository.removeMember(userId, tx),
+      ),
+    );
     if (removed === 0) throw AppException.userNotFound();
 
     // Both are required. Revoking sessions stops refresh; invalidating the
@@ -222,7 +254,11 @@ export class UsersService {
       principal,
     );
 
-    const removed = await this.repository.removeMember(principal.userId);
+    const removed = await this.guardAdministrators(() =>
+      this.offboardingRepository.mutateGuardingAdministrators((tx) =>
+        this.repository.removeMember(principal.userId, tx),
+      ),
+    );
     if (removed === 0) throw AppException.userNotFound();
 
     await this.repository.revokeSessions(principal.userId, 'LEFT_ORGANIZATION');
@@ -292,12 +328,29 @@ export class UsersService {
     const roleId = dto.role ? (await this.repository.findRoleByKey(dto.role))?.id : undefined;
     if (dto.role && !roleId) throw AppException.validation(`Unknown role: ${dto.role}`);
 
-    const updated = await this.repository.updateMember(userId, {
-      fullName: dto.fullName,
-      mobile: dto.mobile,
-      roleId,
-      status: dto.status,
-    });
+    /*
+     * A change that could cost the organization an administrator goes through
+     * the guard; anything else does not need a serializable transaction and
+     * should not pay for one.
+     */
+    const touchesAdminStanding = dto.role !== undefined || dto.status !== undefined;
+
+    const updated = touchesAdminStanding
+      ? await this.guardAdministrators(() =>
+          this.offboardingRepository.mutateGuardingAdministrators((tx) =>
+            this.repository.updateMember(
+              userId,
+              { fullName: dto.fullName, mobile: dto.mobile, roleId, status: dto.status },
+              tx,
+            ),
+          ),
+        )
+      : await this.repository.updateMember(userId, {
+          fullName: dto.fullName,
+          mobile: dto.mobile,
+          roleId,
+          status: dto.status,
+        });
     if (!updated) throw AppException.userNotFound();
 
     // Without this the old role survives in cache for up to a minute.

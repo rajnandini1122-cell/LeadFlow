@@ -73,3 +73,17 @@ export class PrismaService implements OnModuleInit, OnModuleDestroy {
     }
   }
 }
+
+/**
+ * The client handed to a `$transaction` callback.
+ *
+ * Repositories accept one so a caller can compose several writes into a single
+ * atomic operation. It is the extended client minus the methods that would
+ * start or end a connection — passing it around is what makes a repository
+ * transaction-aware without letting anyone nest a second, independent
+ * transaction inside an existing one.
+ */
+export type PrismaTransaction = Omit<
+  PrismaService['client'],
+  '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'
+>;

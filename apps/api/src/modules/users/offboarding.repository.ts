@@ -1,8 +1,19 @@
 import { Injectable } from '@nestjs/common';
 import type { RoleKey } from '@leadflow/api-types';
-import { PrismaService } from '../../common/prisma/prisma.service';
+import { PrismaService, type PrismaTransaction } from '../../common/prisma/prisma.service';
 import { TenantContextService } from '../../common/tenancy/tenant-context.service';
 import { ADMIN_ROLE_KEYS } from './administrators';
+
+/**
+ * Raised when a membership change would leave nobody able to administer the
+ * organization. Thrown INSIDE the transaction so it rolls the change back.
+ */
+export class LastAdministratorError extends Error {
+  constructor() {
+    super('This change would leave the organization with no active administrator.');
+    this.name = 'LastAdministratorError';
+  }
+}
 
 /** Follow-up states that still represent work somebody owes. */
 const OPEN_FOLLOW_UPS = ['UPCOMING', 'DUE', 'OVERDUE'] as const;
@@ -190,19 +201,66 @@ export class OffboardingRepository {
   }
 
   /** Promotes a member to an administrative role. Tenant-scoped. */
-  async setRole(userId: string, roleKey: RoleKey): Promise<boolean> {
-    const role = await this.prisma.client.role.findFirst({
+  async setRole(userId: string, roleKey: RoleKey, tx?: PrismaTransaction): Promise<boolean> {
+    const client = tx ?? this.prisma.client;
+
+    const role = await client.role.findFirst({
       where: { key: roleKey, organizationId: null, isSystem: true },
       select: { id: true },
     });
     if (!role) return false;
 
-    const result = await this.prisma.client.organizationUser.updateMany({
+    const result = await client.organizationUser.updateMany({
       where: { userId, status: { not: 'REMOVED' } },
       data: { roleId: role.id },
     });
 
     return result.count > 0;
+  }
+
+  /**
+   * Runs a membership change and refuses to commit it if the organization
+   * would be left with nobody able to administer it.
+   *
+   * Checking BEFORE the write cannot work, however carefully it is written.
+   * Two administrators removing each other at the same instant each observe
+   * the other still present, each conclude they are safe, and both proceed —
+   * leaving zero. The check has to see the result of the write, and the write
+   * has to be undone if the answer is wrong.
+   *
+   * So the order is inverted: mutate, then count, then throw to roll back.
+   * SERIALIZABLE is what makes the count trustworthy — under the default READ
+   * COMMITTED each transaction would count without seeing the other's
+   * uncommitted removal and both would still commit. Postgres instead aborts
+   * one of them with a serialization failure, which is translated below into
+   * the same refusal a sequential caller would have received.
+   */
+  async mutateGuardingAdministrators<T>(fn: (tx: PrismaTransaction) => Promise<T>): Promise<T> {
+    try {
+      return await this.prisma.client.$transaction(
+        async (tx) => {
+          const result = await fn(tx);
+
+          const remaining = await tx.organizationUser.count({
+            where: { status: 'ACTIVE', role: { key: { in: ADMIN_ROLE_KEYS } } },
+          });
+
+          if (remaining === 0) throw new LastAdministratorError();
+
+          return result;
+        },
+        { isolationLevel: 'Serializable' },
+      );
+    } catch (error) {
+      // 40001 serialization_failure, 40P01 deadlock_detected. Both mean a
+      // competing membership change won; the honest answer is the same one the
+      // loser would have received had they arrived second.
+      const code = (error as { code?: string }).code;
+      if (code === '40001' || code === '40P01' || code === 'P2034') {
+        throw new LastAdministratorError();
+      }
+      throw error;
+    }
   }
 
   /** Recent audit entries for this organization, newest first. */

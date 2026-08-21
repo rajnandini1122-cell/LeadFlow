@@ -6,7 +6,11 @@ import { PlatformService } from '../../common/platform/platform.service';
 import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
 import { MembershipCacheService } from '../auth/membership-cache.service';
 import { isAdministrativeRole } from './administrators';
-import { OffboardingRepository, type Workload } from './offboarding.repository';
+import {
+  LastAdministratorError,
+  OffboardingRepository,
+  type Workload,
+} from './offboarding.repository';
 import { UsersRepository } from './users.repository';
 
 export interface WorkloadReport extends Workload {
@@ -206,14 +210,32 @@ export class OffboardingService {
 
     const moved = await this.handOver(userId, input, principal);
 
-    if (input.action === 'REMOVE') {
-      const removed = await this.users.removeMember(userId);
-      if (removed === 0) throw AppException.userNotFound();
-      await this.users.revokeSessions(userId, 'MEMBER_REMOVED');
-    } else {
-      const updated = await this.users.updateMember(userId, { status: 'SUSPENDED' });
-      if (!updated) throw AppException.userNotFound();
-      await this.users.revokeSessions(userId, 'MEMBER_SUSPENDED');
+    // Same guard as every other membership change: the pre-check above is a
+    // courtesy, and only aborting the transaction survives a concurrent one.
+    try {
+      if (input.action === 'REMOVE') {
+        const removed = await this.repository.mutateGuardingAdministrators((tx) =>
+          this.users.removeMember(userId, tx),
+        );
+        if (removed === 0) throw AppException.userNotFound();
+        await this.users.revokeSessions(userId, 'MEMBER_REMOVED');
+      } else {
+        const updated = await this.repository.mutateGuardingAdministrators((tx) =>
+          this.users.updateMember(userId, { status: 'SUSPENDED' }, tx),
+        );
+        if (!updated) throw AppException.userNotFound();
+        await this.users.revokeSessions(userId, 'MEMBER_SUSPENDED');
+      }
+    } catch (error) {
+      if (error instanceof LastAdministratorError) {
+        throw new AppException(
+          ERROR_CODES.LAST_ADMINISTRATOR,
+          'This is the last active administrator. Promote someone else first, or ' +
+            'transfer admin responsibility.',
+          403,
+        );
+      }
+      throw error;
     }
 
     // Both are needed: revoking sessions stops refresh, invalidating the cache
