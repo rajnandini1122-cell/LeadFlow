@@ -12,6 +12,10 @@ import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { PERMISSIONS, type OrganizationDetail } from '@leadflow/api-types';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { OrganizationsService } from './organizations.service';
+import {
+  supportedCurrencies,
+  supportedTimezones,
+} from '../../common/utils/locale';
 import { UsersService } from '../users/users.service';
 import { OffboardingService } from '../users/offboarding.service';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -46,6 +50,24 @@ export class OrganizationsController {
   async update(@Body() dto: UpdateOrganizationDto): Promise<OrganizationDetail> {
     return this.organizations.update(dto);
   }
+  @Get('locale-options')
+  @RequirePermissions(PERMISSIONS.ORG_VIEW)
+  @ApiOperation({
+    summary: 'Timezones and currencies this deployment can offer',
+    description:
+      'Read from the runtime\u2019s own ICU data rather than a list in source, ' +
+      'so the settings screen can never present an option the API would then ' +
+      'refuse. The tenant\u2019s current timezone is always included, even when ' +
+      'it is a legacy alias Intl does not list canonically.',
+  })
+  async localeOptions(): Promise<{ timezones: string[]; currencies: string[] }> {
+    const organization = await this.organizations.current();
+    return {
+      timezones: supportedTimezones(organization.timezone),
+      currencies: supportedCurrencies(),
+    };
+  }
+
   @Get('audit')
   @RequirePermissions(PERMISSIONS.USER_UPDATE)
   @ApiOperation({

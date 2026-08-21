@@ -23,6 +23,9 @@ export class OrganizationsRepository {
   async updateCurrent(changes: {
     name?: string | undefined;
     timezone?: string | undefined;
+    currency?: string | undefined;
+    locale?: string | undefined;
+    country?: string | undefined;
     settings?:
       | {
           followupReminderMinutes?: number | undefined;
@@ -30,6 +33,7 @@ export class OrganizationsRepository {
           escalateToManager?: boolean | undefined;
           workingHoursStart?: string | undefined;
           workingHoursEnd?: string | undefined;
+          leadSources?: string[] | undefined;
         }
       | undefined;
   }) {
@@ -37,8 +41,11 @@ export class OrganizationsRepository {
 
     return this.prisma.client.$transaction(async (tx) => {
       const organizationChanges: Record<string, unknown> = {};
-      if (changes.name !== undefined) organizationChanges['name'] = changes.name;
-      if (changes.timezone !== undefined) organizationChanges['timezone'] = changes.timezone;
+      // Listed explicitly rather than spread, so a future field on the DTO is
+      // never persisted by accident just because it was added to the type.
+      for (const field of ['name', 'timezone', 'currency', 'locale', 'country'] as const) {
+        if (changes[field] !== undefined) organizationChanges[field] = changes[field];
+      }
 
       if (Object.keys(organizationChanges).length > 0) {
         await tx.organization.update({ where: { id: organizationId }, data: organizationChanges });

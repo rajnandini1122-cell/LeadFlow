@@ -2,23 +2,26 @@ import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { OrganizationDetail } from '@leadflow/api-types';
 import { ApiError, apiGet, apiPatch } from '../../lib/api-client';
-import { formatDate } from '../../lib/format';
-import {
-  Card,
-  CardHeader,
-  ErrorNotice,
-  PageHeader,
-  PhaseNote,
-  SkeletonRows,
-} from '../../components/ui';
+import { formatDate, setFormattingContext } from '../../lib/format';
+import { Card, CardHeader, ErrorNotice, PageHeader, SkeletonRows } from '../../components/ui';
+import { LeadSourceEditor } from './lead-source-editor';
+
+interface LocaleOptions {
+  timezones: string[];
+  currencies: string[];
+}
 import { useAuth } from '../auth/auth-context';
 
 /**
  * Organization settings — a real, working editor, not a placeholder.
  *
- * The follow-up escalation thresholds here are the same values the Phase 6
- * worker will read. They live in `organization_settings` rather than in code
- * precisely so they can be tuned per tenant without a deploy (spec §10).
+ * Everything a tenant can configure about themselves. Timezone, currency,
+ * locale and country are not cosmetic: they decide what "today" means in every
+ * report, how money is formatted, and how a local phone number is read into
+ * E.164 — which is what duplicate detection matches on.
+ *
+ * The escalation thresholds live in `organization_settings` rather than in
+ * code precisely so they can be tuned per tenant without a deploy (spec §10).
  */
 export function SettingsPage(): React.JSX.Element {
   const { can } = useAuth();
@@ -31,6 +34,11 @@ export function SettingsPage(): React.JSX.Element {
   });
 
   const [name, setName] = useState('');
+  const [timezone, setTimezone] = useState('UTC');
+  const [currency, setCurrency] = useState('USD');
+  const [locale, setLocale] = useState('en-US');
+  const [country, setCountry] = useState('US');
+  const [sources, setSources] = useState<string[]>([]);
   const [reminder, setReminder] = useState(30);
   const [overdue, setOverdue] = useState(120);
   const [escalate, setEscalate] = useState(false);
@@ -38,12 +46,30 @@ export function SettingsPage(): React.JSX.Element {
   const [end, setEnd] = useState('18:30');
   const [saved, setSaved] = useState(false);
 
+  /**
+   * Timezones and currencies this deployment can offer.
+   *
+   * Fetched rather than bundled: the list comes from the server's own ICU
+   * data, so the screen can never present an option the API would refuse — and
+   * it always includes the tenant's current zone, even when that is a legacy
+   * alias Intl does not list canonically.
+   */
+  const options = useQuery({
+    queryKey: ['locale-options'],
+    queryFn: () => apiGet<LocaleOptions>('/organizations/locale-options'),
+  });
+
   // Seed the form once the organization loads. Without this the inputs stay
   // empty and a save would blank the record.
   useEffect(() => {
     const data = organization.data;
     if (!data) return;
     setName(data.name);
+    setTimezone(data.timezone);
+    setCurrency(data.currency);
+    setLocale(data.locale);
+    setCountry(data.country);
+    setSources(data.settings.leadSources);
     setReminder(data.settings.followupReminderMinutes);
     setOverdue(data.settings.followupOverdueMinutes);
     setEscalate(data.settings.escalateToManager);
@@ -55,16 +81,32 @@ export function SettingsPage(): React.JSX.Element {
     mutationFn: () =>
       apiPatch<OrganizationDetail>('/organizations/current', {
         name,
+        timezone,
+        currency,
+        locale,
+        country,
         settings: {
           followupReminderMinutes: reminder,
           followupOverdueMinutes: overdue,
           escalateToManager: escalate,
           workingHoursStart: start,
           workingHoursEnd: end,
+          leadSources: sources,
         },
       }),
     onSuccess: (updated) => {
       queryClient.setQueryData(['organization'], updated);
+
+      // Currency, locale and timezone drive every formatted figure on screen.
+      // Without this the tenant saves GBP and keeps seeing dollars until they
+      // reload, which reads as the save having failed.
+      setFormattingContext({
+        locale: updated.locale,
+        currency: updated.currency,
+        timezone: updated.timezone,
+      });
+      void queryClient.invalidateQueries({ queryKey: ['locale-options'] });
+
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
     },
@@ -114,17 +156,92 @@ export function SettingsPage(): React.JSX.Element {
               </Field>
 
               <div className="grid gap-4 sm:grid-cols-2">
-                <Field label="Slug" htmlFor="org-slug" hint="Cannot be changed">
-                  <input id="org-slug" value={data.slug} disabled className={inputClass} />
+                <Field
+                  label="Timezone"
+                  htmlFor="org-tz"
+                  hint="Decides what “today” means in every report and follow-up bucket"
+                >
+                  <select
+                    id="org-tz"
+                    value={timezone}
+                    disabled={!canEdit}
+                    onChange={(event) => setTimezone(event.target.value)}
+                    className={inputClass}
+                  >
+                    {(options.data?.timezones ?? [data.timezone]).map((zone) => (
+                      <option key={zone} value={zone}>
+                        {zone}
+                      </option>
+                    ))}
+                  </select>
                 </Field>
-                <Field label="Currency" htmlFor="org-currency" hint="INR only in the MVP">
-                  <input id="org-currency" value={data.currency} disabled className={inputClass} />
+
+                <Field
+                  label="Country"
+                  htmlFor="org-country"
+                  hint="Decides how a local phone number is read — this drives duplicate detection"
+                >
+                  <select
+                    id="org-country"
+                    value={country}
+                    disabled={!canEdit}
+                    onChange={(event) => setCountry(event.target.value)}
+                    className={inputClass}
+                  >
+                    {COUNTRIES.map((code) => (
+                      <option key={code} value={code}>
+                        {countryName(code)} ({code})
+                      </option>
+                    ))}
+                  </select>
                 </Field>
               </div>
 
               <div className="grid gap-4 sm:grid-cols-2">
-                <Field label="Timezone" htmlFor="org-tz" hint="Used to compute “today”">
-                  <input id="org-tz" value={data.timezone} disabled className={inputClass} />
+                <Field
+                  label="Currency"
+                  htmlFor="org-currency"
+                  hint="Every amount in the app is formatted in this currency"
+                >
+                  <select
+                    id="org-currency"
+                    value={currency}
+                    disabled={!canEdit}
+                    onChange={(event) => setCurrency(event.target.value)}
+                    className={inputClass}
+                  >
+                    {(options.data?.currencies ?? [data.currency]).map((code) => (
+                      <option key={code} value={code}>
+                        {code}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+
+                <Field
+                  label="Locale"
+                  htmlFor="org-locale"
+                  hint="Number and date conventions, e.g. 1,234.50 or 1.234,50"
+                >
+                  <select
+                    id="org-locale"
+                    value={locale}
+                    disabled={!canEdit}
+                    onChange={(event) => setLocale(event.target.value)}
+                    className={inputClass}
+                  >
+                    {localeChoices(locale).map((tag) => (
+                      <option key={tag} value={tag}>
+                        {localeName(tag)} ({tag})
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="Slug" htmlFor="org-slug" hint="Cannot be changed">
+                  <input id="org-slug" value={data.slug} disabled className={inputClass} />
                 </Field>
                 <Field label="Created" htmlFor="org-created">
                   <input
@@ -135,13 +252,32 @@ export function SettingsPage(): React.JSX.Element {
                   />
                 </Field>
               </div>
+
+              <div className="rounded-lg bg-slate-50 p-3">
+                <p className="text-xs text-slate-500">Preview</p>
+                <p className="mt-1 text-sm text-slate-900">
+                  {previewAmount(locale, currency)}
+                  <span className="mx-2 text-slate-300">·</span>
+                  {previewDate(locale, timezone)}
+                </p>
+              </div>
+            </div>
+          </Card>
+
+          <Card>
+            <CardHeader
+              title="Lead sources"
+              subtitle="The options offered when someone adds a lead"
+            />
+            <div className="p-5">
+              <LeadSourceEditor value={sources} onChange={setSources} disabled={!canEdit} />
             </div>
           </Card>
 
           <Card>
             <CardHeader
               title="Follow-up rules"
-              subtitle="Read by the follow-up worker in Phase 6"
+              subtitle="When a follow-up counts as due, and then as overdue"
             />
             <div className="space-y-4 p-5">
               <div className="grid gap-4 sm:grid-cols-2">
@@ -249,12 +385,6 @@ export function SettingsPage(): React.JSX.Element {
             </div>
           </Card>
 
-          <PhaseNote phase="Phase 6">
-            Saving these values works today and they persist to
-            <code className="mx-1 rounded bg-slate-200 px-1 text-[11px]">organization_settings</code>
-            — the follow-up worker reads them from there rather than from
-            hardcoded constants, so escalation can differ per tenant.
-          </PhaseNote>
         </div>
       </div>
     </>
@@ -285,6 +415,76 @@ function PermissionList(): React.JSX.Element {
       </div>
     </>
   );
+}
+
+/**
+ * Countries offered for phone parsing.
+ *
+ * A curated list rather than all 249 regions: this field exists to decide how a
+ * local number is read, and a 249-entry dropdown makes the common case harder
+ * without helping the rare one. Any valid ISO 3166-1 code is still accepted by
+ * the API, and the tenant's own value is always included below.
+ */
+const COMMON_COUNTRIES = [
+  'US', 'GB', 'IN', 'CA', 'AU', 'NZ', 'IE', 'DE', 'FR', 'ES', 'IT', 'NL', 'BE',
+  'SE', 'NO', 'DK', 'FI', 'PL', 'PT', 'CH', 'AT', 'AE', 'SA', 'SG', 'MY', 'ID',
+  'PH', 'TH', 'VN', 'JP', 'KR', 'CN', 'HK', 'ZA', 'NG', 'KE', 'EG', 'BR', 'MX',
+  'AR', 'CL', 'CO',
+];
+
+const COUNTRIES = COMMON_COUNTRIES;
+
+const COMMON_LOCALES = [
+  'en-US', 'en-GB', 'en-IN', 'en-AU', 'en-CA', 'en-NZ', 'en-IE', 'en-ZA',
+  'de-DE', 'fr-FR', 'es-ES', 'it-IT', 'nl-NL', 'pt-BR', 'pt-PT', 'sv-SE',
+  'da-DK', 'nb-NO', 'fi-FI', 'pl-PL', 'ar-AE', 'hi-IN', 'ja-JP', 'ko-KR',
+  'zh-CN', 'id-ID', 'ms-MY', 'th-TH', 'vi-VN', 'tr-TR',
+];
+
+/** The tenant's own locale is always offered, even if it is not in the list. */
+function localeChoices(current: string): string[] {
+  return COMMON_LOCALES.includes(current) ? COMMON_LOCALES : [current, ...COMMON_LOCALES];
+}
+
+function countryName(code: string): string {
+  try {
+    return new Intl.DisplayNames(undefined, { type: 'region' }).of(code) ?? code;
+  } catch {
+    return code;
+  }
+}
+
+function localeName(tag: string): string {
+  try {
+    return new Intl.DisplayNames(undefined, { type: 'language' }).of(tag) ?? tag;
+  } catch {
+    return tag;
+  }
+}
+
+/** Shows what the choices actually do, before they are saved. */
+function previewAmount(locale: string, currency: string): string {
+  try {
+    return new Intl.NumberFormat(locale, {
+      style: 'currency',
+      currency,
+      maximumFractionDigits: 2,
+    }).format(1234.5);
+  } catch {
+    return `${currency} 1234.50`;
+  }
+}
+
+function previewDate(locale: string, timezone: string): string {
+  try {
+    return new Intl.DateTimeFormat(locale, {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+      timeZone: timezone,
+    }).format(new Date());
+  } catch {
+    return new Date().toISOString();
+  }
 }
 
 const inputClass =

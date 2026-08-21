@@ -39,16 +39,31 @@ export class OrganizationsService {
     const updated = await this.repository.updateCurrent(dto);
     if (!updated) throw AppException.organizationNotFound();
 
+    // Currency, locale, country and timezone change how every existing figure
+    // is read — money, dates, and how a phone number canonicalises. A record
+    // of who changed them is what makes "these numbers look different" an
+    // answerable question.
     await this.audit.record({
       action: AUDIT_ACTIONS.ORGANIZATION_UPDATED,
       entityType: 'organization',
       entityId: before.id,
-      before: { name: before.name, timezone: before.timezone },
-      after: { name: updated.name, timezone: updated.timezone },
+      before: snapshot(before),
+      after: snapshot(updated),
     });
 
     return toDetail(updated);
   }
+}
+
+/** The tenant-visible configuration, for the audit trail. */
+function snapshot(organization: OrganizationRow): Record<string, unknown> {
+  return {
+    name: organization.name,
+    timezone: organization.timezone,
+    currency: organization.currency,
+    locale: organization.locale,
+    country: organization.country,
+  };
 }
 
 type OrganizationRow = {
