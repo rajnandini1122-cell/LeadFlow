@@ -10,7 +10,7 @@ import {
   type LeadStatus,
 } from '@leadflow/api-types';
 import { ApiError, apiGet, apiPost } from '../../lib/api-client';
-import { humanise } from '../../lib/format';
+import { currencySymbol, humanise } from '../../lib/format';
 import type { LeadSummary } from './use-leads';
 
 /**
@@ -300,7 +300,11 @@ export function NewLeadDialog({
                 ))}
               </select>
             </Field>
-            <Field label="Estimated value" hint="₹" error={fieldError('estimatedValue')}>
+            <Field
+              label="Estimated value"
+              hint={currencySymbol()}
+              error={fieldError('estimatedValue')}
+            >
               <input
                 type="number"
                 min={0}

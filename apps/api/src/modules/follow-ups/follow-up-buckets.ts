@@ -1,4 +1,5 @@
 import type { FollowUpStatus } from '../../generated/prisma/enums';
+import { addZonedDays, startOfDay, startOfZonedDay, zonedDate } from '../../common/utils/zoned-time';
 
 /**
  * The four views a salesperson actually works from.
@@ -15,30 +16,12 @@ export const OPEN_STATUSES: FollowUpStatus[] = ['UPCOMING', 'DUE', 'OVERDUE'];
 /**
  * Start of the current day in a given IANA timezone, as an absolute instant.
  *
- * Uses Intl rather than date arithmetic because only the tz database knows
- * about daylight saving and historical offset changes; subtracting a fixed
- * offset is wrong twice a year.
+ * Delegates to the shared calendar helpers so bucketing and reporting cannot
+ * disagree about where a day begins — two implementations of "midnight" is
+ * exactly how a dashboard ends up contradicting the screen it links to.
  */
 export function startOfDayInZone(timezone: string, reference = new Date()): Date {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: timezone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  }).formatToParts(reference);
-
-  const get = (type: string): number =>
-    Number(parts.find((part) => part.type === type)?.value ?? '0');
-
-  // How far the tenant's local wall clock is into its own day.
-  const elapsedMs =
-    (get('hour') % 24) * 3_600_000 + get('minute') * 60_000 + get('second') * 1000;
-
-  return new Date(reference.getTime() - elapsedMs - (reference.getMilliseconds() % 1000));
+  return startOfDay(reference, timezone);
 }
 
 export interface BucketWindow {
@@ -48,8 +31,10 @@ export interface BucketWindow {
 }
 
 export function windowFor(bucket: Bucket, timezone: string, now = new Date()): BucketWindow {
-  const startOfToday = startOfDayInZone(timezone, now);
-  const startOfTomorrow = new Date(startOfToday.getTime() + 86_400_000);
+  // Calendar arithmetic, not +86,400,000ms: a day on which the zone changes
+  // offset is 23 or 25 hours long, so a fixed millisecond step puts the
+  // boundary an hour out and leaks one hour of work into the wrong bucket.
+  const startOfTomorrow = startOfZonedDay(addZonedDays(zonedDate(now, timezone), 1), timezone);
 
   switch (bucket) {
     case 'overdue':

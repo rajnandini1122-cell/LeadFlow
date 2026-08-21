@@ -3,7 +3,19 @@ import type { LeadStatus } from '@leadflow/api-types';
 import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
 import { LeadsRepository } from '../leads/leads.repository';
 import { resolveLeadVisibility, visibilityFilter } from '../leads/lead-visibility';
-import { startOfDayInZone, windowFor } from '../follow-ups/follow-up-buckets';
+import { windowFor } from '../follow-ups/follow-up-buckets';
+import {
+  addZonedDays,
+  startOfZonedDay,
+  zonedDate,
+} from '../../common/utils/zoned-time';
+import {
+  decimalString,
+  percentage,
+  sumDecimals,
+  wonRevenue,
+  type Decimalish,
+} from '../../common/utils/decimal';
 import { DashboardRepository } from './dashboard.repository';
 
 export interface DashboardLead {
@@ -69,11 +81,12 @@ export class DashboardService {
     const timezone = await this.leads.organizationTimezone();
     const now = new Date();
 
-    // Day boundaries come from the ORGANIZATION's timezone. Computing them in
-    // the browser used the viewer's clock, so a manager travelling saw a
-    // different "today" from the team they were managing.
-    const startOfWeek = new Date(startOfDayInZone(timezone, now).getTime() - 6 * 86_400_000);
-    const endOfToday = new Date(startOfDayInZone(timezone, now).getTime() + 86_400_000);
+    // Day boundaries come from the ORGANIZATION's timezone, by calendar
+    // arithmetic rather than fixed millisecond steps — a day on which the zone
+    // changes offset is 23 or 25 hours long.
+    const today = zonedDate(now, timezone);
+    const startOfWeek = startOfZonedDay(addZonedDays(today, -6), timezone);
+    const endOfToday = startOfZonedDay(addZonedDays(today, 1), timezone);
 
     const [stages, outcomes, newThisWeek, overdue, dueToday, upcoming, actions, recent, contacts] =
       await Promise.all([
@@ -93,7 +106,7 @@ export class DashboardService {
       return {
         status,
         count: row?._count._all ?? 0,
-        value: decimal(row?._sum.estimatedValue),
+        value: decimalString(row?._sum.estimatedValue),
       };
     });
 
@@ -109,19 +122,15 @@ export class DashboardService {
       followUps: { overdue, dueToday, upcoming },
       pipeline: {
         activeCount: byStage.reduce((total, stage) => total + stage.count, 0),
-        activeValue: sum(byStage.map((stage) => stage.value)),
+        activeValue: sumDecimals(byStage.map((stage) => stage.value)),
         byStage,
       },
       outcomes: {
         won: wonCount,
         lost: lostCount,
-        // Falls back to the estimate for deals closed before wonValue existed,
-        // otherwise historical revenue would read as zero.
-        wonValue: decimal(won?._sum.wonValue) !== '0'
-          ? decimal(won?._sum.wonValue)
-          : decimal(won?._sum.estimatedValue),
+        wonValue: wonRevenue(won?._sum.wonValue, won?._sum.estimatedValue),
         // Open leads are not yet a loss, so only decided deals count.
-        conversionRate: decided === 0 ? 0 : Math.round((wonCount / decided) * 100),
+        conversionRate: percentage(wonCount, decided),
         newThisWeek,
       },
       contacts,
@@ -129,35 +138,6 @@ export class DashboardService {
       recent: recent.map(toDashboardLead),
     };
   }
-}
-
-type Decimalish = { toString(): string } | null | undefined;
-
-function decimal(value: Decimalish): string {
-  return value == null ? '0' : value.toString();
-}
-
-/**
- * Money is summed as a string-safe decimal.
- *
- * Prisma returns NUMERIC as a Decimal precisely so it does not go through a
- * float; converting to Number here to add it up would reintroduce the rounding
- * error the column type exists to avoid.
- */
-function sum(values: string[]): string {
-  const total = values.reduce((carry, value) => carry + BigInt(scaled(value)), 0n);
-  const negative = total < 0n;
-  const digits = (negative ? -total : total).toString().padStart(3, '0');
-  const whole = digits.slice(0, -2);
-  const fraction = digits.slice(-2);
-
-  return `${negative ? '-' : ''}${whole}${fraction === '00' ? '' : `.${fraction}`}`;
-}
-
-/** Decimal string to an integer number of hundredths. */
-function scaled(value: string): string {
-  const [whole = '0', fraction = ''] = value.split('.');
-  return `${whole}${fraction.padEnd(2, '0').slice(0, 2)}`;
 }
 
 type LeadRow = {

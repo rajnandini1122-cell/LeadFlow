@@ -502,6 +502,14 @@ model Lead {
   @@index([organizationId, mobile])
   @@index([organizationId, contactId])
   @@index([organizationId, createdAt(sort: Desc)])
+  /// Reporting: "won this month" and won-value totals filter on won_at, which
+  /// none of the indexes above cover — they are all keyed on created_at or
+  /// status. Mostly NULL, so the btree stays small.
+  @@index([organizationId, wonAt])
+  @@index([organizationId, lostAt])
+  /// Archived-in-range. Every other query filters deleted_at IS NULL, which an
+  /// index cannot help; counting the archived ones is the case that needs it.
+  @@index([organizationId, deletedAt])
   @@map("leads")
 }
 
@@ -631,5 +639,9 @@ model FollowUp {
   /// Deliberately NOT organization-first: the Phase 6 sweep scans across
   /// tenants for work that has come due.
   @@index([status, scheduledAt])
+  /// Reporting: completed-in-range and the completion rate filter on
+  /// completed_at. The assignee index above is keyed on scheduled_at, so it
+  /// cannot serve a completion-date range.
+  @@index([organizationId, completedAt])
   @@map("follow_ups")
 }

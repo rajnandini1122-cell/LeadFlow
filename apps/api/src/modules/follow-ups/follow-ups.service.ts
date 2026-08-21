@@ -23,6 +23,9 @@ export interface FollowUpView {
   companyName: string | null;
   mobile: string | null;
   leadStatus: string;
+  leadPriority: string;
+  /** Already fetched for the row; surfaced so a report can total value at risk. */
+  estimatedValue: string | null;
   scheduledAt: string;
   type: string;
   status: string;
@@ -371,6 +374,8 @@ type FollowUpRow = {
     companyName: string | null;
     mobile: string | null;
     status: string;
+    priority: string;
+    estimatedValue: { toString(): string } | null;
   };
   assignedUser: { id: string; fullName: string };
 };
@@ -387,6 +392,8 @@ function toView(row: FollowUpRow): FollowUpView {
     companyName: row.lead.companyName,
     mobile: row.lead.mobile,
     leadStatus: row.lead.status,
+    leadPriority: row.lead.priority,
+    estimatedValue: row.lead.estimatedValue?.toString() ?? null,
     scheduledAt: row.scheduledAt.toISOString(),
     type: row.type,
     status: row.status,

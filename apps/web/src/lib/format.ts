@@ -64,6 +64,22 @@ export function formatCurrencyCompact(value: string | number | null): string {
   }).format(amount);
 }
 
+/**
+ * The tenant currency's symbol on its own, for input adornments and hints.
+ *
+ * Derived from Intl rather than a lookup table, so a tenant on a currency
+ * nobody anticipated still gets the right mark instead of a hardcoded one.
+ */
+export function currencySymbol(): string {
+  const parts = new Intl.NumberFormat(context.locale, {
+    style: 'currency',
+    currency: context.currency,
+    maximumFractionDigits: 0,
+  }).formatToParts(0);
+
+  return parts.find((part) => part.type === 'currency')?.value ?? context.currency;
+}
+
 const startOfDay = (date: Date): number =>
   new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
 

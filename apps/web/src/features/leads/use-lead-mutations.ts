@@ -11,6 +11,8 @@ export interface FollowUp {
   companyName: string | null;
   mobile: string | null;
   leadStatus: string;
+  leadPriority: string;
+  estimatedValue: string | null;
   scheduledAt: string;
   type: string;
   status: string;

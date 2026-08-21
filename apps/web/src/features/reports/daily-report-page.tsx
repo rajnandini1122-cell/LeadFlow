@@ -1,5 +1,11 @@
 import { Link } from 'react-router-dom';
-import { formatCurrency, formatCurrencyCompact, formatDate, formatDueDate } from '../../lib/format';
+import {
+  formatCurrency,
+  formatCurrencyCompact,
+  formatDate,
+  formatDueDate,
+  humanise,
+} from '../../lib/format';
 import { downloadCsv, exportFilename, toCsv } from '../../lib/export-csv';
 import {
   Card,
@@ -8,27 +14,51 @@ import {
   EmptyState,
   ErrorNotice,
   PageHeader,
-  PhaseNote,
-  PriorityBadge,
   SkeletonRows,
   StatTile,
   StatusBadge,
 } from '../../components/ui';
 import { useAuth } from '../auth/auth-context';
-import { bucketLeads, useLeads, type LeadSummary } from '../leads/use-leads';
+import { useFollowUps, type FollowUp } from '../leads/use-lead-mutations';
+import { useDailyReport, type DailyReport } from './use-reports';
 
 /**
  * Daily report — the sheet a manager reads at the start of the day, or prints
  * for a morning huddle.
  *
- * Deliberately a single page: what is late, what is due, what came in, and who
- * is carrying it. Anything that does not drive a decision today is left out.
+ * Deliberately a single page: what is late, what is due, what came in, and what
+ * closed. Every count is aggregated by the API over the whole dataset, and
+ * "today" is a wall-clock day in the ORGANIZATION's timezone — the browser's
+ * clock would give a travelling manager a different day from their team.
  */
 export function DailyReportPage(): React.JSX.Element {
   const { user } = useAuth();
-  const leads = useLeads();
+  const report = useDailyReport();
+  const overdue = useFollowUps('overdue');
+  const dueToday = useFollowUps('today');
 
-  if (leads.isPending) {
+  const actionable = [...(overdue.data ?? []), ...(dueToday.data ?? [])];
+
+  const exportReport = (): void => {
+    const csv = toCsv(actionable, [
+      {
+        header: 'Bucket',
+        value: (item) => ((overdue.data ?? []).includes(item) ? 'Overdue' : 'Due today'),
+      },
+      { header: 'Lead number', value: (item) => item.leadNumber },
+      { header: 'Name', value: (item) => item.leadName },
+      { header: 'Company', value: (item) => item.companyName },
+      { header: 'Mobile', value: (item) => item.mobile },
+      { header: 'Lead status', value: (item) => humanise(item.leadStatus) },
+      { header: 'Follow-up type', value: (item) => humanise(item.type) },
+      { header: 'Scheduled', value: (item) => formatDueDate(item.scheduledAt) },
+      { header: 'Owner', value: (item) => item.assignedTo.fullName },
+    ]);
+
+    downloadCsv(exportFilename('daily-report', user?.organization.slug ?? 'export'), csv);
+  };
+
+  if (report.isPending) {
     return (
       <>
         <PageHeader title="Daily report" />
@@ -39,7 +69,7 @@ export function DailyReportPage(): React.JSX.Element {
     );
   }
 
-  if (leads.isError) {
+  if (report.isError) {
     return (
       <Card>
         <ErrorNotice message="Could not build the report." />
@@ -47,35 +77,13 @@ export function DailyReportPage(): React.JSX.Element {
     );
   }
 
-  const b = bucketLeads(leads.data.items);
-  const newToday = b.all.filter((lead) => isToday(lead.createdAt));
-
-  const actionable = [...b.overdue, ...b.today];
-
-  const byOwner = groupByOwner(b.active);
-
-  const exportReport = (): void => {
-    const csv = toCsv(actionable, [
-      { header: 'Bucket', value: (lead) => (b.overdue.includes(lead) ? 'Overdue' : 'Due today') },
-      { header: 'Lead number', value: (lead) => lead.leadNumber },
-      { header: 'Name', value: (lead) => lead.name },
-      { header: 'Company', value: (lead) => lead.companyName },
-      { header: 'Mobile', value: (lead) => lead.mobile },
-      { header: 'Status', value: (lead) => lead.status },
-      { header: 'Priority', value: (lead) => lead.priority },
-      { header: 'Value', value: (lead) => lead.estimatedValue ?? '' },
-      { header: 'Follow-up', value: (lead) => formatDueDate(lead.nextFollowUpAt) },
-      { header: 'Owner', value: (lead) => lead.assignedTo?.fullName ?? 'Unassigned' },
-    ]);
-
-    downloadCsv(exportFilename('daily-report', user?.organization.slug ?? 'export'), csv);
-  };
+  const data = report.data;
 
   return (
     <>
       <PageHeader
         title="Daily report"
-        subtitle={`${formatDate(new Date().toISOString())} · ${user?.organization.name}`}
+        subtitle={`${formatDate(`${data.date}T00:00:00Z`)} · ${user?.organization.name}`}
         action={
           <div className="flex gap-2 print:hidden">
             <button
@@ -97,172 +105,130 @@ export function DailyReportPage(): React.JSX.Element {
         }
       />
 
+      <p className="mb-4 text-xs text-slate-500">
+        Day boundaries use <span className="font-medium text-slate-700">{data.timezone}</span>
+        {data.scope === 'OWN' && (
+          <>
+            <span className="mx-1.5 text-slate-300">·</span>
+            <span className="font-medium text-amber-700">Your leads only</span>
+          </>
+        )}
+      </p>
+
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatTile
           label="Overdue"
-          value={b.overdue.length}
-          tone={b.overdue.length > 0 ? 'danger' : 'success'}
-          hint={formatCurrencyCompact(sum(b.overdue)) + ' at risk'}
+          value={data.followUpsOverdue}
+          tone={data.followUpsOverdue > 0 ? 'danger' : 'success'}
+          hint="Open and past due, right now"
         />
-        <StatTile label="Due today" value={b.today.length} tone={b.today.length > 0 ? 'warning' : 'default'} />
-        <StatTile label="New today" value={newToday.length} hint="Leads added" />
         <StatTile
-          label="Open pipeline"
-          value={formatCurrencyCompact(b.pipelineValue)}
-          hint={`${b.active.length} active leads`}
+          label="Completed today"
+          value={data.followUpsCompleted}
+          tone={data.followUpsCompleted > 0 ? 'success' : 'default'}
+          hint="Follow-ups closed off"
+        />
+        <StatTile label="New today" value={data.leadsCreated} hint="Leads added" />
+        <StatTile
+          label="Won today"
+          value={data.leadsWon}
+          tone="success"
+          hint={formatCurrencyCompact(data.wonValueToday)}
         />
       </div>
 
       <div className="mt-6 space-y-6">
         <Card>
           <CardHeader
-            title="Needs action today"
-            subtitle={`${b.overdue.length} overdue · ${b.today.length} due today`}
+            title="Today’s outreach"
+            subtitle="Counted from the activity timeline, not from what is on screen"
           />
-          {actionable.length === 0 ? (
+          <dl className="grid grid-cols-2 divide-slate-100 sm:grid-cols-3 lg:grid-cols-6">
+            <Metric label="Leads contacted" value={data.leadsContacted} />
+            <Metric label="Calls completed" value={data.callsCompleted} />
+            <Metric label="Not answered" value={data.callsNotAnswered} />
+            <Metric label="WhatsApp" value={data.whatsappActivities} />
+            <Metric label="Notes added" value={data.notesAdded} />
+            <Metric label="Lost today" value={data.leadsLost} />
+          </dl>
+        </Card>
+
+        <Card>
+          <CardHeader
+            title="Needs action today"
+            subtitle={`${overdue.data?.length ?? 0} overdue · ${dueToday.data?.length ?? 0} due today`}
+          />
+          {overdue.isPending || dueToday.isPending ? (
+            <SkeletonRows rows={4} />
+          ) : actionable.length === 0 ? (
             <EmptyState
               icon="✓"
               title="Nothing outstanding"
               description="No overdue follow-ups and nothing due today."
             />
           ) : (
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-slate-100 text-left text-xs text-slate-500">
-                  <th className="px-5 py-2 font-medium">Lead</th>
-                  <th className="px-3 py-2 font-medium">Status</th>
-                  <th className="px-3 py-2 font-medium">Owner</th>
-                  <th className="px-3 py-2 text-right font-medium">Value</th>
-                  <th className="px-5 py-2 text-right font-medium">Follow-up</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {actionable.map((lead) => (
-                  <tr key={lead.id} className="hover:bg-slate-50">
-                    <td className="px-5 py-2.5">
-                      <Link to={`/leads/${lead.id}`} className="font-medium text-slate-900 hover:underline">
-                        {lead.name}
-                      </Link>
-                      <p className="text-xs text-slate-500">
-                        <span className="font-mono">{lead.leadNumber}</span>
-                        {lead.companyName ? ` · ${lead.companyName}` : ''}
-                      </p>
-                    </td>
-                    <td className="px-3 py-2.5">
-                      <StatusBadge status={lead.status} />
-                      <div className="mt-1">
-                        <PriorityBadge priority={lead.priority} />
-                      </div>
-                    </td>
-                    <td className="px-3 py-2.5 text-slate-600">
-                      {lead.assignedTo?.fullName ?? '—'}
-                    </td>
-                    <td className="px-3 py-2.5 text-right font-medium tabular-nums text-slate-900">
-                      {formatCurrency(lead.estimatedValue)}
-                    </td>
-                    <td className="px-5 py-2.5 text-right">
-                      <DueBadge iso={lead.nextFollowUpAt} label={formatDueDate(lead.nextFollowUpAt)} />
-                    </td>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-100 text-left text-xs text-slate-500">
+                    <th className="px-5 py-2 font-medium">Lead</th>
+                    <th className="px-3 py-2 font-medium">Status</th>
+                    <th className="px-3 py-2 font-medium">Owner</th>
+                    <th className="px-3 py-2 text-right font-medium">Value</th>
+                    <th className="px-5 py-2 text-right font-medium">Follow-up</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {actionable.map((item) => (
+                    <ActionRow key={item.id} followUp={item} />
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </Card>
-
-        <div className="grid gap-6 lg:grid-cols-2">
-          <Card>
-            <CardHeader title="Workload by owner" subtitle="Active leads and overdue count" />
-            {byOwner.length === 0 ? (
-              <EmptyState title="No active leads" description="Nothing assigned right now." />
-            ) : (
-              <ul className="divide-y divide-slate-100">
-                {byOwner.map(({ owner, rows }) => {
-                  const overdue = rows.filter((lead) => b.overdue.includes(lead)).length;
-                  return (
-                    <li key={owner} className="flex items-center justify-between px-5 py-3">
-                      <div>
-                        <p className="text-sm font-medium text-slate-900">{owner}</p>
-                        <p className="text-xs text-slate-500">
-                          {rows.length} active
-                          {overdue > 0 && (
-                            <span className="ml-1.5 font-medium text-red-600">
-                              · {overdue} overdue
-                            </span>
-                          )}
-                        </p>
-                      </div>
-                      <p className="text-sm font-semibold tabular-nums text-slate-900">
-                        {formatCurrencyCompact(sum(rows))}
-                      </p>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </Card>
-
-          <Card>
-            <CardHeader title="Added today" />
-            {newToday.length === 0 ? (
-              <EmptyState title="No new leads today" description="Nothing captured yet." />
-            ) : (
-              <ul className="divide-y divide-slate-100">
-                {newToday.map((lead) => (
-                  <li key={lead.id} className="flex items-center justify-between px-5 py-3">
-                    <div className="min-w-0">
-                      <Link
-                        to={`/leads/${lead.id}`}
-                        className="truncate text-sm font-medium text-slate-900 hover:underline"
-                      >
-                        {lead.name}
-                      </Link>
-                      <p className="truncate text-xs text-slate-500">{lead.companyName}</p>
-                    </div>
-                    <StatusBadge status={lead.status} />
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Card>
-        </div>
-      </div>
-
-      <div className="mt-4 print:hidden">
-        <PhaseNote phase="Phase 6">
-          Built in the browser from the leads currently loaded. A scheduled
-          version — emailed or pushed each morning, and driven by real follow-up
-          records rather than each lead&rsquo;s next date — arrives with the
-          follow-up engine and its worker.
-        </PhaseNote>
       </div>
     </>
   );
 }
 
-function isToday(iso: string): boolean {
-  const date = new Date(iso);
-  const now = new Date();
+function ActionRow({ followUp }: { followUp: FollowUp }): React.JSX.Element {
   return (
-    date.getDate() === now.getDate() &&
-    date.getMonth() === now.getMonth() &&
-    date.getFullYear() === now.getFullYear()
+    <tr className="hover:bg-slate-50">
+      <td className="px-5 py-2.5">
+        <Link
+          to={`/leads/${followUp.leadId}`}
+          className="font-medium text-slate-900 hover:underline"
+        >
+          {followUp.leadName}
+        </Link>
+        <p className="text-xs text-slate-500">
+          <span className="font-mono">{followUp.leadNumber}</span>
+          {followUp.companyName ? ` · ${followUp.companyName}` : ''}
+        </p>
+      </td>
+      <td className="px-3 py-2.5">
+        <StatusBadge status={followUp.leadStatus as never} />
+        <p className="mt-1 text-[11px] text-slate-500">{humanise(followUp.type)}</p>
+      </td>
+      <td className="px-3 py-2.5 text-slate-600">{followUp.assignedTo.fullName}</td>
+      <td className="px-3 py-2.5 text-right font-medium tabular-nums text-slate-900">
+        {formatCurrency(followUp.estimatedValue)}
+      </td>
+      <td className="px-5 py-2.5 text-right">
+        <DueBadge iso={followUp.scheduledAt} label={formatDueDate(followUp.scheduledAt)} />
+      </td>
+    </tr>
   );
 }
 
-function sum(rows: LeadSummary[]): number {
-  return rows.reduce((total, lead) => total + Number(lead.estimatedValue ?? 0), 0);
+function Metric({ label, value }: { label: string; value: number }): React.JSX.Element {
+  return (
+    <div className="border-t border-slate-100 px-5 py-3 first:border-t-0 sm:border-t-0">
+      <dt className="text-xs text-slate-500">{label}</dt>
+      <dd className="mt-0.5 text-xl font-semibold tabular-nums text-slate-900">{value}</dd>
+    </div>
+  );
 }
 
-function groupByOwner(rows: LeadSummary[]): { owner: string; rows: LeadSummary[] }[] {
-  const groups = new Map<string, LeadSummary[]>();
-
-  for (const lead of rows) {
-    const owner = lead.assignedTo?.fullName ?? 'Unassigned';
-    groups.set(owner, [...(groups.get(owner) ?? []), lead]);
-  }
-
-  return [...groups.entries()]
-    .map(([owner, ownerRows]) => ({ owner, rows: ownerRows }))
-    .sort((a, b) => b.rows.length - a.rows.length);
-}
+export type { DailyReport };
