@@ -90,9 +90,39 @@ export function startOfZonedDay(date: ZonedDate, timezone: string): Date {
   const naive = Date.UTC(date.year, date.month - 1, date.day, 0, 0, 0);
 
   const firstGuess = naive - offsetAt(new Date(naive), timezone);
-  const corrected = naive - offsetAt(new Date(firstGuess), timezone);
+  const secondGuess = naive - offsetAt(new Date(firstGuess), timezone);
 
-  return new Date(corrected);
+  /*
+   * Neither guess is reliable on its own, and they fail in OPPOSITE directions.
+   *
+   * A single pass uses the offset in force at the naive UTC instant, which is
+   * the wrong side of a transition roughly twice a year: in Pacific/Chatham on
+   * 27 September 2026 it lands at 23:00 the previous day.
+   *
+   * Correcting with a second pass fixes that but breaks the case where local
+   * midnight does not EXIST — America/Santiago springs forward at 24:00, so on
+   * 6 September 2026 the day begins at 01:00, and the second pass overshoots to
+   * 23:00 on the 5th. Same for Havana and São Paulo.
+   *
+   * So neither is chosen by rule. Both are computed and the one that actually
+   * lands on the requested calendar date wins; when both do, the earlier is
+   * taken, which is the first occurrence of a midnight that happens twice after
+   * a fall-back.
+   */
+  const candidates = [firstGuess, secondGuess]
+    .map((instant) => new Date(instant))
+    .filter((instant) => {
+      const landed = zonedDate(instant, timezone);
+      return (
+        landed.year === date.year && landed.month === date.month && landed.day === date.day
+      );
+    })
+    .sort((a, b) => a.getTime() - b.getTime());
+
+  // Nothing matched: the whole day is skipped by the zone, which no real
+  // timezone does. Falling back to the corrected guess beats returning
+  // undefined and turning a date bug into a crash.
+  return candidates[0] ?? new Date(secondGuess);
 }
 
 /** Start of the day containing `instant`, in `timezone`. */

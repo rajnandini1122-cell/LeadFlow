@@ -58,6 +58,50 @@ describe('startOfZonedDay', () => {
     expect(midnight.toISOString()).toBe('2026-11-01T05:00:00.000Z');
   });
 
+  /*
+   * Zones whose DST transition happens AT midnight.
+   *
+   * These are the cases the earlier test set missed entirely — it used the US,
+   * the UK, India and New Zealand, none of which change offset at 00:00, so a
+   * single-pass implementation passed every assertion while being wrong.
+   *
+   * They matter because both the obvious implementations fail here, in
+   * OPPOSITE directions, so no amount of reasoning about one of them finds it.
+   */
+  describe('zones that change offset at midnight', () => {
+    it('starts the day at 01:00 where midnight does not exist', () => {
+      // Santiago springs forward at 24:00, so 6 September 2026 has no 00:00.
+      // The first instant of that day is 01:00, and it must still be THAT day.
+      const start = startOfZonedDay({ year: 2026, month: 9, day: 6 }, 'America/Santiago');
+
+      expect(zonedDate(start, 'America/Santiago')).toEqual({ year: 2026, month: 9, day: 6 });
+    });
+
+    it.each([
+      ['America/Santiago', 2026, 9, 6],
+      ['America/Havana', 2026, 3, 8],
+      ['Asia/Beirut', 2026, 3, 29],
+      ['Pacific/Chatham', 2026, 9, 27],
+      ['America/Sao_Paulo', 2018, 11, 4],
+    ])('never lands on the wrong calendar day in %s', (zone, year, month, day) => {
+      // The bug this catches returned an instant on the PREVIOUS day, which
+      // would silently move a lead out of "today" in every report.
+      const start = startOfZonedDay({ year, month, day }, zone as string);
+
+      expect(zonedDate(start, zone as string)).toEqual({ year, month, day });
+    });
+
+    it('is the earliest instant that still belongs to the day', () => {
+      const zone = 'Pacific/Chatham';
+      const start = startOfZonedDay({ year: 2026, month: 9, day: 27 }, zone);
+
+      // A second earlier must belong to the previous day, or the boundary is
+      // not the boundary.
+      const justBefore = new Date(start.getTime() - 1000);
+      expect(zonedDate(justBefore, zone).day).not.toBe(27);
+    });
+  });
+
   it('round-trips: the instant of local midnight reads back as that date', () => {
     // The property that actually matters — a boundary must not land on the
     // wrong side of itself, or a lead created at 00:05 falls out of "today".
