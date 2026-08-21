@@ -82,7 +82,12 @@ function EnquiryForm(): React.JSX.Element {
       name: form.name.trim(),
       email: form.email.trim(),
       ...(form.company.trim() ? { company: form.company.trim() } : {}),
-      ...(form.phone.trim() ? { phone: form.phone.trim() } : {}),
+      // Sent with the dialling code attached, so what arrives in the sales
+      // inbox is a number somebody can actually dial without first working out
+      // which country it came from.
+      ...(form.phone.trim()
+        ? { phone: `${form.country ? DIALLING_CODES[form.country] ?? '' : ''}${form.phone.trim()}`.trim() }
+        : {}),
       ...(form.country ? { country: form.country } : {}),
       message: form.message.trim(),
       source: 'contact',
@@ -158,36 +163,61 @@ function EnquiryForm(): React.JSX.Element {
           />
         </Field>
 
-        <Field label="Phone" htmlFor={ids.phone} hint="Optional">
-          <input
-            id={ids.phone}
-            type="tel"
-            value={form.phone}
-            onChange={set('phone')}
-            autoComplete="tel"
+        <Field
+          label="Country"
+          htmlFor={ids.country}
+          hint="Optional — sets the dialling code and tells us your timezone"
+        >
+          <select
+            id={ids.country}
+            value={form.country}
+            onChange={set('country')}
+            autoComplete="country"
             className={inputClass}
-          />
+          >
+            <option value="">Select a country…</option>
+            {COUNTRIES.map((code) => (
+              <option key={code} value={code}>
+                {countryName(code)} ({DIALLING_CODES[code]})
+              </option>
+            ))}
+          </select>
         </Field>
       </div>
 
+      {/*
+        Phone sits AFTER country, because the dialling code shown here comes
+        from it. Asking for the number first would mean showing a prefix that
+        is either wrong or absent, and a visitor typing their own +country code
+        on top of ours produces a number nobody can dial.
+      */}
       <Field
-        label="Country"
-        htmlFor={ids.country}
-        hint="Optional — helps us answer in your timezone and currency"
+        label="Phone"
+        htmlFor={ids.phone}
+        hint={
+          form.country
+            ? 'Optional — national number, without the country code'
+            : 'Optional — choose a country above to set the dialling code'
+        }
       >
-        <select
-          id={ids.country}
-          value={form.country}
-          onChange={set('country')}
-          className={inputClass}
-        >
-          <option value="">Select a country…</option>
-          {COUNTRIES.map((code) => (
-            <option key={code} value={code}>
-              {countryName(code)}
-            </option>
-          ))}
-        </select>
+        <div className="flex">
+          <span
+            aria-hidden
+            className="inline-flex min-w-[4.5rem] items-center justify-center rounded-l-lg border border-r-0 border-slate-300 bg-slate-50 px-3 text-sm text-slate-600"
+          >
+            {form.country ? DIALLING_CODES[form.country] : '+—'}
+          </span>
+          <input
+            id={ids.phone}
+            type="tel"
+            inputMode="tel"
+            value={form.phone}
+            onChange={set('phone')}
+            autoComplete="tel-national"
+            placeholder={form.country ? EXAMPLE_NUMBERS[form.country] ?? '' : ''}
+            className={`${inputClass} rounded-l-none`}
+          />
+        </div>
       </Field>
 
       <Field
@@ -293,12 +323,36 @@ function ContactDetails(): React.JSX.Element {
  * the common case harder without helping the rare one. The API accepts any
  * valid ISO 3166-1 code, so nothing here restricts what can be stored.
  */
-const COUNTRIES = [
-  'US', 'GB', 'IN', 'CA', 'AU', 'NZ', 'IE', 'DE', 'FR', 'ES', 'IT', 'NL', 'BE',
-  'SE', 'NO', 'DK', 'FI', 'PL', 'PT', 'CH', 'AT', 'AE', 'SA', 'QA', 'SG', 'MY',
-  'ID', 'PH', 'TH', 'VN', 'JP', 'KR', 'CN', 'HK', 'BD', 'PK', 'LK', 'NP',
-  'ZA', 'NG', 'KE', 'GH', 'EG', 'BR', 'MX', 'AR', 'CL', 'CO',
-].sort((a, b) => countryName(a).localeCompare(countryName(b)));
+/**
+ * Dialling codes for the countries offered.
+ *
+ * A small table rather than a phone-number library. Intl has no dialling-code
+ * data, and this field exists so a salesperson can return a call — it does not
+ * need to validate or format every numbering plan on earth. The API stores what
+ * arrives; the CRM's own phone handling is where E.164 correctness matters.
+ */
+const DIALLING_CODES: Record<string, string> = {
+  AE: '+971', AR: '+54', AT: '+43', AU: '+61', BD: '+880', BE: '+32', BR: '+55',
+  CA: '+1', CH: '+41', CL: '+56', CN: '+86', CO: '+57', DE: '+49', DK: '+45',
+  EG: '+20', ES: '+34', FI: '+358', FR: '+33', GB: '+44', GH: '+233', HK: '+852',
+  ID: '+62', IE: '+353', IN: '+91', IT: '+39', JP: '+81', KE: '+254', KR: '+82',
+  LK: '+94', MX: '+52', MY: '+60', NG: '+234', NL: '+31', NO: '+47', NP: '+977',
+  NZ: '+64', PH: '+63', PK: '+92', PL: '+48', PT: '+351', QA: '+974', SA: '+966',
+  SE: '+46', SG: '+65', TH: '+66', US: '+1', VN: '+84', ZA: '+27',
+};
+
+/** Shown as a placeholder so the expected shape is obvious. */
+const EXAMPLE_NUMBERS: Record<string, string> = {
+  IN: '98200 11001',
+  US: '415 555 0100',
+  GB: '20 7946 0958',
+  AE: '50 123 4567',
+  AU: '412 345 678',
+};
+
+const COUNTRIES = Object.keys(DIALLING_CODES).sort((a, b) =>
+  countryName(a).localeCompare(countryName(b)),
+);
 
 function countryName(code: string): string {
   try {
