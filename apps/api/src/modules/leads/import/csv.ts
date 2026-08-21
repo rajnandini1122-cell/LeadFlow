@@ -20,7 +20,7 @@ export const MAX_ROWS = 5000;
 export function parseCsv(input: string, maxRows = MAX_ROWS): ParsedCsv {
   // Excel writes a UTF-8 BOM; left in place it becomes part of the first
   // header name and every mapping against that column silently misses.
-  const text = input.replace(/^﻿/, '');
+  const text = input.charCodeAt(0) === 0xfeff ? input.slice(1) : input;
 
   const rows: string[][] = [];
   let row: string[] = [];

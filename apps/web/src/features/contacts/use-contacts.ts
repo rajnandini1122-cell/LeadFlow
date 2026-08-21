@@ -155,10 +155,11 @@ export function useMergeContacts(): UseMutationResult<
   return useMutation({
     mutationFn: (input: MergeInput) =>
       apiPost<{ targetId: string; leadsMoved: number }>('/contacts/merge', input),
-    onSuccess: (result, input) => {
+    onSuccess: (_result, input) => {
+      // Both records change: one absorbs the leads, the other becomes a
+      // tombstone, and either may be open in another tab.
       refresh(input.targetId);
       refresh(input.sourceId);
-      void result;
     },
   });
 }

@@ -26,6 +26,7 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { to: '/', label: 'Dashboard', icon: '◆' },
   { to: '/leads', label: 'Leads', icon: '☰' },
+  { to: '/contacts', label: 'Contacts', icon: '⚈', permission: PERMISSIONS.CONTACT_VIEW },
   { to: '/follow-ups', label: 'Follow-ups', icon: '◷', badge: 'overdue' },
   { to: '/team', label: 'Team', icon: '⚇', permission: PERMISSIONS.USER_VIEW },
   { to: '/reports', label: 'Reports', icon: '▤', permission: PERMISSIONS.REPORT_VIEW, exact: true },

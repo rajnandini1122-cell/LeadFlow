@@ -10,6 +10,9 @@ import { SecurityPage } from './features/settings/security-page';
 import { DashboardPage } from './features/dashboard/dashboard-page';
 import { LeadsPage } from './features/leads/leads-page';
 import { LeadDetailPage } from './features/leads/lead-detail-page';
+import { ImportLeadsPage } from './features/leads/import-leads-page';
+import { ContactsPage } from './features/contacts/contacts-page';
+import { ContactDetailPage } from './features/contacts/contact-detail-page';
 import { FollowUpsPage } from './features/followups/follow-ups-page';
 import { TeamPage } from './features/team/team-page';
 import { ReportsPage } from './features/reports/reports-page';
@@ -66,7 +69,11 @@ export function App(): React.JSX.Element {
               <Route element={<AppShell />}>
                 <Route index element={<DashboardPage />} />
                 <Route path="leads" element={<LeadsPage />} />
+                {/* Before :id, or the router matches "import" as a lead id. */}
+                <Route path="leads/import" element={<ImportLeadsPage />} />
                 <Route path="leads/:id" element={<LeadDetailPage />} />
+                <Route path="contacts" element={<ContactsPage />} />
+                <Route path="contacts/:id" element={<ContactDetailPage />} />
                 <Route path="follow-ups" element={<FollowUpsPage />} />
                 <Route path="team" element={<TeamPage />} />
                 <Route path="reports" element={<ReportsPage />} />
