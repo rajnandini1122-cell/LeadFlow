@@ -28,6 +28,7 @@ describe('App smoke test', () => {
   });
 
   it('mounts without throwing and renders visible content', async () => {
+    window.history.pushState({}, '', '/');
     const { container } = render(<App />);
 
     await waitFor(() => {
@@ -35,11 +36,29 @@ describe('App smoke test', () => {
     });
   });
 
-  it('lands on the login screen when there is no session', async () => {
+  it('lands on the marketing page when there is no session', async () => {
+    window.history.pushState({}, '', '/');
     render(<App />);
 
     // The single most important assertion here: real, user-visible text.
     // A blank page passes any "did it throw?" check but fails this one.
+    await waitFor(
+      () => {
+        expect(screen.getByRole('heading', { name: 'No lead left behind' })).toBeInTheDocument();
+      },
+      { timeout: 5000 },
+    );
+
+    // A visitor who has never heard of the product needs an explanation and a
+    // way in. "/" used to bounce straight to a password box.
+    expect(screen.getByRole('heading', { name: 'Simple pricing' })).toBeInTheDocument();
+    expect(screen.getAllByRole('link', { name: 'Sign in' }).length).toBeGreaterThan(0);
+  });
+
+  it('sends an anonymous visitor from a protected route to the login screen', async () => {
+    window.history.pushState({}, '', '/leads');
+    render(<App />);
+
     await waitFor(
       () => {
         expect(screen.getByRole('heading', { name: 'LeadFlow' })).toBeInTheDocument();
@@ -47,7 +66,6 @@ describe('App smoke test', () => {
       { timeout: 5000 },
     );
 
-    expect(screen.getByText('No lead left behind.')).toBeInTheDocument();
     expect(screen.getByLabelText('Email')).toBeInTheDocument();
     expect(screen.getByLabelText('Password')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Sign in' })).toBeInTheDocument();

@@ -24,7 +24,7 @@ export function RegisterPage(): React.JSX.Element {
   const [fieldErrors, setFieldErrors] = useState<Record<string, string[]>>({});
   const [submitting, setSubmitting] = useState(false);
 
-  if (status === 'authenticated') return <Navigate to="/" replace />;
+  if (status === 'authenticated') return <Navigate to="/dashboard" replace />;
 
   const submit = async (event: FormEvent): Promise<void> => {
     event.preventDefault();

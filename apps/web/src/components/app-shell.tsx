@@ -24,7 +24,7 @@ interface NavItem {
 
 /** Navigation from spec §25. */
 const NAV_ITEMS: NavItem[] = [
-  { to: '/', label: 'Dashboard', icon: '◆' },
+  { to: '/dashboard', label: 'Dashboard', icon: '◆' },
   { to: '/leads', label: 'Leads', icon: '☰' },
   { to: '/contacts', label: 'Contacts', icon: '⚈', permission: PERMISSIONS.CONTACT_VIEW },
   { to: '/follow-ups', label: 'Follow-ups', icon: '◷', badge: 'overdue' },
@@ -69,7 +69,7 @@ export function AppShell(): React.JSX.Element {
             <NavLink
               key={item.to}
               to={item.to}
-              end={item.to === '/' || item.exact === true}
+              end={item.exact === true}
               onClick={() => setMenuOpen(false)}
               className={({ isActive }) =>
                 `flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition ${

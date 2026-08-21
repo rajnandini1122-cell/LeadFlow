@@ -12,7 +12,7 @@ export function LoginPage(): React.JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  if (status === 'authenticated') return <Navigate to="/" replace />;
+  if (status === 'authenticated') return <Navigate to="/dashboard" replace />;
 
   const submit = async (event: FormEvent, organizationId?: string): Promise<void> => {
     event.preventDefault();

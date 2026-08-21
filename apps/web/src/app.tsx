@@ -7,6 +7,7 @@ import { AcceptInvitationPage } from './features/auth/accept-invitation-page';
 import { ForgotPasswordPage } from './features/auth/forgot-password-page';
 import { ResetPasswordPage } from './features/auth/reset-password-page';
 import { SecurityPage } from './features/settings/security-page';
+import { LandingPage } from './features/marketing/landing-page';
 import { DashboardPage } from './features/dashboard/dashboard-page';
 import { LeadsPage } from './features/leads/leads-page';
 import { LeadDetailPage } from './features/leads/lead-detail-page';
@@ -35,21 +36,41 @@ const queryClient = new QueryClient({
   },
 });
 
+/** Shown while the session is being restored, before either tree is chosen. */
+function Restoring(): React.JSX.Element {
+  return (
+    <div className="flex min-h-screen items-center justify-center text-sm text-slate-500">
+      Loading…
+    </div>
+  );
+}
+
 /** Gate for authenticated routes. Real enforcement is server-side. */
 function RequireAuth(): React.JSX.Element {
   const { status } = useAuth();
 
-  if (status === 'loading') {
-    return (
-      <div className="flex min-h-screen items-center justify-center text-sm text-slate-500">
-        Loading…
-      </div>
-    );
-  }
-
+  if (status === 'loading') return <Restoring />;
   if (status === 'anonymous') return <Navigate to="/login" replace />;
 
   return <Outlet />;
+}
+
+/**
+ * The front door.
+ *
+ * A signed-in visitor arriving at `/` almost always wants their work, not the
+ * sales pitch — so they go to the dashboard. Anyone else gets the marketing
+ * page, which is what used to be missing entirely: an anonymous visitor was
+ * bounced straight to a password box with no explanation of what they were
+ * signing in to.
+ */
+function Home(): React.JSX.Element {
+  const { status } = useAuth();
+
+  if (status === 'loading') return <Restoring />;
+  if (status === 'authenticated') return <Navigate to="/dashboard" replace />;
+
+  return <LandingPage />;
 }
 
 export function App(): React.JSX.Element {
@@ -59,6 +80,7 @@ export function App(): React.JSX.Element {
         <AuthProvider>
           <Routes>
             {/* Public: no session required. */}
+            <Route path="/" element={<Home />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
             <Route path="/invite/:token" element={<AcceptInvitationPage />} />
@@ -67,7 +89,7 @@ export function App(): React.JSX.Element {
 
             <Route element={<RequireAuth />}>
               <Route element={<AppShell />}>
-                <Route index element={<DashboardPage />} />
+                <Route path="dashboard" element={<DashboardPage />} />
                 <Route path="leads" element={<LeadsPage />} />
                 {/* Before :id, or the router matches "import" as a lead id. */}
                 <Route path="leads/import" element={<ImportLeadsPage />} />
@@ -83,6 +105,7 @@ export function App(): React.JSX.Element {
               </Route>
             </Route>
 
+            {/* Home decides where an unknown path lands, per session state. */}
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </AuthProvider>
