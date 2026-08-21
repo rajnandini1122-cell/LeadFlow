@@ -182,6 +182,11 @@ model Organization {
   followUps   FollowUp[]
   subscription Subscription?
 
+  channelIntegrations ChannelIntegration[]
+  conversations       Conversation[]
+  messages            Message[]
+  channelIdentities   ContactChannelIdentity[]
+
   @@index([status])
   @@map("organizations")
 }
@@ -202,6 +207,19 @@ model OrganizationSettings {
   /// Tenant-defined lead sources. Empty falls back to a neutral built-in list,
   /// so a new organization is usable before anyone configures anything.
   leadSources             String[] @default([]) @map("lead_sources")
+
+  /// Omnichannel capture, opt-in per tenant.
+  ///
+  /// Default false so that applying this migration changes nothing for any
+  /// existing organization: the lead flow they use today keeps behaving
+  /// exactly as it does now until someone deliberately turns this on.
+  omnichannelEnabled Boolean @default(false) @map("omnichannel_enabled")
+
+  /// Whether a qualified incoming enquiry may create a lead WITHOUT a human
+  /// approving it. Deliberately separate from the flag above, and deliberately
+  /// false: silently manufacturing leads from stray messages is how a pipeline
+  /// fills with noise, and it is much harder to undo than to enable.
+  omnichannelAutoCreateLeads Boolean @default(false) @map("omnichannel_auto_create_leads")
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -239,6 +257,9 @@ model User {
   leadsAssignedByMe Lead[]             @relation("LeadAssigner")
   followUps         FollowUp[]         @relation("FollowUpAssignee")
   activities        LeadActivity[]
+
+  connectedIntegrations ChannelIntegration[]
+  ownedConversations    Conversation[]
 
   @@index([status])
   @@map("users")
@@ -495,6 +516,7 @@ model Lead {
   assignedBy   User?          @relation("LeadAssigner", fields: [assignedById], references: [id], onDelete: SetNull)
   activities   LeadActivity[]
   followUps    FollowUp[]
+  conversations Conversation[]
 
   @@unique([organizationId, leadNumber])
   @@index([organizationId, status])
@@ -576,6 +598,9 @@ model Contact {
   mergedInto   Contact?     @relation("ContactMerge", fields: [mergedIntoId], references: [id], onDelete: SetNull)
   mergedFrom   Contact[]    @relation("ContactMerge")
   leads        Lead[]
+
+  conversations     Conversation[]
+  channelIdentities ContactChannelIdentity[]
 
   @@index([organizationId, mobile])
   @@index([organizationId, email])
@@ -822,4 +847,242 @@ model ContactEnquiry {
   @@index([status, createdAt(sort: Desc)])
   @@index([email, createdAt(sort: Desc)])
   @@map("contact_enquiries")
+}
+
+// =============================================================================
+// OMNICHANNEL CAPTURE
+//
+// A conversation layer in front of the EXISTING lead flow, never beside it.
+// Nothing here is a second CRM: these tables capture what arrived on WhatsApp,
+// Facebook or Instagram, resolve it to an existing Contact and Lead where one
+// can be found, and hand anything genuinely new to the ordinary lead-creation
+// path so it behaves exactly like a lead typed in by hand.
+//
+// Every table carries `organization_id` and is registered in
+// TENANT_SCOPED_MODELS, so the fail-closed Prisma extension refuses to query
+// any of them without a tenant context.
+// =============================================================================
+
+enum ChannelType {
+  WHATSAPP
+  FACEBOOK
+  INSTAGRAM
+
+  @@map("channel_type")
+}
+
+enum ChannelIntegrationStatus {
+  /// Credentials present and the provider is accepting calls.
+  CONNECTED
+  /// Deliberately disconnected by an administrator. The row is kept so the
+  /// history of what was once linked survives, and so reconnecting the same
+  /// account does not orphan its conversations.
+  DISCONNECTED
+  /// Credentials rejected or webhooks failing. Distinct from DISCONNECTED
+  /// because it needs someone's attention rather than being a choice.
+  ERROR
+
+  @@map("channel_integration_status")
+}
+
+/// One connected business account belonging to one organization.
+///
+/// No access token is stored here. `credentialsRef` is a pointer into the
+/// configured secret store; putting provider tokens in an application table
+/// would put them in every database backup and every support export.
+model ChannelIntegration {
+  id             String                   @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String                   @map("organization_id") @db.Uuid
+  channel        ChannelType
+  status         ChannelIntegrationStatus @default(DISCONNECTED)
+
+  /// The provider's own identifier — a WhatsApp phone number id, a Facebook
+  /// page id, an Instagram business account id.
+  providerAccountId String  @map("provider_account_id") @db.VarChar(120)
+  /// Human-readable, for the settings screen.
+  displayName       String? @map("display_name") @db.VarChar(200)
+  /// Opaque handle for the credentials, never the credentials themselves.
+  credentialsRef    String? @map("credentials_ref") @db.VarChar(200)
+  metadata          Json?
+
+  connectedById  String?   @map("connected_by") @db.Uuid
+  connectedAt    DateTime? @map("connected_at") @db.Timestamptz(6)
+  disconnectedAt DateTime? @map("disconnected_at") @db.Timestamptz(6)
+
+  /// Last provider error, surfaced in settings so ERROR is actionable.
+  lastErrorAt      DateTime? @map("last_error_at") @db.Timestamptz(6)
+  lastErrorMessage String?   @map("last_error_message") @db.VarChar(500)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization  Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  connectedBy   User?          @relation(fields: [connectedById], references: [id], onDelete: SetNull)
+  conversations Conversation[]
+
+  /// GLOBAL, not per tenant, and deliberately so.
+  ///
+  /// A webhook arrives with no tenant context — the provider account id is the
+  /// only thing that identifies who it belongs to. If two organizations could
+  /// both claim the same Facebook page, an incoming message would have two
+  /// possible owners and routing it would be a guess. This constraint makes
+  /// the lookup total, and stops a tenant attaching itself to an account
+  /// another tenant already connected.
+  @@unique([channel, providerAccountId])
+  @@index([organizationId, channel])
+  @@map("channel_integrations")
+}
+
+enum ConversationStatus {
+  OPEN
+  CLOSED
+
+  @@map("conversation_status")
+}
+
+/// One thread with one person on one channel.
+///
+/// `leadId` is nullable on purpose: not every conversation is a lead, and
+/// pretending otherwise is what fills a CRM with "Hi" and "thanks". A
+/// conversation becomes linked to a lead when one is matched or created,
+/// never before.
+model Conversation {
+  id             String      @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String      @map("organization_id") @db.Uuid
+  channel        ChannelType
+  integrationId  String      @map("integration_id") @db.Uuid
+
+  /// The provider's thread identifier.
+  externalConversationId String @map("external_conversation_id") @db.VarChar(200)
+
+  contactId String? @map("contact_id") @db.Uuid
+  leadId    String? @map("lead_id") @db.Uuid
+  /// Who is handling this thread. Follows the lead's assignee once linked;
+  /// NULL means it is in the unassigned queue.
+  ownerId   String? @map("owner_id") @db.Uuid
+
+  /// Denormalised company, matching how Lead and Contact already store it.
+  /// There is no Company table in this system — company is a name carried on
+  /// the person — so this mirrors the existing convention rather than
+  /// inventing an entity the rest of the product does not have.
+  companyName String? @map("company_name") @db.VarChar(200)
+
+  status        ConversationStatus @default(OPEN)
+  lastMessageAt DateTime?          @map("last_message_at") @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  integration  ChannelIntegration @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  contact      Contact?           @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  lead         Lead?              @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  owner        User?              @relation(fields: [ownerId], references: [id], onDelete: SetNull)
+  messages     Message[]
+
+  /// Webhook idempotency: a redelivered thread must find its existing row.
+  @@unique([organizationId, channel, externalConversationId])
+  @@index([organizationId, status, lastMessageAt(sort: Desc)])
+  @@index([organizationId, ownerId, status])
+  @@index([organizationId, leadId])
+  @@index([organizationId, contactId])
+  @@map("conversations")
+}
+
+enum MessageDirection {
+  INCOMING
+  OUTGOING
+
+  @@map("message_direction")
+}
+
+enum MessageSenderType {
+  CONTACT
+  AGENT
+  SYSTEM
+
+  @@map("message_sender_type")
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+  VIDEO
+  AUDIO
+  DOCUMENT
+  LOCATION
+  STICKER
+  TEMPLATE
+  OTHER
+
+  @@map("message_type")
+}
+
+/// Append-only, like LeadActivity. A message is a record of something that
+/// happened; editing one would rewrite history.
+model Message {
+  id             String      @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String      @map("organization_id") @db.Uuid
+  conversationId String      @map("conversation_id") @db.Uuid
+  channel        ChannelType
+
+  externalMessageId String            @map("external_message_id") @db.VarChar(200)
+  direction         MessageDirection
+  senderType        MessageSenderType @map("sender_type")
+  messageType       MessageType       @default(TEXT) @map("message_type")
+
+  /// Unbounded because providers do not agree on a limit, and truncating a
+  /// customer's requirement is worse than storing a long row.
+  content     String? @db.Text
+  attachments Json?
+  metadata    Json?
+
+  sentAt     DateTime? @map("sent_at") @db.Timestamptz(6)
+  receivedAt DateTime? @map("received_at") @db.Timestamptz(6)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  /// The webhook replay guard. Providers redeliver on any non-2xx, so the same
+  /// message WILL arrive twice; this turns the second delivery into a no-op
+  /// instead of a duplicate in the timeline.
+  @@unique([organizationId, channel, externalMessageId])
+  @@index([organizationId, conversationId, createdAt(sort: Desc)])
+  @@map("messages")
+}
+
+/// How one person is known on each channel.
+///
+/// Additive rather than columns on Contact: a person has at most one mobile,
+/// but may have an Instagram handle, a Facebook user id and a WhatsApp number
+/// at once, and that is a list, not three more nullable columns.
+model ContactChannelIdentity {
+  id             String      @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String      @map("organization_id") @db.Uuid
+  contactId      String      @map("contact_id") @db.Uuid
+  channel        ChannelType
+
+  /// The provider's stable user id — the only identifier reliably present on
+  /// every channel. Handles and display names both change.
+  externalUserId String  @map("external_user_id") @db.VarChar(200)
+  username       String? @db.VarChar(200)
+  /// E.164 where the channel exposes one. WhatsApp does; Instagram does not.
+  phoneNumber    String? @map("phone_number") @db.VarChar(20)
+  profileName    String? @map("profile_name") @db.VarChar(200)
+  metadata       Json?
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  contact      Contact      @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  /// One channel identity resolves to exactly one person per organization.
+  /// Without this, a redelivered webhook could attach the same Instagram user
+  /// to two contacts and split one customer's history in half.
+  @@unique([organizationId, channel, externalUserId])
+  @@index([organizationId, contactId])
+  @@index([organizationId, channel, phoneNumber])
+  @@map("contact_channel_identities")
 }

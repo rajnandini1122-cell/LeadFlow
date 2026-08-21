@@ -207,16 +207,41 @@ async function seedOrganization(
     const createdAt = daysAgo(lead.createdDaysAgo);
     const assignedToId = assignees[lead.assignTo];
 
+    const mobile = `${demo.phonePrefix}${String(1000 + index * 7).slice(-4)}`;
+
+    /*
+     * The person behind the enquiry.
+     *
+     * Created here because the application creates one on every lead, and a
+     * seeded database without them left the Contacts screen empty while the
+     * Leads screen was full — demo data that does not match what the product
+     * actually produces.
+     */
+    const contact = await prisma.contact.create({
+      data: {
+        organizationId: organization.id,
+        firstName: lead.firstName,
+        lastName: lead.lastName,
+        mobile,
+        email: `${lead.firstName.toLowerCase()}@${slugify(lead.companyName)}.example`,
+        companyName: lead.companyName,
+        city: lead.city,
+        createdBy: ownerId,
+        updatedBy: ownerId,
+      },
+    });
+
     const row = await prisma.lead.create({
       data: {
         organizationId: organization.id,
         leadNumber,
+        contactId: contact.id,
         firstName: lead.firstName,
         lastName: lead.lastName,
         // E.164, built from the organization's own dialling prefix. Unique
         // within the organization so the partial unique index on
         // (organization_id, mobile) is satisfied on re-runs.
-        mobile: `${demo.phonePrefix}${String(1000 + index * 7).slice(-4)}`,
+        mobile,
         email: `${lead.firstName.toLowerCase()}@${slugify(lead.companyName)}.example`,
         companyName: lead.companyName,
         city: lead.city,
@@ -249,6 +274,36 @@ async function seedOrganization(
         createdAt: entry.at,
       })),
     });
+
+    /*
+     * The scheduled next action, as a real FollowUp row.
+     *
+     * `leads.next_follow_up_at` alone is not enough: the follow-up screens, the
+     * overdue badge and every dashboard and report count read the FollowUp
+     * table. Seeding only the column produced a database where eight leads were
+     * overdue and the Follow-ups page was empty — the two disagreeing is
+     * exactly the bug the product exists to prevent.
+     *
+     * Terminal leads get none, matching the rule that a closed lead is not
+     * live work.
+     */
+    if (!isTerminal) {
+      const scheduledAt = daysFromNow(lead.followUpInDays);
+      const overdue = scheduledAt.getTime() < Date.now();
+
+      await prisma.followUp.create({
+        data: {
+          organizationId: organization.id,
+          leadId: row.id,
+          assignedUserId: assignedToId,
+          scheduledAt,
+          type: 'CALL',
+          status: overdue ? 'OVERDUE' : 'UPCOMING',
+          title: `Follow up on ${lead.productInterest}`,
+          createdBy: ownerId,
+        },
+      });
+    }
 
     created += 1;
   }

@@ -45,6 +45,13 @@ export const TENANT_SCOPED_MODELS: Record<string, string> = {
   FollowUp: 'organizationId',
   Contact: 'organizationId',
   Subscription: 'organizationId',
+  // Omnichannel capture. Conversations and messages are customer
+  // correspondence — the most sensitive data in the product after credentials
+  // — so they are scoped on exactly the same fail-closed terms as leads.
+  ChannelIntegration: 'organizationId',
+  Conversation: 'organizationId',
+  Message: 'organizationId',
+  ContactChannelIdentity: 'organizationId',
   // Plan is deliberately ABSENT: it is a global catalogue offered to every
   // tenant, and the public pricing page reads it with no tenant context at all.
 };
