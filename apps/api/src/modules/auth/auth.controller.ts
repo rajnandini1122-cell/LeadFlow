@@ -1,9 +1,12 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
+  Param,
+  ParseUUIDPipe,
   Post,
   Req,
   Res,
@@ -20,6 +23,12 @@ import { LoginDto, RefreshDto } from './dto/auth.dto';
 import { RegisterDto } from './dto/register.dto';
 import { SwitchOrganizationDto } from './dto/switch-organization.dto';
 import { RegistrationService } from './registration.service';
+import { PasswordResetService } from './password-reset.service';
+import {
+  ChangePasswordDto,
+  ForgotPasswordDto,
+  ResetPasswordDto,
+} from './dto/password.dto';
 import { Public } from './decorators/public.decorator';
 import { CurrentUser, TokenClaims } from './decorators/current-user.decorator';
 import type { AccessTokenClaims } from './token.service';
@@ -42,6 +51,7 @@ export class AuthController {
   constructor(
     private readonly auth: AuthService,
     private readonly registration: RegistrationService,
+    private readonly passwordReset: PasswordResetService,
     private readonly config: AppConfig,
   ) {}
 
@@ -166,6 +176,83 @@ export class AuthController {
   ): Promise<void> {
     await this.auth.logout(principal, claims.jti, metadataFrom(request));
     response.clearCookie(REFRESH_COOKIE, this.cookieOptions());
+  }
+
+  // --- password reset -------------------------------------------------------
+
+  @Public()
+  @Post('forgot-password')
+  @HttpCode(HttpStatus.ACCEPTED)
+  @ApiOperation({
+    summary: 'Request a password reset link',
+    description:
+      'Always responds identically whether or not the email has an account. ' +
+      'Any difference would make this an unauthenticated way to enumerate ' +
+      'customers.',
+  })
+  async forgotPassword(@Body() dto: ForgotPasswordDto, @Req() request: Request) {
+    return this.passwordReset.requestReset(dto.email, metadataFrom(request));
+  }
+
+  @Public()
+  @Post('reset-password/:token')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Set a new password using a reset token',
+    description:
+      'Single-use. Revokes every existing session, because a reset is usually ' +
+      'a response to compromise. Deliberately does not sign the user in.',
+  })
+  async resetPassword(
+    @Param('token') token: string,
+    @Body() dto: ResetPasswordDto,
+    @Req() request: Request,
+  ) {
+    await this.passwordReset.reset(token, dto.password, metadataFrom(request));
+    return { reset: true };
+  }
+
+  @Post('change-password')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Change your password',
+    description:
+      'Requires the current password. Revokes other sessions but keeps the ' +
+      'current one, so routine hygiene does not sign you out of the device ' +
+      'you are using.',
+  })
+  async changePassword(
+    @Body() dto: ChangePasswordDto,
+    @CurrentUser() principal: TenantPrincipal,
+    @Req() request: Request,
+  ) {
+    await this.passwordReset.changePassword({
+      userId: principal.userId,
+      sessionId: principal.sessionId,
+      currentPassword: dto.currentPassword,
+      newPassword: dto.newPassword,
+      meta: metadataFrom(request),
+    });
+    return { changed: true };
+  }
+
+  // --- session management ---------------------------------------------------
+
+  @Get('sessions')
+  @ApiOperation({ summary: 'Devices where you are currently signed in' })
+  async sessions(@CurrentUser() principal: TenantPrincipal) {
+    return this.passwordReset.listSessions(principal.userId, principal.sessionId);
+  }
+
+  @Delete('sessions/:id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({ summary: 'Sign out one of your own sessions' })
+  async revokeSession(
+    @Param('id', new ParseUUIDPipe({ version: '7' })) id: string,
+    @CurrentUser() principal: TenantPrincipal,
+    @Req() request: Request,
+  ): Promise<void> {
+    await this.passwordReset.revokeSession(principal.userId, id, metadataFrom(request));
   }
 
   @Get('me')
