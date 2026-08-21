@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { Permission, RoleKey } from '@leadflow/api-types';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { uuidv7 } from '../../common/utils/uuid';
 import { TenantContextService } from '../../common/tenancy/tenant-context.service';
 import type { DevicePlatform } from '../../generated/prisma/enums';
 
@@ -158,10 +159,44 @@ export class AuthRepository {
     ipAddress?: string | undefined;
     userAgent?: string | undefined;
   }) {
+    // The replacement's id is generated here rather than by the database, so
+    // the parent can be pointed at it in the SAME statement that consumes it.
+    // Without that the consume would have to happen after the create, which is
+    // what allowed several children to descend from one token.
+    const replacementId = uuidv7();
+
     return this.tenantContext.runAsSystem('refresh: rotate a refresh token atomically', () =>
       this.prisma.client.$transaction(async (tx) => {
-        const created = await tx.session.create({
+        /*
+         * Consume FIRST, and conditionally.
+         *
+         * `revokedAt: null` in the WHERE clause is the whole fix. The previous
+         * version read the session as live in the service, then created the
+         * child and unconditionally revoked the parent — so several concurrent
+         * requests each passed that earlier read and each minted a session,
+         * turning one refresh token into several valid ones.
+         *
+         * Postgres evaluates this predicate against the committed row at write
+         * time, so exactly one caller can match. Everyone else updates zero
+         * rows and is told so.
+         */
+        const consumed = await tx.session.updateMany({
+          where: { id: input.currentSessionId, revokedAt: null },
           data: {
+            revokedAt: new Date(),
+            revokedReason: 'ROTATED',
+            replacedById: replacementId,
+          },
+        });
+
+        // Lost the race. Returning null rather than throwing keeps the
+        // decision about HOW to answer with the service, which is the only
+        // place that can tell a concurrent loser from a replayed leak.
+        if (consumed.count === 0) return null;
+
+        return tx.session.create({
+          data: {
+            id: replacementId,
             organizationId: input.organizationId,
             userId: input.userId,
             refreshTokenHash: input.newRefreshTokenHash,
@@ -172,17 +207,6 @@ export class AuthRepository {
             userAgent: input.userAgent ?? null,
           },
         });
-
-        await tx.session.update({
-          where: { id: input.currentSessionId },
-          data: {
-            revokedAt: new Date(),
-            revokedReason: 'ROTATED',
-            replacedById: created.id,
-          },
-        });
-
-        return created;
       }),
     );
   }

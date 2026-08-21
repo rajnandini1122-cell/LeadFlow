@@ -255,6 +255,17 @@ export class AuthService {
       userAgent: meta.userAgent,
     });
 
+    /*
+     * Someone else consumed this token first.
+     *
+     * Deliberately NOT treated as reuse. Two tabs refreshing at the same
+     * instant is ordinary behaviour, and killing the whole family for it would
+     * sign a legitimate user out of every device for doing nothing wrong. A
+     * genuine replay arrives later, finds the session already revoked at the
+     * top of this method, and is punished there.
+     */
+    if (!rotated) throw AppException.tokenInvalid();
+
     const access = await this.tokens.issueAccessToken({
       sub: membership.userId,
       org: membership.organizationId,
