@@ -1,15 +1,26 @@
 {
-  "moduleFileExtensions": ["js", "json", "ts"],
+  "//": "forceExit is deliberately ABSENT. Jest prints its Force exiting notice unconditionally whenever the flag is set, so it reads as evidence of a leak even when there is none. Removing it proves the suite closes its own resources: the Nest application, the Prisma pool and the PGlite server are all shut down in afterAll and global-teardown. If this suite ever hangs again, find the handle with --detectOpenHandles rather than restoring this flag.",
+  "moduleFileExtensions": [
+    "js",
+    "json",
+    "ts"
+  ],
   "rootDir": "..",
   "testEnvironment": "node",
   "testRegex": "test/.*\\.e2e-spec\\.ts$",
-  "transform": { "^.+\\.ts$": ["ts-jest", { "tsconfig": "<rootDir>/tsconfig.spec.json" }] },
+  "transform": {
+    "^.+\\.ts$": [
+      "ts-jest",
+      {
+        "tsconfig": "<rootDir>/tsconfig.spec.json"
+      }
+    ]
+  },
   "moduleNameMapper": {
     "^@leadflow/api-types$": "<rootDir>/../../packages/api-types/src/index.ts"
   },
   "globalSetup": "<rootDir>/test/global-setup.ts",
   "globalTeardown": "<rootDir>/test/global-teardown.ts",
   "testTimeout": 120000,
-  "maxWorkers": 1,
-  "forceExit": true
+  "maxWorkers": 1
 }
