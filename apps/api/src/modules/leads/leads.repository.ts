@@ -1,5 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { LeadPriority, LeadStatus } from '@leadflow/api-types';
+import type { ActivityType } from '../../generated/prisma/enums';
+import { sideEffectsFor } from './lead-status';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { TenantContextService } from '../../common/tenancy/tenant-context.service';
 
@@ -266,5 +268,122 @@ export class LeadsRepository {
     });
 
     return memberships.map((membership) => membership.user);
+  }
+  // ---------------------------------------------------------------------------
+  // Update, assignment and archive
+  // ---------------------------------------------------------------------------
+
+  /** The tenant timezone, which is what "today" means for follow-up buckets. */
+  async organizationTimezone(): Promise<string> {
+    const organization = await this.prisma.client.organization.findFirst({
+      select: { timezone: true },
+    });
+    return organization?.timezone ?? 'UTC';
+  }
+
+  /**
+   * Applies a partial update.
+   *
+   * updateMany, not update: it carries the tenant scope, so a foreign id
+   * touches zero rows rather than raising a record-not-found that would
+   * confirm the id exists.
+   */
+  async applyUpdate(leadId: string, data: Record<string, unknown>): Promise<number> {
+    const result = await this.prisma.client.lead.updateMany({
+      where: { id: leadId, deletedAt: null },
+      data,
+    });
+    return result.count;
+  }
+
+  /** Appends one timeline entry. The timeline is append-only by design. */
+  async recordActivity(input: {
+    leadId: string;
+    activityType: ActivityType;
+    description?: string | undefined;
+    performedById?: string | undefined;
+    metadata?: Record<string, unknown> | undefined;
+  }): Promise<void> {
+    const organizationId = this.tenantContext.requireOrganizationId();
+
+    await this.prisma.client.leadActivity.create({
+      data: {
+        organizationId,
+        leadId: input.leadId,
+        activityType: input.activityType,
+        description: input.description ?? null,
+        performedById: input.performedById ?? null,
+        ...(input.metadata ? { metadata: input.metadata as never } : {}),
+      },
+    });
+
+    // Keeps "last touched" honest without a second query at read time.
+    await this.prisma.client.lead.updateMany({
+      where: { id: input.leadId },
+      data: { lastActivityAt: new Date() },
+    });
+  }
+
+  /** Status change plus its side effects, written together. */
+  async applyStatusChange(input: {
+    leadId: string;
+    status: LeadStatus;
+    lostReason?: string | undefined;
+    wonValue?: number | undefined;
+    actorId: string;
+  }): Promise<void> {
+    const effects = sideEffectsFor(input.status, {
+      lostReason: input.lostReason,
+      wonValue: input.wonValue,
+    });
+
+    await this.prisma.client.lead.updateMany({
+      where: { id: input.leadId },
+      data: {
+        status: input.status,
+        wonAt: effects.wonAt,
+        lostAt: effects.lostAt,
+        lostReason: effects.lostReason,
+        wonValue: effects.wonValue ?? null,
+        updatedBy: input.actorId,
+      },
+    });
+
+    await this.recordActivity({
+      leadId: input.leadId,
+      activityType:
+        input.status === 'WON' ? 'LEAD_WON' : input.status === 'LOST' ? 'LEAD_LOST' : 'STATUS_CHANGED',
+      description:
+        input.status === 'LOST' && input.lostReason
+          ? `Marked lost: ${input.lostReason}`
+          : `Status changed to ${input.status}`,
+      performedById: input.actorId,
+    });
+  }
+
+  /**
+   * Soft-deletes.
+   *
+   * Never a hard delete: lead_activities cascade from it, so removing the row
+   * would erase the entire history of the relationship — including calls that
+   * were made and quotations that were sent.
+   */
+  async archive(leadId: string, actorId: string): Promise<number> {
+    const result = await this.prisma.client.lead.updateMany({
+      where: { id: leadId, deletedAt: null },
+      data: { deletedAt: new Date(), updatedBy: actorId },
+    });
+    return result.count;
+  }
+
+  /** Paginated timeline. Cursor-based, because a timeline only grows. */
+  async pageActivities(leadId: string, limit: number, cursor?: string) {
+    return this.prisma.client.leadActivity.findMany({
+      where: { leadId },
+      orderBy: { createdAt: 'desc' },
+      take: limit + 1,
+      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+      include: { performedBy: { select: { id: true, fullName: true } } },
+    });
   }
 }

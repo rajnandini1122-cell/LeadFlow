@@ -32,8 +32,8 @@ export function CardHeader({
   subtitle,
 }: {
   title: string;
-  subtitle?: string;
-  action?: ReactNode;
+  subtitle?: string | undefined;
+  action?: ReactNode | undefined;
 }): React.JSX.Element {
   return (
     <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3.5">
@@ -52,8 +52,8 @@ export function PageHeader({
   action,
 }: {
   title: string;
-  subtitle?: string;
-  action?: ReactNode;
+  subtitle?: string | undefined;
+  action?: ReactNode | undefined;
 }): React.JSX.Element {
   return (
     <div className="mb-6 flex flex-wrap items-end justify-between gap-3">

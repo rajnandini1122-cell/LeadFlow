@@ -103,6 +103,29 @@ enum LeadPriority {
   @@map("lead_priority")
 }
 
+enum FollowUpStatus {
+  /// Scheduled in the future.
+  UPCOMING
+  /// Scheduled time has passed but within the tenant grace period.
+  DUE
+  /// Past the tenant overdue threshold. The signal the product exists for.
+  OVERDUE
+  COMPLETED
+  CANCELLED
+
+  @@map("follow_up_status")
+}
+
+enum FollowUpType {
+  CALL
+  WHATSAPP
+  EMAIL
+  MEETING
+  OTHER
+
+  @@map("follow_up_type")
+}
+
 enum ActivityType {
   LEAD_CREATED
   LEAD_UPDATED
@@ -155,6 +178,7 @@ model Organization {
   auditLogs   AuditLog[]
   leads       Lead[]
   activities  LeadActivity[]
+  followUps   FollowUp[]
 
   @@index([status])
   @@map("organizations")
@@ -211,6 +235,7 @@ model User {
   auditLogs         AuditLog[]
   assignedLeads     Lead[]             @relation("LeadAssignee")
   leadsAssignedByMe Lead[]             @relation("LeadAssigner")
+  followUps         FollowUp[]         @relation("FollowUpAssignee")
   activities        LeadActivity[]
 
   @@index([status])
@@ -443,6 +468,10 @@ model Lead {
   lastActivityAt DateTime? @map("last_activity_at") @db.Timestamptz(6)
 
   lostReason String?   @map("lost_reason") @db.VarChar(255)
+  /// What the deal ACTUALLY closed at. Kept separate from estimatedValue so
+  /// forecast accuracy stays measurable — overwriting the estimate would
+  /// destroy the only evidence of how good the forecast was.
+  wonValue   Decimal?  @map("won_value") @db.Decimal(14, 2)
   wonAt      DateTime? @map("won_at") @db.Timestamptz(6)
   lostAt     DateTime? @map("lost_at") @db.Timestamptz(6)
 
@@ -456,6 +485,7 @@ model Lead {
   assignedTo   User?          @relation("LeadAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
   assignedBy   User?          @relation("LeadAssigner", fields: [assignedById], references: [id], onDelete: SetNull)
   activities   LeadActivity[]
+  followUps    FollowUp[]
 
   @@unique([organizationId, leadNumber])
   @@index([organizationId, status])
@@ -486,4 +516,64 @@ model LeadActivity {
   @@index([organizationId, leadId, createdAt(sort: Desc)])
   @@index([organizationId, createdAt(sort: Desc)])
   @@map("lead_activities")
+}
+
+/// A scheduled next action on a lead — the core of the product promise.
+///
+/// A real table rather than the single `leads.next_follow_up_at` column,
+/// because a follow-up has a lifecycle of its own: it is completed with an
+/// outcome, rescheduled, or cancelled, and the HISTORY of those events is what
+/// a manager needs to see. A column can only ever hold "when next", losing
+/// every attempt that came before.
+///
+/// `leads.next_follow_up_at` is kept as a denormalised mirror of the earliest
+/// OPEN follow-up. It stays because the CHECK constraint that guarantees every
+/// active lead has a next action depends on it, and because list and dashboard
+/// queries would otherwise need a correlated subquery per row.
+model FollowUp {
+  id             String @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String @map("organization_id") @db.Uuid
+  leadId         String @map("lead_id") @db.Uuid
+  /// Who owes this action. Usually the lead's assignee, but not necessarily —
+  /// a manager may schedule something for themselves on someone else's lead.
+  assignedUserId String @map("assigned_user_id") @db.Uuid
+
+  scheduledAt DateTime       @map("scheduled_at") @db.Timestamptz(6)
+  type        FollowUpType   @default(CALL)
+  status      FollowUpStatus @default(UPCOMING)
+  title       String?        @db.VarChar(200)
+  notes       String?        @db.VarChar(2000)
+
+  /// Recorded on completion.
+  outcome     String?   @db.VarChar(60)
+  completedAt DateTime? @map("completed_at") @db.Timestamptz(6)
+  completedBy String?   @map("completed_by") @db.Uuid
+
+  cancelledAt     DateTime? @map("cancelled_at") @db.Timestamptz(6)
+  cancelledReason String?   @map("cancelled_reason") @db.VarChar(255)
+
+  /// Set when a reschedule creates a replacement, so the chain of attempts is
+  /// traceable rather than the original silently changing date.
+  rescheduledToId String? @map("rescheduled_to_id") @db.Uuid
+
+  /// Idempotency markers for the Phase 6 worker: a notification that has
+  /// already fired must not fire again when a job is retried.
+  reminderSentAt     DateTime? @map("reminder_sent_at") @db.Timestamptz(6)
+  overdueNotifiedAt  DateTime? @map("overdue_notified_at") @db.Timestamptz(6)
+
+  createdBy String?  @map("created_by") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  lead         Lead         @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  assignedUser User         @relation("FollowUpAssignee", fields: [assignedUserId], references: [id])
+
+  /// Serves the per-user "my follow-ups" buckets, which is the hottest query.
+  @@index([organizationId, assignedUserId, status, scheduledAt])
+  @@index([organizationId, leadId, scheduledAt(sort: Desc)])
+  /// Deliberately NOT organization-first: the Phase 6 sweep scans across
+  /// tenants for work that has come due.
+  @@index([status, scheduledAt])
+  @@map("follow_ups")
 }

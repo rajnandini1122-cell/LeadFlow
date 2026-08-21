@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
 import { PERMISSIONS, type Permission } from '@leadflow/api-types';
 import { useAuth } from '../features/auth/auth-context';
-import { useLeads, bucketLeads } from '../features/leads/use-leads';
+import { useFollowUps } from '../features/leads/use-lead-mutations';
 import { Avatar } from './ui';
 import { OrganizationSwitcher } from './organization-switcher';
 
@@ -38,10 +38,10 @@ export function AppShell(): React.JSX.Element {
   const { user, logout, can } = useAuth();
   const [menuOpen, setMenuOpen] = useState(false);
 
-  // Powers the overdue count in the sidebar. Shares a query key with the rest
-  // of the app, so it costs one request, not one per screen.
-  const leads = useLeads();
-  const overdueCount = leads.data ? bucketLeads(leads.data.items).overdue.length : 0;
+  // Powers the overdue badge. Uses the API bucket, which is computed in the
+  // ORGANIZATION timezone — deriving it here would use the viewer's clock.
+  const overdue = useFollowUps('overdue');
+  const overdueCount = overdue.data?.length ?? 0;
 
   const visible = NAV_ITEMS.filter((item) => !item.permission || can(item.permission));
 
