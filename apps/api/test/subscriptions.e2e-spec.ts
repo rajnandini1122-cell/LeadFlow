@@ -268,7 +268,7 @@ describe('Subscriptions', () => {
         .http()
         .patch('/api/v1/subscriptions/current')
         .set(auth(ctx.orgA.owner.accessToken))
-        .send({ planCode: 'BUSINESS' })
+        .send({ planCode: 'PREMIUM' })
         .expect(200);
 
       const after = await ctx
@@ -296,10 +296,10 @@ describe('Subscriptions', () => {
         .http()
         .patch('/api/v1/subscriptions/current')
         .set(auth(org.token))
-        .send({ planCode: 'PROFESSIONAL' })
+        .send({ planCode: 'BASIC' })
         .expect(200);
 
-      expect(response.body.data.plan.code).toBe('PROFESSIONAL');
+      expect(response.body.data.plan.code).toBe('BASIC');
     });
 
     it('changes the billing interval', async () => {
@@ -357,7 +357,7 @@ describe('Subscriptions', () => {
         .http()
         .patch('/api/v1/subscriptions/current')
         .set(auth(ctx.orgA.rep.accessToken))
-        .send({ planCode: 'BUSINESS' })
+        .send({ planCode: 'PREMIUM' })
         .expect(403);
     });
 
@@ -368,7 +368,7 @@ describe('Subscriptions', () => {
         .http()
         .patch('/api/v1/subscriptions/current')
         .set(auth(org.token))
-        .send({ planCode: 'BUSINESS' })
+        .send({ planCode: 'PREMIUM' })
         .expect(200);
 
       const audit = await ctx

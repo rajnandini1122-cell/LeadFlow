@@ -59,3 +59,30 @@ export function annualSaving(plan: PlanView): number | null {
 export function statedLimit(value: number | null, noun: string): string {
   return value === null ? `No stated ${noun} limit` : `Up to ${value.toLocaleString()} ${noun}`;
 }
+
+/**
+ * The largest annual saving on offer, or null when there is none.
+ *
+ * Advertised ON the billing-period toggle rather than only inside each card.
+ * Previously the discount appeared after switching to Annual, so the one group
+ * it needed to reach — people who had not switched — never saw it.
+ */
+export function bestAnnualSaving(plans: PlanView[]): number | null {
+  const savings = plans
+    .map((plan) => annualSaving(plan))
+    .filter((saving): saving is number => saving !== null);
+
+  return savings.length > 0 ? Math.max(...savings) : null;
+}
+
+/** Months effectively free on an annual plan, for plain-language copy. */
+export function freeMonths(plan: PlanView): number | null {
+  if (plan.yearlyPrice === null) return null;
+
+  const monthly = Number(plan.monthlyPrice);
+  const yearly = Number(plan.yearlyPrice);
+  if (!Number.isFinite(monthly) || !Number.isFinite(yearly) || monthly === 0) return null;
+
+  const months = Math.round((monthly * 12 - yearly) / monthly);
+  return months > 0 ? months : null;
+}

@@ -71,7 +71,7 @@ describe('Public and protected routes', () => {
 
     it.each([
       ['/api/v1/organizations/current', { name: 'Hijacked' }],
-      ['/api/v1/subscriptions/current', { planCode: 'BUSINESS' }],
+      ['/api/v1/subscriptions/current', { planCode: 'PREMIUM' }],
     ])('PATCH %s requires a token', async (path, body) => {
       await ctx.http().patch(path).send(body).expect(401);
     });

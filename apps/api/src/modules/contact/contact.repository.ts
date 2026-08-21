@@ -23,6 +23,7 @@ export class ContactRepository {
     email: string;
     company?: string | undefined;
     phone?: string | undefined;
+    country?: string | undefined;
     message: string;
     source?: string | undefined;
     ipAddress?: string | undefined;
@@ -35,6 +36,7 @@ export class ContactRepository {
           email: input.email,
           company: input.company ?? null,
           phone: input.phone ?? null,
+          country: input.country ?? null,
           message: input.message,
           source: input.source ?? null,
           ipAddress: input.ipAddress ?? null,

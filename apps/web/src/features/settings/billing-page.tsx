@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { BillingInterval, PlanView, SubscriptionView } from '@leadflow/api-types';
 import { ApiError } from '../../lib/api-client';
+import { annualSaving } from '../marketing/use-plans';
 import { formatDate } from '../../lib/format';
 import { Card, CardHeader, ErrorNotice, PageHeader, SkeletonRows } from '../../components/ui';
 import { useAuth } from '../auth/auth-context';
@@ -139,6 +140,8 @@ function ChangePlan({ subscription }: { subscription: SubscriptionView }): React
   const plans = usePlanCatalogue();
   const change = useChangePlan();
   const [confirming, setConfirming] = useState<PlanView | null>(null);
+  // What the tenant would actually save on THEIR plan, not a headline rate.
+  const yearlySaving = annualSaving(subscription.plan);
 
   const setInterval = (billingInterval: BillingInterval): void => {
     change.mutate({ billingInterval });
@@ -158,7 +161,7 @@ function ChangePlan({ subscription }: { subscription: SubscriptionView }): React
             {(['MONTHLY', 'YEARLY'] as BillingInterval[]).map((interval) => (
               <label
                 key={interval}
-                className={`cursor-pointer rounded-md px-4 py-1.5 text-sm font-medium transition ${
+                className={`flex cursor-pointer items-center gap-2 rounded-md px-4 py-1.5 text-sm font-medium transition ${
                   subscription.billingInterval === interval
                     ? 'bg-white text-slate-900 shadow-sm'
                     : 'text-slate-600 hover:text-slate-900'
@@ -173,6 +176,11 @@ function ChangePlan({ subscription }: { subscription: SubscriptionView }): React
                   onChange={() => setInterval(interval)}
                 />
                 {interval === 'YEARLY' ? 'Yearly' : 'Monthly'}
+                {interval === 'YEARLY' && yearlySaving !== null && (
+                  <span className="rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700">
+                    −{yearlySaving}%
+                  </span>
+                )}
               </label>
             ))}
           </div>

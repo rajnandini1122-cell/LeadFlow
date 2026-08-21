@@ -800,6 +800,9 @@ model ContactEnquiry {
   email   String  @db.VarChar(320)
   company String? @db.VarChar(200)
   phone   String? @db.VarChar(32)
+  /// ISO 3166-1 alpha-2. Optional: it shapes how we reply, it is not required
+  /// to accept an enquiry from someone who would rather not say.
+  country String? @db.VarChar(2)
   message String  @db.VarChar(4000)
 
   /// Which page the enquiry came from, for attribution.

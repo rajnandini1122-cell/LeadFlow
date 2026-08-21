@@ -15,7 +15,12 @@ import {
   type DemoLead,
   type DemoOrganization,
 } from './demo-data';
-import { DEFAULT_PLAN_CODE, PLAN_CATALOGUE, TRIAL_DAYS } from '../src/modules/subscriptions/plan-catalogue';
+import {
+  DEFAULT_PLAN_CODE,
+  PLAN_CATALOGUE,
+  TRIAL_DAYS,
+  WITHDRAWN_PLAN_CODES,
+} from '../src/modules/subscriptions/plan-catalogue';
 
 /**
  * Idempotent seed.
@@ -403,7 +408,18 @@ async function seedPlans(): Promise<Map<string, string>> {
     ids.set(row.code, row.id);
   }
 
-  console.log(`  ${ids.size} plans in the catalogue`);
+  // Retire codes that are no longer offered. Deactivating leaves any
+  // organization still on one working while removing it from the pricing page;
+  // deleting would orphan their subscription.
+  const retired = await prisma.plan.updateMany({
+    where: { code: { in: WITHDRAWN_PLAN_CODES } },
+    data: { active: false },
+  });
+
+  console.log(
+    `  ${ids.size} plans in the catalogue` +
+      (retired.count > 0 ? `, ${retired.count} withdrawn` : ''),
+  );
   return ids;
 }
 

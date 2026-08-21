@@ -50,6 +50,7 @@ function EnquiryForm(): React.JSX.Element {
     email: useId(),
     company: useId(),
     phone: useId(),
+    country: useId(),
     message: useId(),
     website: useId(),
   };
@@ -59,6 +60,7 @@ function EnquiryForm(): React.JSX.Element {
     email: '',
     company: '',
     phone: '',
+    country: '',
     message: '',
     // Honeypot. Hidden from people, irresistible to form-filling bots.
     website: '',
@@ -81,6 +83,7 @@ function EnquiryForm(): React.JSX.Element {
       email: form.email.trim(),
       ...(form.company.trim() ? { company: form.company.trim() } : {}),
       ...(form.phone.trim() ? { phone: form.phone.trim() } : {}),
+      ...(form.country ? { country: form.country } : {}),
       message: form.message.trim(),
       source: 'contact',
       ...(form.website ? { website: form.website } : {}),
@@ -166,6 +169,26 @@ function EnquiryForm(): React.JSX.Element {
           />
         </Field>
       </div>
+
+      <Field
+        label="Country"
+        htmlFor={ids.country}
+        hint="Optional — helps us answer in your timezone and currency"
+      >
+        <select
+          id={ids.country}
+          value={form.country}
+          onChange={set('country')}
+          className={inputClass}
+        >
+          <option value="">Select a country…</option>
+          {COUNTRIES.map((code) => (
+            <option key={code} value={code}>
+              {countryName(code)}
+            </option>
+          ))}
+        </select>
+      </Field>
 
       <Field
         label="How can we help?"
@@ -260,6 +283,29 @@ function ContactDetails(): React.JSX.Element {
       </div>
     </aside>
   );
+}
+
+/**
+ * Countries offered on the enquiry form.
+ *
+ * A curated list rather than all 249 regions. The field exists so a reply can
+ * be pitched in the right timezone and currency, and a 249-entry dropdown makes
+ * the common case harder without helping the rare one. The API accepts any
+ * valid ISO 3166-1 code, so nothing here restricts what can be stored.
+ */
+const COUNTRIES = [
+  'US', 'GB', 'IN', 'CA', 'AU', 'NZ', 'IE', 'DE', 'FR', 'ES', 'IT', 'NL', 'BE',
+  'SE', 'NO', 'DK', 'FI', 'PL', 'PT', 'CH', 'AT', 'AE', 'SA', 'QA', 'SG', 'MY',
+  'ID', 'PH', 'TH', 'VN', 'JP', 'KR', 'CN', 'HK', 'BD', 'PK', 'LK', 'NP',
+  'ZA', 'NG', 'KE', 'GH', 'EG', 'BR', 'MX', 'AR', 'CL', 'CO',
+].sort((a, b) => countryName(a).localeCompare(countryName(b)));
+
+function countryName(code: string): string {
+  try {
+    return new Intl.DisplayNames(undefined, { type: 'region' }).of(code) ?? code;
+  } catch {
+    return code;
+  }
 }
 
 const inputClass =

@@ -37,8 +37,8 @@ const PLANS: PlanView[] = [
   },
   {
     id: '2',
-    code: 'PROFESSIONAL',
-    name: 'Professional',
+    code: 'BASIC',
+    name: 'Basic',
     tagline: 'For a sales team',
     description: null,
     featured: true,
@@ -51,8 +51,8 @@ const PLANS: PlanView[] = [
   },
   {
     id: '3',
-    code: 'BUSINESS',
-    name: 'Business',
+    code: 'PREMIUM',
+    name: 'Premium',
     tagline: 'For several teams',
     description: null,
     featured: false,
@@ -153,11 +153,29 @@ describe('Marketing site', () => {
       expect(screen.getAllByText('Free').length).toBeGreaterThan(0);
     });
 
+    it('advertises the annual discount before the toggle is pressed', async () => {
+      renderAt('/pricing');
+
+      // 29/mo vs 290/yr is a 17% saving. Showing it only after switching meant
+      // the people it needed to reach — those who had not switched — never saw
+      // it at all.
+      expect(await screen.findByText(/save up to 17% by paying yearly/i)).toBeInTheDocument();
+      expect(screen.getAllByText(/−17%/).length).toBeGreaterThan(0);
+    });
+
+    it('shows the yearly alternative on each card while viewing monthly', async () => {
+      renderAt('/pricing');
+      // The cheaper option should not be hidden behind a toggle the reader has
+      // no reason to press.
+      const alternatives = await screen.findAllByText(/\/year . save \d+%/i);
+      expect(alternatives.length).toBeGreaterThan(0);
+    });
+
     it('switches to annual pricing', async () => {
       const user = userEvent.setup();
       renderAt('/pricing');
 
-      await user.click(await screen.findByRole('radio', { name: 'Annual' }));
+      await user.click(await screen.findByRole('radio', { name: /annual/i }));
 
       expect(screen.getByText('$290')).toBeInTheDocument();
       expect(screen.getByText('$790')).toBeInTheDocument();
@@ -186,7 +204,7 @@ describe('Marketing site', () => {
     it('lists each plan’s own features under that plan', async () => {
       renderAt('/pricing');
 
-      const heading = await screen.findByRole('heading', { name: 'Professional' });
+      const heading = await screen.findByRole('heading', { name: 'Basic' });
       const card = heading.closest('div') as HTMLElement;
 
       expect(within(card).getByText('Team performance reporting')).toBeInTheDocument();

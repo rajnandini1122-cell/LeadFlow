@@ -69,8 +69,8 @@ export const PLAN_CATALOGUE: PlanSeed[] = [
     ],
   },
   {
-    code: 'PROFESSIONAL',
-    name: 'Professional',
+    code: 'BASIC',
+    name: 'Basic',
     tagline: 'For a sales team that shares a pipeline',
     description: 'Adds team visibility, reporting over any date range, and data hygiene.',
     sortOrder: 2,
@@ -91,8 +91,8 @@ export const PLAN_CATALOGUE: PlanSeed[] = [
     ],
   },
   {
-    code: 'BUSINESS',
-    name: 'Business',
+    code: 'PREMIUM',
+    name: 'Premium',
     tagline: 'For several teams and stricter oversight',
     description: 'Adds administrative control and a full record of who changed what.',
     sortOrder: 3,
@@ -104,7 +104,7 @@ export const PLAN_CATALOGUE: PlanSeed[] = [
     maxActiveLeads: null,
     features: [
       'No stated team-size limit',
-      'Everything in Professional',
+      'Everything in Basic',
       'Administrative audit trail',
       'Safe employee offboarding with lead handover',
       'Organization-wide lead visibility controls',
@@ -112,6 +112,17 @@ export const PLAN_CATALOGUE: PlanSeed[] = [
     ],
   },
 ];
+
+/**
+ * Plan codes that are no longer offered.
+ *
+ * Deactivated rather than deleted on the next seed. An organization already
+ * subscribed to one keeps working — its subscription still resolves — but
+ * nobody new can choose it, and it disappears from the pricing page. Deleting
+ * the row would orphan those subscriptions, which the RESTRICT foreign key
+ * would refuse anyway.
+ */
+export const WITHDRAWN_PLAN_CODES = ['PROFESSIONAL', 'BUSINESS'];
 
 /** Which plan a brand-new organization starts on. */
 export const DEFAULT_PLAN_CODE = 'STARTER';

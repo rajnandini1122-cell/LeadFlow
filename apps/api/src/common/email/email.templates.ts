@@ -140,6 +140,7 @@ export function contactEnquiryEmail(input: {
   email: string;
   company?: string | undefined;
   phone?: string | undefined;
+  country?: string | undefined;
   message: string;
   source?: string | undefined;
   reference: string;
@@ -149,6 +150,7 @@ export function contactEnquiryEmail(input: {
     ['Email', input.email],
     ...(input.company ? ([['Company', input.company]] as [string, string][]) : []),
     ...(input.phone ? ([['Phone', input.phone]] as [string, string][]) : []),
+    ...(input.country ? ([['Country', input.country]] as [string, string][]) : []),
     ...(input.source ? ([['Page', input.source]] as [string, string][]) : []),
     ['Reference', input.reference],
   ];

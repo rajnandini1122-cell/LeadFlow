@@ -1,7 +1,27 @@
 import { Transform } from 'class-transformer';
-import { IsEmail, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import {
+  IsEmail,
+  IsOptional,
+  IsString,
+  MaxLength,
+  MinLength,
+  Validate,
+  ValidatorConstraint,
+  type ValidatorConstraintInterface,
+} from 'class-validator';
+import { isValidCountry } from '../../../common/utils/locale';
 
 const trim = ({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value);
+
+@ValidatorConstraint({ name: 'isEnquiryCountry' })
+class IsEnquiryCountryConstraint implements ValidatorConstraintInterface {
+  validate(value: unknown): boolean {
+    return typeof value === 'string' && isValidCountry(value);
+  }
+  defaultMessage(): string {
+    return 'must be a two-letter ISO 3166-1 country code';
+  }
+}
 
 /**
  * A message from the public contact form.
@@ -33,6 +53,20 @@ export class SubmitEnquiryDto {
   @MaxLength(32)
   @Transform(trim)
   phone?: string;
+
+  /**
+   * ISO 3166-1 alpha-2.
+   *
+   * Validated against the runtime's own region data rather than a list in
+   * source, for the same reason the organization settings are: a hand-kept list
+   * is wrong the moment it changes and the symptom is a visitor unable to
+   * submit a form.
+   */
+  @IsOptional()
+  @IsString()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim().toUpperCase() : value))
+  @Validate(IsEnquiryCountryConstraint)
+  country?: string;
 
   @IsString()
   @MinLength(10, { message: 'please tell us a little more' })

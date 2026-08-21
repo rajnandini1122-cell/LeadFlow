@@ -35,8 +35,8 @@ const PLANS: PlanView[] = [
   },
   {
     id: '2',
-    code: 'PROFESSIONAL',
-    name: 'Professional',
+    code: 'BASIC',
+    name: 'Basic',
     tagline: 'For a sales team',
     description: null,
     featured: true,
@@ -134,7 +134,7 @@ describe('Plan and billing', () => {
 
     renderBilling();
 
-    await user.click(await screen.findByRole('button', { name: /switch to professional/i }));
+    await user.click(await screen.findByRole('button', { name: /switch to basic/i }));
     // Nothing has been sent yet.
     expect(apiClient.apiPatch).not.toHaveBeenCalled();
 
@@ -143,7 +143,7 @@ describe('Plan and billing', () => {
 
     await waitFor(() => {
       expect(apiClient.apiPatch).toHaveBeenCalledWith('/subscriptions/current', {
-        planCode: 'PROFESSIONAL',
+        planCode: 'BASIC',
       });
     });
   });
@@ -154,7 +154,7 @@ describe('Plan and billing', () => {
 
     renderBilling();
 
-    await user.click(await screen.findByRole('button', { name: /switch to professional/i }));
+    await user.click(await screen.findByRole('button', { name: /switch to basic/i }));
     const confirm = await screen.findByRole('alert');
     await user.click(within(confirm).getByRole('button', { name: /yes, change plan/i }));
 

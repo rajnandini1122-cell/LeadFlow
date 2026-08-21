@@ -89,6 +89,7 @@ export class EmailService {
     email: string;
     company?: string | undefined;
     phone?: string | undefined;
+    country?: string | undefined;
     message: string;
     source?: string | undefined;
     reference: string;

@@ -1,7 +1,14 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import type { PlanView } from '@leadflow/api-types';
-import { annualSaving, formatPlanPrice, statedLimit, usePlans } from './use-plans';
+import {
+  annualSaving,
+  bestAnnualSaving,
+  formatPlanPrice,
+  freeMonths,
+  statedLimit,
+  usePlans,
+} from './use-plans';
 
 /**
  * The plan cards, shared by the homepage and the pricing page.
@@ -48,11 +55,12 @@ export function PricingTable({ compact = false }: { compact?: boolean }): React.
   }
 
   const anyAnnual = plans.data.some((plan) => plan.yearlyPrice !== null);
+  const headlineSaving = bestAnnualSaving(plans.data);
 
   return (
     <>
       {anyAnnual && (
-        <div className="mt-8 flex justify-center">
+        <div className="mt-8 flex flex-col items-center gap-2">
           <fieldset className="inline-flex rounded-lg bg-white p-1 ring-1 ring-slate-200 ring-inset">
             <legend className="sr-only">Billing period</legend>
             {[
@@ -61,7 +69,7 @@ export function PricingTable({ compact = false }: { compact?: boolean }): React.
             ].map((option) => (
               <label
                 key={option.label}
-                className={`cursor-pointer rounded-md px-4 py-1.5 text-sm font-medium transition ${
+                className={`flex cursor-pointer items-center gap-2 rounded-md px-4 py-1.5 text-sm font-medium transition ${
                   annual === option.value
                     ? 'bg-slate-900 text-white'
                     : 'text-slate-600 hover:text-slate-900'
@@ -75,9 +83,30 @@ export function PricingTable({ compact = false }: { compact?: boolean }): React.
                   onChange={() => setAnnual(option.value)}
                 />
                 {option.label}
+                {/*
+                  The saving is advertised on the toggle, not only inside a card
+                  after switching. Showing it only once Annual is selected meant
+                  the one group it needed to reach — people who had not switched
+                  — never saw it.
+                */}
+                {option.value && headlineSaving !== null && (
+                  <span
+                    className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${
+                      annual ? 'bg-white/20 text-white' : 'bg-emerald-100 text-emerald-700'
+                    }`}
+                  >
+                    −{headlineSaving}%
+                  </span>
+                )}
               </label>
             ))}
           </fieldset>
+
+          {headlineSaving !== null && (
+            <p className="text-xs text-slate-500">
+              Save up to {headlineSaving}% by paying yearly
+            </p>
+          )}
         </div>
       )}
 
@@ -104,6 +133,7 @@ function PlanCard({
   const showYearly = annual && plan.yearlyPrice !== null;
   const price = showYearly ? (plan.yearlyPrice as string) : plan.monthlyPrice;
   const saving = annualSaving(plan);
+  const months = freeMonths(plan);
   const isFree = Number(plan.monthlyPrice) === 0;
   const period = isFree ? '' : showYearly ? '/year' : '/month';
 
@@ -132,7 +162,16 @@ function PlanCard({
       </p>
 
       {showYearly && saving !== null ? (
-        <p className="mt-1 text-xs font-medium text-emerald-700">Save {saving}% paid annually</p>
+        <p className="mt-1 text-xs font-medium text-emerald-700">
+          Save {saving}%
+          {months !== null && ` — ${months} ${months === 1 ? 'month' : 'months'} free`}
+        </p>
+      ) : !showYearly && saving !== null ? (
+        // Visible on the monthly view too, so the cheaper option is not hidden
+        // behind a toggle the reader has no reason to press.
+        <p className="mt-1 text-xs text-slate-500">
+          or {formatPlanPrice(plan.yearlyPrice as string, plan.currency)}/year — save {saving}%
+        </p>
       ) : (
         <p className="mt-1 text-xs text-slate-400">
           {isFree ? 'No card required' : 'per organization, not per user'}
