@@ -24,6 +24,7 @@ import { TeamPage } from './features/team/team-page';
 import { ReportsPage } from './features/reports/reports-page';
 import { DailyReportPage } from './features/reports/daily-report-page';
 import { SettingsPage } from './features/settings/settings-page';
+import { BillingPage } from './features/settings/billing-page';
 import { AppShell } from './components/app-shell';
 import { ApiError } from './lib/api-client';
 
@@ -118,6 +119,7 @@ export function App(): React.JSX.Element {
                 <Route path="reports" element={<ReportsPage />} />
                 <Route path="reports/daily" element={<DailyReportPage />} />
                 <Route path="settings" element={<SettingsPage />} />
+                <Route path="settings/billing" element={<BillingPage />} />
                 <Route path="settings/security" element={<SecurityPage />} />
               </Route>
             </Route>

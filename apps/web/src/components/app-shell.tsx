@@ -33,6 +33,12 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/reports', label: 'Reports', icon: '▤', permission: PERMISSIONS.REPORT_VIEW, exact: true },
   { to: '/reports/daily', label: 'Daily report', icon: '☀', permission: PERMISSIONS.REPORT_VIEW },
   { to: '/settings', label: 'Settings', icon: '⚙', permission: PERMISSIONS.ORG_VIEW, exact: true },
+  {
+    to: '/settings/billing',
+    label: 'Plan & billing',
+    icon: '◫',
+    permission: PERMISSIONS.SUBSCRIPTION_VIEW,
+  },
   { to: '/settings/security', label: 'Security', icon: '⚿' },
 ];
 
