@@ -180,6 +180,7 @@ model Organization {
   contacts    Contact[]
   activities  LeadActivity[]
   followUps   FollowUp[]
+  subscription Subscription?
 
   @@index([status])
   @@map("organizations")
@@ -644,4 +645,126 @@ model FollowUp {
   /// cannot serve a completion-date range.
   @@index([organizationId, completedAt])
   @@map("follow_ups")
+}
+
+// -----------------------------------------------------------------------------
+// Subscriptions (Phase 8)
+// -----------------------------------------------------------------------------
+
+enum BillingInterval {
+  MONTHLY
+  YEARLY
+
+  @@map("billing_interval")
+}
+
+/// Lifecycle of an organization's subscription.
+///
+/// Deliberately small. These are the states a payment provider actually
+/// reports, so a future webhook maps onto them without needing new ones.
+enum SubscriptionStatus {
+  /// Evaluating, not yet paying. `trialEndsAt` is set.
+  TRIAL
+  /// Paid and current.
+  ACTIVE
+  /// Payment failed but access continues during the retry window. Deliberately
+  /// distinct from EXPIRED: dunning is a chance to recover the customer, and
+  /// cutting them off on the first failed charge loses accounts to an expired
+  /// card.
+  PAST_DUE
+  /// Cancelled by the customer. Access runs to the end of the paid period.
+  CANCELLED
+  /// Period ended with no renewal.
+  EXPIRED
+
+  @@map("subscription_status")
+}
+
+/// The plan catalogue.
+///
+/// GLOBAL, not tenant-scoped, and deliberately absent from
+/// TENANT_SCOPED_MODELS: every organization is offered the same catalogue, and
+/// the public pricing page reads it without any tenant context at all. Scoping
+/// it would make that page impossible to serve.
+///
+/// Prices live here rather than in application code so changing one is a data
+/// change, not a deploy — and so the pricing page, a future billing screen and
+/// any upgrade prompt cannot drift apart.
+model Plan {
+  id          String  @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  /// Stable identifier used by code and by any future provider mapping.
+  code        String  @unique @db.VarChar(40)
+  name        String  @db.VarChar(80)
+  tagline     String? @db.VarChar(200)
+  description String? @db.VarChar(500)
+
+  /// Withdrawn plans are deactivated rather than deleted: organizations may
+  /// still be subscribed to one, and deleting it would orphan them.
+  active    Boolean @default(true)
+  sortOrder Int     @default(0) @map("sort_order")
+  /// Exactly one plan is visually emphasised on the pricing page.
+  featured  Boolean @default(false)
+
+  currency     String  @db.VarChar(3)
+  monthlyPrice Decimal @map("monthly_price") @db.Decimal(12, 2)
+  /// Charged once per year. Null hides the annual option for this plan.
+  yearlyPrice  Decimal? @map("yearly_price") @db.Decimal(12, 2)
+
+  /// Limits. NULL means "no stated limit" for that dimension.
+  ///
+  /// Whether these are ENFORCED is a separate question — see
+  /// PLAN_LIMITS_ENFORCED in the application. Storing a limit is not the same
+  /// as applying it, and the pricing page says which is true today.
+  maxUsers       Int? @map("max_users")
+  maxActiveLeads Int? @map("max_active_leads")
+
+  /// Marketing bullet points, in display order.
+  features String[] @default([])
+
+  subscriptions Subscription[]
+
+  @@index([active, sortOrder])
+  @@map("plans")
+}
+
+/// An organization's subscription.
+///
+/// One row per organization, updated in place rather than a row per billing
+/// period: "what is this tenant entitled to right now" is the only question the
+/// application asks, and a period history belongs to the payment provider,
+/// which is the system of record for money.
+model Subscription {
+  id             String @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String @unique @map("organization_id") @db.Uuid
+  planId         String @map("plan_id") @db.Uuid
+
+  status          SubscriptionStatus @default(TRIAL)
+  billingInterval BillingInterval    @default(MONTHLY) @map("billing_interval")
+
+  currentPeriodStart DateTime  @map("current_period_start") @db.Timestamptz(6)
+  currentPeriodEnd   DateTime  @map("current_period_end") @db.Timestamptz(6)
+  trialEndsAt        DateTime? @map("trial_ends_at") @db.Timestamptz(6)
+  cancelledAt        DateTime? @map("cancelled_at") @db.Timestamptz(6)
+
+  /// Opaque identifiers from a payment provider.
+  ///
+  /// Nullable and unused today — there is no provider integrated. They exist
+  /// so that adding one later is an UPDATE rather than a schema migration on a
+  /// table that by then holds live customer subscriptions.
+  provider               String? @db.VarChar(40)
+  providerCustomerId     String? @map("provider_customer_id") @db.VarChar(120)
+  providerSubscriptionId String? @map("provider_subscription_id") @db.VarChar(120)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  /// Restrict, not Cascade: deleting a plan someone is paying for should fail
+  /// loudly rather than silently removing their subscription.
+  plan         Plan         @relation(fields: [planId], references: [id], onDelete: Restrict)
+
+  /// Serves the future renewal sweep, which scans across tenants for periods
+  /// that have ended — hence status-first rather than organization-first.
+  @@index([status, currentPeriodEnd])
+  @@map("subscriptions")
 }

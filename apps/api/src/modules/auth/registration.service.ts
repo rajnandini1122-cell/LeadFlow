@@ -8,6 +8,7 @@ import { isReserved, isValidSlug, resolveAvailableSlug, slugify } from '../organ
 import { RegistrationRepository } from './registration.repository';
 import { PasswordService } from './password.service';
 import { SessionService, type RequestMetadata } from './session.service';
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import type { RegisterDto } from './dto/register.dto';
 
 @Injectable()
@@ -20,6 +21,7 @@ export class RegistrationService {
     private readonly sessions: SessionService,
     private readonly audit: AuditRepository,
     private readonly config: AppConfig,
+    private readonly subscriptions: SubscriptionsService,
   ) {}
 
   async register(
@@ -76,6 +78,12 @@ export class RegistrationService {
       }
       throw error;
     }
+
+    // Starts the trial. Deliberately after the organization exists and outside
+    // its transaction: never throws, because a tenant with no subscription row
+    // is recoverable, whereas a registration that fails because the plan
+    // catalogue was not seeded turns a would-be customer away entirely.
+    await this.subscriptions.startTrial(created.organization.id);
 
     const session = await this.sessions.issue({
       organizationId: created.organization.id,

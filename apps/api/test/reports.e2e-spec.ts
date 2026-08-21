@@ -555,34 +555,38 @@ describe('Reports', () => {
       await setOrganizationTimezone(ctx.orgB.id, 'UTC');
     });
 
-    it('assigns a lead to the correct day for the organization’s zone', async () => {
-      // 20:00 UTC is already tomorrow in Auckland (UTC+12).
-      const now = new Date();
-      const instant = new Date(
-        Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 20, 0, 0),
-      );
+    it('reports the day the organization’s own zone is currently on', async () => {
+      /*
+       * Compares each zone against what that zone ACTUALLY says right now,
+       * computed independently through Intl.
+       *
+       * The earlier version of this test asserted that Auckland and Honolulu
+       * were on different calendar dates. They are 22 hours apart, so that
+       * holds for 22 hours a day and is false for the other two — the test
+       * passed when it was written and failed later purely because of the
+       * wall-clock time it happened to run at. Asserting the real property
+       * instead is deterministic at every hour.
+       */
+      const expectedDate = (timezone: string): string =>
+        new Intl.DateTimeFormat('en-CA', {
+          timeZone: timezone,
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+        }).format(new Date());
 
-      await setOrganizationTimezone(ctx.orgB.id, 'Pacific/Auckland');
-      const aucklandDay = (
-        await ctx
+      for (const timezone of ['Pacific/Auckland', 'Pacific/Honolulu', 'Asia/Kolkata', 'UTC']) {
+        await setOrganizationTimezone(ctx.orgB.id, timezone);
+
+        const response = await ctx
           .http()
           .get('/api/v1/reports/daily')
           .set(auth(ctx.orgB.owner.accessToken))
-          .expect(200)
-      ).body.data.date as string;
+          .expect(200);
 
-      await setOrganizationTimezone(ctx.orgB.id, 'Pacific/Honolulu');
-      const honoluluDay = (
-        await ctx
-          .http()
-          .get('/api/v1/reports/daily')
-          .set(auth(ctx.orgB.owner.accessToken))
-          .expect(200)
-      ).body.data.date as string;
-
-      // 22 hours apart: they cannot be on the same calendar day.
-      expect(aucklandDay).not.toBe(honoluluDay);
-      expect(instant.getTime()).toBeGreaterThan(0);
+        expect(response.body.data.timezone).toBe(timezone);
+        expect(response.body.data.date).toBe(expectedDate(timezone));
+      }
 
       await setOrganizationTimezone(ctx.orgB.id, 'UTC');
     });

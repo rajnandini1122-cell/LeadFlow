@@ -1,3 +1,4 @@
+import { useNavigate } from 'react-router-dom';
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import type {
@@ -42,6 +43,7 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
   const [pendingOrganizations, setPendingOrganizations] = useState<OrganizationSummary[] | null>(
     null,
   );
+  const navigate = useNavigate();
 
   /**
    * Restores the session on load.
@@ -144,14 +146,26 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
   const logout = useCallback(async (): Promise<void> => {
     try {
       await apiPost('/auth/logout');
+    } catch {
+      // Swallowed deliberately. Every caller invokes this as `void logout()`,
+      // so a rejection here becomes an unhandled promise rejection — and there
+      // is nothing useful to tell the user anyway: the local session is
+      // cleared below either way, and the server-side refresh cookie is
+      // rejected on its next use.
     } finally {
       // Clear local state even if the call failed — the user asked to leave,
       // and the refresh cookie is cleared server-side on the next attempt.
       setAccessToken(null);
       setUser(null);
       setStatus('anonymous');
+
+      // Send them to the public site rather than leaving them on a protected
+      // route. Without this the route guard fires on the next render and they
+      // land on the login screen, which reads as "signing out failed" —
+      // signing out should end at the front door, not at another password box.
+      navigate('/', { replace: true });
     }
-  }, []);
+  }, [navigate]);
 
   const can = useCallback(
     (permission: Permission): boolean => user?.permissions.includes(permission) ?? false,

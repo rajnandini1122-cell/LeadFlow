@@ -1,5 +1,6 @@
 import { Global, Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
+import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { AuthRepository } from './auth.repository';
@@ -20,7 +21,7 @@ import { PermissionsGuard } from './guards/permissions.guard';
  */
 @Global()
 @Module({
-  imports: [JwtModule.register({})],
+  imports: [JwtModule.register({}), SubscriptionsModule],
   controllers: [AuthController],
   providers: [
     AuthService,

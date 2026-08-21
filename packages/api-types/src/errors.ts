@@ -46,6 +46,12 @@ export const ERROR_CODES = {
    */
   REASSIGNMENT_REQUIRED: 'REASSIGNMENT_REQUIRED',
 
+  // --- subscriptions (Phase 8) -----------------------------------------------
+  SUBSCRIPTION_NOT_FOUND: 'SUBSCRIPTION_NOT_FOUND',
+  PLAN_NOT_FOUND: 'PLAN_NOT_FOUND',
+  /// The requested status change is not legal from the current one.
+  INVALID_SUBSCRIPTION_TRANSITION: 'INVALID_SUBSCRIPTION_TRANSITION',
+
   // --- platform --------------------------------------------------------------
   VALIDATION_ERROR: 'VALIDATION_ERROR',
   RATE_LIMITED: 'RATE_LIMITED',

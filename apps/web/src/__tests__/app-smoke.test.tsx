@@ -44,14 +44,14 @@ describe('App smoke test', () => {
     // A blank page passes any "did it throw?" check but fails this one.
     await waitFor(
       () => {
-        expect(screen.getByRole('heading', { name: 'No lead left behind' })).toBeInTheDocument();
+        expect(screen.getByRole('heading', { name: 'Never lose another lead' })).toBeInTheDocument();
       },
       { timeout: 5000 },
     );
 
     // A visitor who has never heard of the product needs an explanation and a
     // way in. "/" used to bounce straight to a password box.
-    expect(screen.getByRole('heading', { name: 'Simple pricing' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'How it works' })).toBeInTheDocument();
     expect(screen.getAllByRole('link', { name: 'Sign in' }).length).toBeGreaterThan(0);
   });
 

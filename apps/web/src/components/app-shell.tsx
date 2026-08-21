@@ -4,6 +4,7 @@ import { PERMISSIONS, type Permission } from '@leadflow/api-types';
 import { useAuth } from '../features/auth/auth-context';
 import { useFollowUps } from '../features/leads/use-lead-mutations';
 import { Avatar } from './ui';
+import { Copyright, LogoMark } from './brand';
 import { OrganizationSwitcher } from './organization-switcher';
 
 interface NavItem {
@@ -55,9 +56,7 @@ export function AppShell(): React.JSX.Element {
         }`}
       >
         <div className="flex h-14 items-center gap-2.5 border-b border-slate-100 px-5">
-          <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-slate-900 text-xs font-bold text-white">
-            I
-          </span>
+          <LogoMark className="h-7 w-7 shrink-0" />
           <div className="min-w-0">
             <p className="truncate text-sm font-semibold text-slate-900">LeadFlow</p>
             <p className="truncate text-[11px] text-slate-400">No lead left behind</p>
@@ -113,6 +112,7 @@ export function AppShell(): React.JSX.Element {
             >
               Sign out
             </button>
+            <Copyright className="mt-2 px-3 text-[10px]" />
           </div>
         )}
       </aside>

@@ -1,0 +1,77 @@
+import { Body, Controller, Get, Patch } from '@nestjs/common';
+import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { PERMISSIONS, type PlanView, type SubscriptionView } from '@leadflow/api-types';
+import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { Public } from '../auth/decorators/public.decorator';
+import { RequirePermissions } from '../auth/decorators/permissions.decorator';
+import { SubscriptionsService } from './subscriptions.service';
+import { ChangePlanDto } from './dto/subscriptions.dto';
+
+/**
+ * The plan catalogue.
+ *
+ * PUBLIC, and separated from the subscription routes for that reason. The
+ * pricing page must render for a visitor who has never signed in, so this
+ * endpoint has no tenant context and returns nothing tenant-specific — just
+ * the catalogue every organization is offered.
+ *
+ * There is deliberately no write route. Plans are seeded and changed through
+ * the catalogue in source, so no HTTP surface exists for editing one — which
+ * is also why no permission guards a mutation that does not exist.
+ */
+@ApiTags('plans')
+@Controller('plans')
+export class PlansController {
+  constructor(private readonly subscriptions: SubscriptionsService) {}
+
+  @Get()
+  @Public()
+  @ApiOperation({
+    summary: 'The plan catalogue',
+    description:
+      'Requires no authentication — the public pricing page reads it. Returns ' +
+      'only catalogue data; nothing about any organization.',
+  })
+  async list(): Promise<PlanView[]> {
+    return this.subscriptions.listPlans();
+  }
+}
+
+/**
+ * An organization's own subscription.
+ *
+ * Everything here is tenant-scoped by the Prisma extension, so there is no id
+ * parameter to tamper with: the organization comes from the token.
+ */
+@ApiTags('subscriptions')
+@Controller('subscriptions')
+export class SubscriptionsController {
+  constructor(private readonly subscriptions: SubscriptionsService) {}
+
+  @Get('current')
+  @RequirePermissions(PERMISSIONS.SUBSCRIPTION_VIEW)
+  @ApiOperation({ summary: 'The signed-in organization’s subscription' })
+  async current(): Promise<SubscriptionView> {
+    return this.subscriptions.current();
+  }
+
+  @Patch('current')
+  @RequirePermissions(PERMISSIONS.SUBSCRIPTION_MANAGE)
+  @ApiOperation({
+    summary: 'Change plan or billing interval',
+    description:
+      'Cannot change status. A client asserting it is ACTIVE would be asserting ' +
+      'that it has paid, which only a payment provider can know — sending a ' +
+      '`status` field is rejected outright rather than ignored.',
+  })
+  async changePlan(
+    @Body() dto: ChangePlanDto,
+    @CurrentUser() principal: TenantPrincipal,
+  ): Promise<SubscriptionView> {
+    return this.subscriptions.changePlan(
+      { planCode: dto.planCode, billingInterval: dto.billingInterval },
+      principal,
+    );
+  }
+}

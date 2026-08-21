@@ -44,6 +44,9 @@ export const TENANT_SCOPED_MODELS: Record<string, string> = {
   LeadActivity: 'organizationId',
   FollowUp: 'organizationId',
   Contact: 'organizationId',
+  Subscription: 'organizationId',
+  // Plan is deliberately ABSENT: it is a global catalogue offered to every
+  // tenant, and the public pricing page reads it with no tenant context at all.
 };
 
 /** Operations whose `where` must be narrowed to the tenant. */

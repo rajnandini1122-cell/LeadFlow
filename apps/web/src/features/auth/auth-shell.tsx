@@ -1,4 +1,6 @@
 import { useEffect, useRef, type ReactNode } from 'react';
+import { Link } from 'react-router-dom';
+import { Copyright, LogoMark } from '../../components/brand';
 
 /**
  * Shared chrome and form primitives for the unauthenticated screens.
@@ -32,9 +34,9 @@ export function AuthLayout({
     <div className="flex min-h-screen items-center justify-center bg-slate-50 px-4 py-10">
       <div className={wide ? 'w-full max-w-lg' : 'w-full max-w-sm'}>
         <div className="mb-8 text-center">
-          <span className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-slate-900 text-sm font-bold text-white">
-            L
-          </span>
+          <Link to="/" aria-label="LeadFlow home" className="mx-auto mb-3 block w-fit">
+            <LogoMark className="h-10 w-10" />
+          </Link>
           <h1
             ref={heading}
             tabIndex={-1}
@@ -46,6 +48,8 @@ export function AuthLayout({
         </div>
 
         <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">{children}</div>
+
+        <Copyright className="mt-6 text-center" />
       </div>
     </div>
   );

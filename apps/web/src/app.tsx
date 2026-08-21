@@ -7,7 +7,11 @@ import { AcceptInvitationPage } from './features/auth/accept-invitation-page';
 import { ForgotPasswordPage } from './features/auth/forgot-password-page';
 import { ResetPasswordPage } from './features/auth/reset-password-page';
 import { SecurityPage } from './features/settings/security-page';
-import { LandingPage } from './features/marketing/landing-page';
+import { MarketingLayout } from './features/marketing/marketing-layout';
+import { HomePage } from './features/marketing/home-page';
+import { FeaturesPage } from './features/marketing/features-page';
+import { PricingPage } from './features/marketing/pricing-page';
+import { AboutPage } from './features/marketing/about-page';
 import { DashboardPage } from './features/dashboard/dashboard-page';
 import { LeadsPage } from './features/leads/leads-page';
 import { LeadDetailPage } from './features/leads/lead-detail-page';
@@ -70,7 +74,7 @@ function Home(): React.JSX.Element {
   if (status === 'loading') return <Restoring />;
   if (status === 'authenticated') return <Navigate to="/dashboard" replace />;
 
-  return <LandingPage />;
+  return <HomePage />;
 }
 
 export function App(): React.JSX.Element {
@@ -79,8 +83,19 @@ export function App(): React.JSX.Element {
       <BrowserRouter>
         <AuthProvider>
           <Routes>
+            {/*
+              Public marketing site. No session required, and deliberately
+              wrapped in its own layout — a visitor deciding whether to sign up
+              and a user doing their job need different chrome.
+            */}
+            <Route element={<MarketingLayout />}>
+              <Route path="/" element={<Home />} />
+              <Route path="/features" element={<FeaturesPage />} />
+              <Route path="/pricing" element={<PricingPage />} />
+              <Route path="/about" element={<AboutPage />} />
+            </Route>
+
             {/* Public: no session required. */}
-            <Route path="/" element={<Home />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
             <Route path="/invite/:token" element={<AcceptInvitationPage />} />

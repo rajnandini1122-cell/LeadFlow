@@ -15,6 +15,7 @@ import {
   type DemoLead,
   type DemoOrganization,
 } from './demo-data';
+import { DEFAULT_PLAN_CODE, PLAN_CATALOGUE, TRIAL_DAYS } from '../src/modules/subscriptions/plan-catalogue';
 
 /**
  * Idempotent seed.
@@ -115,7 +116,7 @@ async function seedOrganization(
   demo: DemoOrganization,
   roleIds: Map<RoleKey, string>,
   passwordHash: string,
-): Promise<void> {
+): Promise<string> {
   const organization = await prisma.organization.upsert({
     where: { slug: demo.slug },
     create: {
@@ -250,6 +251,8 @@ async function seedOrganization(
   console.log(
     `  ${demo.name} (${demo.slug}) — ${demo.members.length} members, ${created} leads created`,
   );
+
+  return organization.id;
 }
 
 /**
@@ -351,11 +354,94 @@ function timelineFor(
 
 // -----------------------------------------------------------------------------
 
+
+/**
+ * Seeds the plan catalogue.
+ *
+ * Upserts by `code`, so editing a price in plan-catalogue.ts and re-running
+ * updates the catalogue without disturbing any organization already subscribed
+ * to that plan — the subscription points at the plan id, which does not change.
+ */
+async function seedPlans(): Promise<Map<string, string>> {
+  const ids = new Map<string, string>();
+
+  for (const plan of PLAN_CATALOGUE) {
+    const row = await prisma.plan.upsert({
+      where: { code: plan.code },
+      create: {
+        code: plan.code,
+        name: plan.name,
+        tagline: plan.tagline,
+        description: plan.description,
+        sortOrder: plan.sortOrder,
+        featured: plan.featured,
+        currency: plan.currency,
+        monthlyPrice: plan.monthlyPrice,
+        yearlyPrice: plan.yearlyPrice,
+        maxUsers: plan.maxUsers,
+        maxActiveLeads: plan.maxActiveLeads,
+        features: plan.features,
+        active: true,
+      },
+      update: {
+        name: plan.name,
+        tagline: plan.tagline,
+        description: plan.description,
+        sortOrder: plan.sortOrder,
+        featured: plan.featured,
+        currency: plan.currency,
+        monthlyPrice: plan.monthlyPrice,
+        yearlyPrice: plan.yearlyPrice,
+        maxUsers: plan.maxUsers,
+        maxActiveLeads: plan.maxActiveLeads,
+        features: plan.features,
+        active: true,
+      },
+      select: { id: true, code: true },
+    });
+
+    ids.set(row.code, row.id);
+  }
+
+  console.log(`  ${ids.size} plans in the catalogue`);
+  return ids;
+}
+
+/**
+ * Gives a demo organization a trial subscription if it has none.
+ *
+ * Never overwrites an existing one — re-running the seed must not reset a
+ * subscription somebody has been working with.
+ */
+async function seedSubscription(organizationId: string, planIds: Map<string, string>): Promise<void> {
+  const planId = planIds.get(DEFAULT_PLAN_CODE);
+  if (!planId) return;
+
+  const existing = await prisma.subscription.findUnique({ where: { organizationId } });
+  if (existing) return;
+
+  const now = new Date();
+  const trialEnd = new Date(now.getTime() + TRIAL_DAYS * DAY_MS);
+
+  await prisma.subscription.create({
+    data: {
+      organizationId,
+      planId,
+      status: 'TRIAL',
+      billingInterval: 'MONTHLY',
+      currentPeriodStart: now,
+      currentPeriodEnd: trialEnd,
+      trialEndsAt: trialEnd,
+    },
+  });
+}
+
 async function main(): Promise<void> {
   console.log('Seeding LeadFlow…\n');
 
   const permissionIds = await seedPermissions();
   const roleIds = await seedSystemRoles(permissionIds);
+  const planIds = await seedPlans();
 
   const password = process.env['SEED_PASSWORD'] ?? 'ChangeMe!2026';
   const passwordHash = await argon2.hash(password, {
@@ -367,7 +453,8 @@ async function main(): Promise<void> {
 
   console.log('');
   for (const demo of DEMO_ORGANIZATIONS) {
-    await seedOrganization(demo, roleIds, passwordHash);
+    const organizationId = await seedOrganization(demo, roleIds, passwordHash);
+    await seedSubscription(organizationId, planIds);
   }
 
   console.log('\nSign in with any of these — password:', password);

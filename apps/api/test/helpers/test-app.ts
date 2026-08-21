@@ -10,6 +10,7 @@ import {
   ROLE_PERMISSION_MATRIX,
   type RoleKey,
 } from '@leadflow/api-types';
+import { PLAN_CATALOGUE } from '../../src/modules/subscriptions/plan-catalogue';
 import { AppModule } from '../../src/app.module';
 import { RedisService } from '../../src/common/redis/redis.service';
 import { PrismaClient } from '../../src/generated/prisma/client';
@@ -121,6 +122,36 @@ async function seedRolesAndPermissions(prisma: PrismaClient): Promise<Map<RoleKe
   }
 
   return roleIds;
+}
+
+/**
+ * Seeds the plan catalogue.
+ *
+ * The application creates a trial subscription on registration, so a test
+ * database with no plans makes every registration silently subscription-less.
+ */
+async function seedPlans(prisma: PrismaClient): Promise<void> {
+  for (const plan of PLAN_CATALOGUE) {
+    await prisma.plan.upsert({
+      where: { code: plan.code },
+      create: {
+        code: plan.code,
+        name: plan.name,
+        tagline: plan.tagline,
+        description: plan.description,
+        sortOrder: plan.sortOrder,
+        featured: plan.featured,
+        currency: plan.currency,
+        monthlyPrice: plan.monthlyPrice,
+        yearlyPrice: plan.yearlyPrice,
+        maxUsers: plan.maxUsers,
+        maxActiveLeads: plan.maxActiveLeads,
+        features: plan.features,
+        active: true,
+      },
+      update: { active: true },
+    });
+  }
 }
 
 async function seedOrganization(
@@ -251,6 +282,7 @@ export async function createTestContext(): Promise<TestContext> {
   try {
     await connectWithRetry(prisma);
     const roleIds = await seedRolesAndPermissions(prisma);
+    await seedPlans(prisma);
 
     a = await seedOrganization(prisma, roleIds, {
       name: 'Cravion',
