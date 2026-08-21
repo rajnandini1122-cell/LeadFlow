@@ -151,6 +151,83 @@ export class FollowUpsRepository {
     return result.count;
   }
 
+  /**
+   * Cancels a follow-up and creates its replacement atomically.
+   *
+   * The order matters and used to be wrong. The replacement was created FIRST
+   * and the original closed afterwards, so a lost race — two people
+   * rescheduling the same follow-up, or a double-submitted form — left the
+   * replacement behind as an orphan while the request reported failure. The
+   * lead then carried two open follow-ups where one was intended.
+   *
+   * Closing first, conditionally on the row still being open, means exactly one
+   * caller can proceed. A loser closes zero rows, the transaction is rolled
+   * back before anything is created, and nothing survives it.
+   *
+   * Returns null when the follow-up was already completed or cancelled.
+   */
+  async cancelAndReplace(input: {
+    originalId: string;
+    leadId: string;
+    assignedUserId: string;
+    scheduledAt: Date;
+    type: FollowUpType;
+    title?: string | undefined;
+    reason?: string | undefined;
+    actorId: string;
+  }) {
+    const organizationId = this.tenantContext.requireOrganizationId();
+
+    return this.prisma.client.$transaction(async (tx) => {
+      const closed = await tx.followUp.updateMany({
+        where: { id: input.originalId, status: { in: OPEN_STATUSES } },
+        data: {
+          status: 'CANCELLED',
+          cancelledAt: new Date(),
+          cancelledReason: input.reason ?? 'Rescheduled',
+        },
+      });
+
+      // Somebody else got there first. Nothing has been created yet, so there
+      // is nothing to clean up.
+      if (closed.count === 0) return null;
+
+      const replacement = await tx.followUp.create({
+        data: {
+          organizationId,
+          leadId: input.leadId,
+          assignedUserId: input.assignedUserId,
+          scheduledAt: input.scheduledAt,
+          type: input.type,
+          title: input.title ?? null,
+          notes: input.reason ?? null,
+          status: input.scheduledAt.getTime() <= Date.now() ? 'DUE' : 'UPCOMING',
+          createdBy: input.actorId,
+        },
+        include: this.include,
+      });
+
+      await tx.followUp.updateMany({
+        where: { id: input.originalId },
+        data: { rescheduledToId: replacement.id },
+      });
+
+      // The chain of attempts is the signal a manager reads, so the timeline
+      // entry commits with the reschedule rather than after it.
+      await tx.leadActivity.create({
+        data: {
+          organizationId,
+          leadId: input.leadId,
+          activityType: 'FOLLOW_UP_RESCHEDULED',
+          description: `Rescheduled to ${input.scheduledAt.toISOString()}`,
+          performedById: input.actorId,
+        },
+      });
+
+      return replacement;
+    });
+  }
+
   async linkReschedule(originalId: string, replacementId: string): Promise<void> {
     await this.prisma.client.followUp.updateMany({
       where: { id: originalId },

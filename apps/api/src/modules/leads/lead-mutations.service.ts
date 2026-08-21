@@ -103,11 +103,20 @@ export class LeadMutationsService {
       });
     }
 
-    const updated = await this.repository.applyUpdate(id, data);
-    if (updated === 0) throw AppException.leadNotFound();
+    /*
+     * A lead that has just been won or lost is no longer live work, so its open
+     * follow-ups are cancelled in the same transaction as the status change.
+     *
+     * Leaving them open is what put closed deals in the overdue bucket — and a
+     * team that learns to ignore "overdue" because half of it is already-won
+     * business has lost the only signal the product gives them.
+     */
+    const closesLead = statusChanging && isTerminal(targetStatus);
 
-    await this.repository.recordActivity({
+    const { leadsChanged } = await this.repository.applyLifecycleChange({
       leadId: id,
+      data,
+      closesLead,
       activityType: statusChanging
         ? targetStatus === 'WON'
           ? 'LEAD_WON'
@@ -120,8 +129,11 @@ export class LeadMutationsService {
           ? `Marked lost: ${dto.lostReason}`
           : `Status changed to ${targetStatus}`
         : 'Lead details updated',
-      performedById: principal.userId,
+      actorId: principal.userId,
+      cancelReason: closesLead ? `Lead marked ${targetStatus}` : undefined,
     });
+
+    if (leadsChanged === 0) throw AppException.leadNotFound();
 
     await this.audit.record({
       action: 'lead.updated',
@@ -186,8 +198,20 @@ export class LeadMutationsService {
   async archive(id: string, principal: TenantPrincipal): Promise<void> {
     await this.requireVisible(id, principal);
 
-    const archived = await this.repository.archive(id, principal.userId);
-    if (archived === 0) throw AppException.leadNotFound();
+    // Archiving also ends live work, so it cancels open follow-ups in the same
+    // transaction. An archived lead that keeps generating reminders is worse
+    // than one that was never archived at all.
+    const { leadsChanged } = await this.repository.applyLifecycleChange({
+      leadId: id,
+      data: { deletedAt: new Date(), nextFollowUpAt: null, updatedBy: principal.userId },
+      closesLead: true,
+      activityType: 'LEAD_UPDATED',
+      description: 'Lead archived',
+      actorId: principal.userId,
+      cancelReason: 'Lead archived',
+    });
+
+    if (leadsChanged === 0) throw AppException.leadNotFound();
 
     await this.audit.record({ action: 'lead.archived', entityType: 'lead', entityId: id });
   }

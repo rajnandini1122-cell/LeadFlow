@@ -213,39 +213,28 @@ export class FollowUpsService {
     const existing = await this.requireOwnFollowUp(id, principal);
     const scheduledAt = parseWhen(dto.scheduledAt);
 
-    const replacement = await this.repository.create({
+    // One transaction: cancel, replace, link and record. Previously the
+    // replacement was created before the cancel, so a lost race left it behind
+    // as an orphan and the lead ended up with two open follow-ups.
+    const replacement = await this.repository.cancelAndReplace({
+      originalId: id,
       leadId: existing.leadId,
       assignedUserId: existing.assignedUserId,
       scheduledAt,
       type: (dto.type ?? existing.type) as FollowUpType,
       title: existing.title ?? undefined,
-      notes: dto.reason,
-      actorId: principal.userId,
-    });
-
-    const closed = await this.repository.close({
-      id,
-      status: 'CANCELLED',
       reason: dto.reason ?? 'Rescheduled',
       actorId: principal.userId,
     });
 
-    if (closed === 0) {
+    if (!replacement) {
       throw AppException.conflict(
         ERROR_CODES.CONFLICT,
         'This follow-up has already been completed or cancelled.',
       );
     }
 
-    await this.repository.linkReschedule(id, replacement.id);
     await this.repository.syncLeadNextFollowUp(existing.leadId);
-
-    await this.leads.recordActivity({
-      leadId: existing.leadId,
-      activityType: 'FOLLOW_UP_RESCHEDULED',
-      description: `Rescheduled to ${scheduledAt.toISOString()}`,
-      performedById: principal.userId,
-    });
 
     return toView(replacement);
   }

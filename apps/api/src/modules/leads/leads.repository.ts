@@ -316,6 +316,80 @@ export class LeadsRepository {
    * touches zero rows rather than raising a record-not-found that would
    * confirm the id exists.
    */
+  /**
+   * Applies a lead mutation, its mandatory timeline entry, and — when the lead
+   * stops being live work — the cancellation of its open follow-ups, as ONE
+   * transaction.
+   *
+   * These were four separate writes. Any of them could fail after the others
+   * had committed, leaving a lead whose timeline does not explain its own
+   * state, or a won deal still carrying overdue follow-ups.
+   *
+   * Cancelling rather than deleting is deliberate: what the team had planned to
+   * do next is part of the relationship history, and a manager reviewing a lost
+   * deal wants to see the attempts that were still scheduled when it died.
+   *
+   * Returns the number of lead rows changed, so the caller can tell "not found"
+   * from "nothing to do".
+   */
+  async applyLifecycleChange(input: {
+    leadId: string;
+    data: Record<string, unknown>;
+    /** True when the lead is becoming WON, LOST or archived. */
+    closesLead: boolean;
+    activityType: ActivityType;
+    description: string;
+    actorId: string;
+    cancelReason?: string | undefined;
+  }): Promise<{ leadsChanged: number; followUpsCancelled: number }> {
+    const organizationId = this.tenantContext.requireOrganizationId();
+
+    return this.prisma.client.$transaction(async (tx) => {
+      const updated = await tx.lead.updateMany({
+        where: { id: input.leadId, deletedAt: null },
+        data: input.data,
+      });
+
+      if (updated.count === 0) return { leadsChanged: 0, followUpsCancelled: 0 };
+
+      let followUpsCancelled = 0;
+
+      if (input.closesLead) {
+        const cancelled = await tx.followUp.updateMany({
+          where: {
+            leadId: input.leadId,
+            status: { in: ['UPCOMING', 'DUE', 'OVERDUE'] },
+          },
+          data: {
+            status: 'CANCELLED',
+            cancelledAt: new Date(),
+            cancelledReason: input.cancelReason ?? 'Lead closed',
+          },
+        });
+        followUpsCancelled = cancelled.count;
+      }
+
+      // In the same transaction, so a lead can never end up in a state its own
+      // timeline does not account for.
+      await tx.leadActivity.create({
+        data: {
+          organizationId,
+          leadId: input.leadId,
+          activityType: input.activityType,
+          description:
+            followUpsCancelled > 0
+              ? `${input.description} — ${followUpsCancelled} open follow-${
+                  followUpsCancelled === 1 ? 'up' : 'ups'
+                } cancelled`
+              : input.description,
+          performedById: input.actorId,
+        },
+      });
+
+      return { leadsChanged: updated.count, followUpsCancelled };
+    });
+  }
+
   async applyUpdate(leadId: string, data: Record<string, unknown>): Promise<number> {
     const result = await this.prisma.client.lead.updateMany({
       where: { id: leadId, deletedAt: null },
@@ -365,27 +439,30 @@ export class LeadsRepository {
       wonValue: input.wonValue,
     });
 
-    await this.prisma.client.lead.updateMany({
-      where: { id: input.leadId },
+    const closesLead = input.status === 'WON' || input.status === 'LOST';
+
+    await this.applyLifecycleChange({
+      leadId: input.leadId,
       data: {
         status: input.status,
         wonAt: effects.wonAt,
         lostAt: effects.lostAt,
         lostReason: effects.lostReason,
         wonValue: effects.wonValue ?? null,
+        // A closed lead has no next action; the CHECK constraint allows null
+        // only for a terminal status, so this must move with the status.
+        ...(closesLead ? { nextFollowUpAt: null } : {}),
         updatedBy: input.actorId,
       },
-    });
-
-    await this.recordActivity({
-      leadId: input.leadId,
+      closesLead,
       activityType:
         input.status === 'WON' ? 'LEAD_WON' : input.status === 'LOST' ? 'LEAD_LOST' : 'STATUS_CHANGED',
       description:
         input.status === 'LOST' && input.lostReason
           ? `Marked lost: ${input.lostReason}`
           : `Status changed to ${input.status}`,
-      performedById: input.actorId,
+      actorId: input.actorId,
+      cancelReason: `Lead marked ${input.status}`,
     });
   }
 
