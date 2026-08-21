@@ -60,12 +60,18 @@ export function PricingPage(): React.JSX.Element {
             ))}
           </dl>
 
-          <div className="mt-10 text-center">
+          <div className="mt-10 flex flex-col items-center justify-center gap-3 sm:flex-row">
             <Link
               to="/register"
-              className="inline-block rounded-lg bg-slate-900 px-6 py-3 text-sm font-medium text-white transition hover:bg-slate-800"
+              className="w-full rounded-lg bg-slate-900 px-6 py-3 text-center text-sm font-medium text-white transition hover:bg-slate-800 sm:w-auto"
             >
               Start free
+            </Link>
+            <Link
+              to="/contact"
+              className="w-full rounded-lg border border-slate-300 px-6 py-3 text-center text-sm font-medium text-slate-700 transition hover:bg-slate-50 sm:w-auto"
+            >
+              Ask a question
             </Link>
           </div>
         </div>

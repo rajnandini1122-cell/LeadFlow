@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom';
 import { usePageMeta } from '../../lib/use-page-meta';
 import { SectionHeading } from './marketing-layout';
 import { PricingTable } from './pricing-table';
+import { SALES_EMAIL } from './contact-page';
 
 /**
  * The homepage.
@@ -26,6 +27,7 @@ export function HomePage(): React.JSX.Element {
       <HowItWorks />
       <Ownership />
       <PricingPreview />
+      <ContactCta />
       <ClosingCta />
     </>
   );
@@ -366,6 +368,48 @@ function PricingPreview(): React.JSX.Element {
   );
 }
 
+/**
+ * For visitors who want a person rather than a signup form.
+ *
+ * Placed before the final call to action deliberately: someone still deciding
+ * has a question, and sending them to a registration form instead of an answer
+ * loses them.
+ */
+function ContactCta(): React.JSX.Element {
+  return (
+    <section className="border-t border-slate-200 bg-slate-50 py-16 sm:py-20">
+      <div className="mx-auto max-w-6xl px-4 sm:px-6">
+        <div className="grid gap-8 lg:grid-cols-2 lg:items-center">
+          <div>
+            <h2 className="text-2xl font-semibold tracking-tight text-balance text-slate-900 sm:text-3xl">
+              Not sure it fits your team?
+            </h2>
+            <p className="mt-3 text-pretty text-slate-600">
+              Tell us how you sell today and we will give you a straight answer about whether
+              LeadFlow helps — including when it does not. A real person reads every message.
+            </p>
+          </div>
+
+          <div className="flex flex-col gap-3 sm:flex-row lg:justify-end">
+            <Link
+              to="/contact"
+              className="rounded-lg bg-slate-900 px-6 py-3 text-center text-sm font-medium text-white transition hover:bg-slate-800"
+            >
+              Contact us
+            </Link>
+            <a
+              href={`mailto:${SALES_EMAIL}`}
+              className="rounded-lg border border-slate-300 bg-white px-6 py-3 text-center text-sm font-medium text-slate-700 transition hover:bg-slate-100"
+            >
+              {SALES_EMAIL}
+            </a>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function ClosingCta(): React.JSX.Element {
   return (
     <section className="border-t border-slate-200 bg-slate-50 py-16 sm:py-20">
@@ -377,12 +421,20 @@ function ClosingCta(): React.JSX.Element {
           Create a workspace, invite your team, and see today&rsquo;s follow-ups in a couple of
           minutes.
         </p>
-        <Link
-          to="/register"
-          className="mt-7 inline-block rounded-lg bg-slate-900 px-6 py-3 text-sm font-medium text-white transition hover:bg-slate-800"
-        >
-          Start free
-        </Link>
+        <div className="mt-7 flex flex-col items-center justify-center gap-3 sm:flex-row">
+          <Link
+            to="/register"
+            className="w-full rounded-lg bg-slate-900 px-6 py-3 text-sm font-medium text-white transition hover:bg-slate-800 sm:w-auto"
+          >
+            Start free
+          </Link>
+          <Link
+            to="/contact"
+            className="w-full rounded-lg border border-slate-300 bg-white px-6 py-3 text-center text-sm font-medium text-slate-700 transition hover:bg-slate-50 sm:w-auto"
+          >
+            Talk to us first
+          </Link>
+        </div>
       </div>
     </section>
   );

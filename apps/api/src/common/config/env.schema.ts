@@ -48,6 +48,10 @@ export const envSchema = z
     EMAIL_FROM: z.string().default('LeadFlow <no-reply@example.com>'),
     // Where emailed links point. The WEB app, not the API.
     WEB_BASE_URL: z.string().url().default('http://localhost:5173'),
+    // Where public contact-form enquiries are delivered. Configuration rather
+    // than a constant in source, so the address can differ per deployment and
+    // can be changed without a release.
+    SALES_EMAIL: z.string().email().default('sales@cravionventures.com'),
 
     // --- defaults for newly created organizations ---------------------------
     // Fallbacks only. Each organization stores its own, and every

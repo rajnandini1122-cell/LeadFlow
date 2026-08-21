@@ -1,7 +1,11 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { AppConfig } from '../config/config.module';
 import { EMAIL_PROVIDER, type EmailDeliveryResult, type EmailProvider } from './email.types';
-import { invitationEmail, passwordResetEmail } from './email.templates';
+import {
+  contactEnquiryEmail,
+  invitationEmail,
+  passwordResetEmail,
+} from './email.templates';
 
 /**
  * The seam between business logic and however mail actually leaves the system.
@@ -71,6 +75,36 @@ export class EmailService {
         to: input.to,
       }),
     );
+  }
+
+  /**
+   * Tells the sales inbox about a new website enquiry.
+   *
+   * The recipient comes from configuration, never from the request — a
+   * caller-supplied destination would turn a public form into an open relay
+   * for sending mail from this domain to anyone.
+   */
+  async sendContactEnquiry(input: {
+    name: string;
+    email: string;
+    company?: string | undefined;
+    phone?: string | undefined;
+    message: string;
+    source?: string | undefined;
+    reference: string;
+  }): Promise<EmailDeliveryResult> {
+    return this.deliver(
+      contactEnquiryEmail({
+        productName: this.config.get('PRODUCT_NAME'),
+        to: this.config.get('SALES_EMAIL'),
+        ...input,
+      }),
+    );
+  }
+
+  /** Where enquiries go. Surfaced so the public page can show one address. */
+  get salesEmail(): string {
+    return this.config.get('SALES_EMAIL');
   }
 
   private async deliver(

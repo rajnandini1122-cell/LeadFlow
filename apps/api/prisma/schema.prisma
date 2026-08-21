@@ -768,3 +768,55 @@ model Subscription {
   @@index([status, currentPeriodEnd])
   @@map("subscriptions")
 }
+
+// -----------------------------------------------------------------------------
+// Public contact enquiries (Phase 8)
+// -----------------------------------------------------------------------------
+
+enum EnquiryStatus {
+  NEW
+  RESPONDED
+  /// Kept rather than deleted, so a pattern of abuse stays visible.
+  SPAM
+
+  @@map("enquiry_status")
+}
+
+/// A message from the public contact form.
+///
+/// GLOBAL, and deliberately absent from TENANT_SCOPED_MODELS: the sender is an
+/// anonymous visitor who belongs to no organization. There is nothing to scope
+/// it to, and pretending otherwise would mean inventing a tenant for someone
+/// who has not signed up.
+///
+/// Stored as well as emailed, on purpose. Email is best-effort — the provider
+/// is configurable and may be the console one in development — and a sales
+/// enquiry that vanishes because SMTP was misconfigured is a lost customer
+/// nobody knows about. The row is the record; the email is the notification.
+model ContactEnquiry {
+  id String @id @default(dbgenerated("uuidv7()")) @db.Uuid
+
+  name    String  @db.VarChar(150)
+  email   String  @db.VarChar(320)
+  company String? @db.VarChar(200)
+  phone   String? @db.VarChar(32)
+  message String  @db.VarChar(4000)
+
+  /// Which page the enquiry came from, for attribution.
+  source String? @db.VarChar(60)
+
+  status   EnquiryStatus @default(NEW)
+  /// Set once the notification was accepted by the provider. NULL means the
+  /// enquiry arrived but nobody was told — the case worth alerting on.
+  notifiedAt DateTime? @map("notified_at") @db.Timestamptz(6)
+
+  /// Kept for abuse investigation only. Never shown to anyone but an operator.
+  ipAddress String? @map("ip_address") @db.VarChar(64)
+  userAgent String? @map("user_agent") @db.VarChar(400)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([status, createdAt(sort: Desc)])
+  @@index([email, createdAt(sort: Desc)])
+  @@map("contact_enquiries")
+}

@@ -119,3 +119,81 @@ export function invitationEmail(input: {
     }),
   };
 }
+
+
+/**
+ * Notifies the sales inbox that someone used the contact form.
+ *
+ * Deliberately does NOT use the shared `layout` helper: that one is built
+ * around a call-to-action button for a link the recipient must click, and
+ * there is no link here — the message itself is the payload.
+ *
+ * Everything the visitor typed is escaped before it reaches the HTML part.
+ * This is the one email in the system whose content is written entirely by an
+ * anonymous stranger, so it is the one that would carry an injected payload
+ * into whatever client the sales team reads mail in.
+ */
+export function contactEnquiryEmail(input: {
+  productName: string;
+  to: string;
+  name: string;
+  email: string;
+  company?: string | undefined;
+  phone?: string | undefined;
+  message: string;
+  source?: string | undefined;
+  reference: string;
+}): EmailMessage {
+  const rows: [string, string][] = [
+    ['Name', input.name],
+    ['Email', input.email],
+    ...(input.company ? ([['Company', input.company]] as [string, string][]) : []),
+    ...(input.phone ? ([['Phone', input.phone]] as [string, string][]) : []),
+    ...(input.source ? ([['Page', input.source]] as [string, string][]) : []),
+    ['Reference', input.reference],
+  ];
+
+  const text = [
+    `New enquiry from the ${input.productName} website.`,
+    '',
+    ...rows.map(([label, value]) => `${label}: ${value}`),
+    '',
+    'Message:',
+    input.message,
+    '',
+    `Reply directly to ${input.email}.`,
+  ].join('\n');
+
+  const html = `<!doctype html>
+<html lang="en">
+  <body style="margin:0;padding:24px;background:#f8fafc;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a;">
+    <div style="max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #e2e8f0;border-radius:12px;padding:32px;">
+      <p style="margin:0 0 24px;font-size:14px;font-weight:600;">${escapeHtml(input.productName)}</p>
+      <h1 style="margin:0 0 16px;font-size:20px;font-weight:600;">New website enquiry</h1>
+      <table style="width:100%;border-collapse:collapse;font-size:14px;margin:0 0 20px;">
+        ${rows
+          .map(
+            ([label, value]) =>
+              `<tr><td style="padding:6px 12px 6px 0;color:#64748b;white-space:nowrap;vertical-align:top;">${escapeHtml(label)}</td><td style="padding:6px 0;color:#0f172a;word-break:break-word;">${escapeHtml(value)}</td></tr>`,
+          )
+          .join('')}
+      </table>
+      <div style="border-top:1px solid #e2e8f0;padding-top:16px;">
+        <p style="margin:0 0 8px;font-size:13px;color:#64748b;">Message</p>
+        <p style="margin:0;font-size:15px;line-height:1.6;color:#334155;white-space:pre-wrap;">${escapeHtml(input.message)}</p>
+      </div>
+      <p style="margin:24px 0 0;font-size:13px;color:#64748b;">
+        Reply directly to <a href="mailto:${escapeHtml(input.email)}" style="color:#1d6fe8;">${escapeHtml(input.email)}</a>.
+      </p>
+    </div>
+  </body>
+</html>`;
+
+  return {
+    to: { email: input.to },
+    subject: `New enquiry from ${input.name}`,
+    text,
+    html,
+    tag: 'contact-enquiry',
+  };
+}

@@ -12,6 +12,7 @@ import { HomePage } from './features/marketing/home-page';
 import { FeaturesPage } from './features/marketing/features-page';
 import { PricingPage } from './features/marketing/pricing-page';
 import { AboutPage } from './features/marketing/about-page';
+import { ContactPage } from './features/marketing/contact-page';
 import { DashboardPage } from './features/dashboard/dashboard-page';
 import { LeadsPage } from './features/leads/leads-page';
 import { LeadDetailPage } from './features/leads/lead-detail-page';
@@ -93,6 +94,7 @@ export function App(): React.JSX.Element {
               <Route path="/features" element={<FeaturesPage />} />
               <Route path="/pricing" element={<PricingPage />} />
               <Route path="/about" element={<AboutPage />} />
+              <Route path="/contact" element={<ContactPage />} />
             </Route>
 
             {/* Public: no session required. */}
