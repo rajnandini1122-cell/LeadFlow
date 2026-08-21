@@ -66,6 +66,15 @@ export function LoginPage(): React.JSX.Element {
                 required
               />
 
+              <p className="-mt-2 text-right">
+                <Link
+                  to="/forgot-password"
+                  className="text-xs text-slate-500 transition hover:text-slate-900 hover:underline"
+                >
+                  Forgot password?
+                </Link>
+              </p>
+
               {error && (
                 <p role="alert" className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
                   {error}

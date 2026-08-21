@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import { CommonModule } from './common/common.module';
+import { EmailModule } from './common/email/email.module';
 import { AppConfig } from './common/config/config.module';
 import { AllExceptionsFilter } from './common/errors/all-exceptions.filter';
 import { ResponseEnvelopeInterceptor } from './common/interceptors/response-envelope.interceptor';
@@ -25,6 +26,7 @@ import { HealthModule } from './modules/health/health.module';
 @Module({
   imports: [
     CommonModule,
+    EmailModule,
 
     // AsyncLocalStorage-backed request context. `mount: true` wraps every HTTP
     // request; workers open their own scope via runWithTenant().

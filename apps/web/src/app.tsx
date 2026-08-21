@@ -4,6 +4,9 @@ import { AuthProvider, useAuth } from './features/auth/auth-context';
 import { LoginPage } from './features/auth/login-page';
 import { RegisterPage } from './features/auth/register-page';
 import { AcceptInvitationPage } from './features/auth/accept-invitation-page';
+import { ForgotPasswordPage } from './features/auth/forgot-password-page';
+import { ResetPasswordPage } from './features/auth/reset-password-page';
+import { SecurityPage } from './features/settings/security-page';
 import { DashboardPage } from './features/dashboard/dashboard-page';
 import { LeadsPage } from './features/leads/leads-page';
 import { LeadDetailPage } from './features/leads/lead-detail-page';
@@ -56,6 +59,8 @@ export function App(): React.JSX.Element {
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
             <Route path="/invite/:token" element={<AcceptInvitationPage />} />
+            <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+            <Route path="/reset-password/:token" element={<ResetPasswordPage />} />
 
             <Route element={<RequireAuth />}>
               <Route element={<AppShell />}>
@@ -67,6 +72,7 @@ export function App(): React.JSX.Element {
                 <Route path="reports" element={<ReportsPage />} />
                 <Route path="reports/daily" element={<DailyReportPage />} />
                 <Route path="settings" element={<SettingsPage />} />
+                <Route path="settings/security" element={<SecurityPage />} />
               </Route>
             </Route>
 

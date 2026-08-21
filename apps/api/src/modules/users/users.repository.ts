@@ -68,6 +68,14 @@ export class UsersRepository {
     });
   }
 
+  /** The current organization's name, for addressing outbound email. */
+  async organizationName(): Promise<string> {
+    const organization = await this.prisma.client.organization.findFirst({
+      select: { name: true },
+    });
+    return organization?.name ?? 'your organization';
+  }
+
   /** Global lookup, used to decide whether an invite creates or links a user. */
   async findUserByEmail(email: string) {
     return this.prisma.client.user.findUnique({

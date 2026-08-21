@@ -7,6 +7,7 @@ import { AuditRepository } from '../../common/audit/audit.repository';
 import type { RequestMetadata } from './session.service';
 import { PasswordResetRepository } from './password-reset.repository';
 import { PasswordService } from './password.service';
+import { EmailService } from '../../common/email/email.service';
 
 /**
  * Reset tokens live for one hour, not the seven days an invitation gets.
@@ -30,6 +31,7 @@ export class PasswordResetService {
     private readonly passwords: PasswordService,
     private readonly audit: AuditRepository,
     private readonly config: AppConfig,
+    private readonly email: EmailService,
   ) {}
 
   private static hash(token: string): string {
@@ -72,6 +74,16 @@ export class PasswordResetService {
       expiresAt: new Date(Date.now() + RESET_TTL_MINUTES * 60_000),
       ipAddress: meta.ipAddress,
       userAgent: meta.userAgent,
+    });
+
+    // Fire-and-await, but the result is intentionally ignored: the response
+    // must be identical whether or not delivery succeeded, or a send failure
+    // becomes the enumeration oracle the neutral message exists to prevent.
+    await this.email.sendPasswordReset({
+      to: user.email,
+      name: user.fullName,
+      token,
+      expiresInMinutes: RESET_TTL_MINUTES,
     });
 
     await this.audit.record({

@@ -30,7 +30,8 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/team', label: 'Team', icon: '⚇', permission: PERMISSIONS.USER_VIEW },
   { to: '/reports', label: 'Reports', icon: '▤', permission: PERMISSIONS.REPORT_VIEW, exact: true },
   { to: '/reports/daily', label: 'Daily report', icon: '☀', permission: PERMISSIONS.REPORT_VIEW },
-  { to: '/settings', label: 'Settings', icon: '⚙', permission: PERMISSIONS.ORG_VIEW },
+  { to: '/settings', label: 'Settings', icon: '⚙', permission: PERMISSIONS.ORG_VIEW, exact: true },
+  { to: '/settings/security', label: 'Security', icon: '⚿' },
 ];
 
 export function AppShell(): React.JSX.Element {

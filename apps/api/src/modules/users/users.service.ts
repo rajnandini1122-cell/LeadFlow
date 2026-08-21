@@ -12,6 +12,7 @@ import type { TenantPrincipal } from '../../common/tenancy/tenant-context.servic
 import { MembershipCacheService } from '../auth/membership-cache.service';
 import { InvitationsService } from '../invitations/invitations.service';
 import { UsersRepository } from './users.repository';
+import { EmailService } from '../../common/email/email.service';
 import type { InviteUserDto, UpdateUserDto } from './dto/users.dto';
 
 @Injectable()
@@ -22,6 +23,7 @@ export class UsersService {
     private readonly membershipCache: MembershipCacheService,
     private readonly config: AppConfig,
     private readonly invitations: InvitationsService,
+    private readonly email: EmailService,
   ) {}
 
   async list(): Promise<UserListItem[]> {
@@ -66,6 +68,24 @@ export class UsersService {
       invitedById: principal.userId,
       inviteTokenHash: minted.hash,
       inviteExpiresAt: minted.expiresAt,
+    });
+
+    // Delivery outcome is not surfaced to the caller: the invitation exists
+    // either way, and an admin can resend from the pending list if it did not
+    // arrive. Failing the request would leave a pending invitation the UI
+    // reported as failed.
+    const [inviter, organizationName] = await Promise.all([
+      this.repository.findMember(principal.userId),
+      this.repository.organizationName(),
+    ]);
+
+    await this.email.sendInvitation({
+      to: dto.email,
+      inviterName: inviter?.user.fullName ?? 'A colleague',
+      organizationName,
+      role: dto.role,
+      token: minted.token,
+      expiresInDays: 7,
     });
 
     await this.audit.record({

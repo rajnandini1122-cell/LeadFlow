@@ -41,6 +41,14 @@ export const envSchema = z
       .default('Simple lead management and follow-up for growing teams'),
     PRODUCT_LOGO_URL: z.string().default(''),
 
+    // --- email --------------------------------------------------------------
+    // Which transport carries password resets and invitations. 'console' logs
+    // instead of sending and is refused in production — see createEmailProvider.
+    EMAIL_PROVIDER: z.string().default('console'),
+    EMAIL_FROM: z.string().default('LeadFlow <no-reply@example.com>'),
+    // Where emailed links point. The WEB app, not the API.
+    WEB_BASE_URL: z.string().url().default('http://localhost:5173'),
+
     // --- defaults for newly created organizations ---------------------------
     // Fallbacks only. Each organization stores its own, and every
     // tenant-visible figure is formatted from the tenant value, never these.
