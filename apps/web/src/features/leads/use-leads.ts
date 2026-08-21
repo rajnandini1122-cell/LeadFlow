@@ -1,4 +1,10 @@
-import { useQuery, type UseQueryResult } from '@tanstack/react-query';
+import {
+  useInfiniteQuery,
+  useQuery,
+  type UseInfiniteQueryResult,
+  type InfiniteData,
+  type UseQueryResult,
+} from '@tanstack/react-query';
 import type { LeadPriority, LeadStatus, Paginated } from '@leadflow/api-types';
 import { apiGet } from '../../lib/api-client';
 import { daysUntil } from '../../lib/format';
@@ -27,13 +33,48 @@ export interface LeadActivity {
 
 export type LeadDetail = LeadSummary & { activities: LeadActivity[] };
 
+export interface LeadFilters {
+  status?: LeadStatus | undefined;
+  search?: string | undefined;
+  assignedToId?: string | undefined;
+}
+
 /**
- * The lead list.
+ * One page of leads, followed by the next on demand.
  *
- * Phase 1 exposes leads read-only, and there is no aggregation endpoint yet, so
- * every screen works from one page of leads and derives its own counts. That is
- * honest for a dataset this size but does not scale — the dashboard and reports
- * APIs in Phase 4 replace this with server-side aggregation.
+ * The list screen used to load a flat first-100 and filter in the browser,
+ * which meant an organization past its hundredth lead was quietly looking at a
+ * truncated pipeline — and the numbers above the list described the page, not
+ * the data. Filtering, sorting and counting all happen server-side now; this
+ * hook only stitches the pages together.
+ */
+export function useLeadsPage(
+  filters: LeadFilters,
+  limit = 25,
+): UseInfiniteQueryResult<InfiniteData<Paginated<LeadSummary>>> {
+  const params: Record<string, unknown> = { limit };
+  if (filters.status) params['status'] = filters.status;
+  if (filters.search) params['search'] = filters.search;
+  if (filters.assignedToId) params['assignedToId'] = filters.assignedToId;
+
+  return useInfiniteQuery({
+    queryKey: ['leads', 'page', params],
+    queryFn: ({ pageParam }) =>
+      apiGet<Paginated<LeadSummary>>('/leads', {
+        ...params,
+        ...(pageParam ? { cursor: pageParam } : {}),
+      }),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (last) => last.nextCursor ?? undefined,
+  });
+}
+
+/**
+ * A flat page of leads, used by the screens that still aggregate in the
+ * browser (reports, the team roster).
+ *
+ * Those screens are honest about the limit in their own copy. New aggregate
+ * figures belong on the dashboard API, which counts the whole dataset.
  */
 export function useLeads(params?: {
   status?: LeadStatus;

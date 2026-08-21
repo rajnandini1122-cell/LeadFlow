@@ -20,6 +20,8 @@ import { PermissionsGuard } from './modules/auth/guards/permissions.guard';
 import { UsersModule } from './modules/users/users.module';
 import { OrganizationsModule } from './modules/organizations/organizations.module';
 import { LeadsModule } from './modules/leads/leads.module';
+import { ContactsModule } from './modules/contacts/contacts.module';
+import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { FollowUpsModule } from './modules/follow-ups/follow-ups.module';
 import { InvitationsModule } from './modules/invitations/invitations.module';
 import { HealthModule } from './modules/health/health.module';
@@ -91,7 +93,9 @@ import { HealthModule } from './modules/health/health.module';
     OrganizationsModule,
     InvitationsModule,
     LeadsModule,
+    ContactsModule,
     FollowUpsModule,
+    DashboardModule,
     HealthModule,
   ],
   providers: [

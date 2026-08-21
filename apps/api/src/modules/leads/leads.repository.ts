@@ -27,19 +27,18 @@ export class LeadsRepository {
     private readonly tenantContext: TenantContextService,
   ) {}
 
-  async list(filters: {
+  /**
+   * The WHERE clause shared by list() and count().
+   *
+   * Extracted so the two cannot drift: a total computed from different filters
+   * than the page is worse than no total at all.
+   */
+  private listWhere(filters: {
     status?: LeadStatus | undefined;
     assignedToId?: string | undefined;
     search?: string | undefined;
-    cursor?: string | undefined;
-    limit: number;
-    /**
-     * Owner restriction derived from the caller's permissions. Applied AFTER
-     * the caller-supplied assignedToId filter so a rep cannot widen their own
-     * visibility by passing someone else's id in the query string.
-     */
     restrictToUserId?: string | undefined;
-  }) {
+  }): Record<string, unknown> {
     const where: Record<string, unknown> = { deletedAt: null };
     if (filters.status) where['status'] = filters.status;
     if (filters.assignedToId) where['assignedToId'] = filters.assignedToId;
@@ -53,6 +52,33 @@ export class LeadsRepository {
         { mobile: { contains: filters.search } },
       ];
     }
+
+    return where;
+  }
+
+  async countMatching(filters: {
+    status?: LeadStatus | undefined;
+    assignedToId?: string | undefined;
+    search?: string | undefined;
+    restrictToUserId?: string | undefined;
+  }): Promise<number> {
+    return this.prisma.client.lead.count({ where: this.listWhere(filters) });
+  }
+
+  async list(filters: {
+    status?: LeadStatus | undefined;
+    assignedToId?: string | undefined;
+    search?: string | undefined;
+    cursor?: string | undefined;
+    limit: number;
+    /**
+     * Owner restriction derived from the caller's permissions. Applied AFTER
+     * the caller-supplied assignedToId filter so a rep cannot widen their own
+     * visibility by passing someone else's id in the query string.
+     */
+    restrictToUserId?: string | undefined;
+  }) {
+    const where = this.listWhere(filters);
 
     // Fetch one extra row to determine hasMore without a second count query.
     return this.prisma.client.lead.findMany({
@@ -168,6 +194,7 @@ export class LeadsRepository {
     priority: LeadPriority;
     assignedToId?: string | undefined;
     nextFollowUpAt: Date | null;
+    contactId?: string | undefined;
     actorId: string;
   }) {
     const organizationId = this.tenantContext.requireOrganizationId();
@@ -191,6 +218,7 @@ export class LeadsRepository {
           assignedToId: input.assignedToId ?? null,
           assignedById: input.assignedToId ? input.actorId : null,
           nextFollowUpAt: input.nextFollowUpAt,
+          contactId: input.contactId ?? null,
           lastActivityAt: new Date(),
           createdBy: input.actorId,
           updatedBy: input.actorId,

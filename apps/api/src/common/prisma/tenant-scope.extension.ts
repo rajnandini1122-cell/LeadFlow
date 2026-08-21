@@ -43,6 +43,7 @@ export const TENANT_SCOPED_MODELS: Record<string, string> = {
   Lead: 'organizationId',
   LeadActivity: 'organizationId',
   FollowUp: 'organizationId',
+  Contact: 'organizationId',
 };
 
 /** Operations whose `where` must be narrowed to the tenant. */

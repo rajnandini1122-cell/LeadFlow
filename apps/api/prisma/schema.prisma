@@ -177,6 +177,7 @@ model Organization {
   sessions    Session[]
   auditLogs   AuditLog[]
   leads       Lead[]
+  contacts    Contact[]
   activities  LeadActivity[]
   followUps   FollowUp[]
 
@@ -459,6 +460,12 @@ model Lead {
   status   LeadStatus   @default(NEW)
   priority LeadPriority @default(MEDIUM)
 
+  /// The person this enquiry is with. Nullable because the backfill cannot
+  /// prove it covered every historical row, and a NOT NULL that fails mid-
+  /// migration on a live tenant is worse than a nullable column the
+  /// application always populates.
+  contactId    String? @map("contact_id") @db.Uuid
+
   assignedToId String? @map("assigned_to") @db.Uuid
   assignedById String? @map("assigned_by") @db.Uuid
 
@@ -482,6 +489,7 @@ model Lead {
   updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  contact      Contact?       @relation(fields: [contactId], references: [id], onDelete: SetNull)
   assignedTo   User?          @relation("LeadAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
   assignedBy   User?          @relation("LeadAssigner", fields: [assignedById], references: [id], onDelete: SetNull)
   activities   LeadActivity[]
@@ -492,6 +500,7 @@ model Lead {
   @@index([organizationId, assignedToId, status])
   @@index([organizationId, nextFollowUpAt])
   @@index([organizationId, mobile])
+  @@index([organizationId, contactId])
   @@index([organizationId, createdAt(sort: Desc)])
   @@map("leads")
 }
@@ -516,6 +525,53 @@ model LeadActivity {
   @@index([organizationId, leadId, createdAt(sort: Desc)])
   @@index([organizationId, createdAt(sort: Desc)])
   @@map("lead_activities")
+}
+
+/// A person, reusable across many leads.
+///
+/// Split out of Lead because the same person legitimately generates several
+/// enquiries over time — a repeat customer, a new project, a different
+/// product line. Keeping their details on the lead meant a name or number
+/// correction had to be repeated on every one, and there was no way to see
+/// everything one customer had ever asked about.
+///
+/// Lead keeps its own denormalised copies of the contact fields. They are NOT
+/// dead weight: they are the historical record of what was captured at the
+/// time, and every existing query, index and the duplicate-detection index
+/// depend on them. Removing them would be a breaking change for no gain.
+model Contact {
+  id             String @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String @map("organization_id") @db.Uuid
+
+  firstName   String? @map("first_name") @db.VarChar(80)
+  lastName    String? @map("last_name") @db.VarChar(80)
+  /// E.164. The primary identity key for a person within an organization.
+  mobile      String? @db.VarChar(20)
+  email       String? @db.VarChar(320)
+  companyName String? @map("company_name") @db.VarChar(200)
+  city        String? @db.VarChar(80)
+  notes       String? @db.VarChar(2000)
+
+  /// Set when this contact was merged INTO another. The row is retained so
+  /// that any lingering reference still resolves rather than dangling.
+  mergedIntoId String?   @map("merged_into_id") @db.Uuid
+  mergedAt     DateTime? @map("merged_at") @db.Timestamptz(6)
+
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+  createdBy String?   @map("created_by") @db.Uuid
+  updatedBy String?   @map("updated_by") @db.Uuid
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  mergedInto   Contact?     @relation("ContactMerge", fields: [mergedIntoId], references: [id], onDelete: SetNull)
+  mergedFrom   Contact[]    @relation("ContactMerge")
+  leads        Lead[]
+
+  @@index([organizationId, mobile])
+  @@index([organizationId, email])
+  @@index([organizationId, createdAt(sort: Desc)])
+  @@map("contacts")
 }
 
 /// A scheduled next action on a lead — the core of the product promise.

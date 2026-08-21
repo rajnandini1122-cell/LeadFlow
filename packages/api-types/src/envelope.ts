@@ -30,4 +30,12 @@ export interface Paginated<T> {
   items: T[];
   nextCursor: string | null;
   hasMore: boolean;
+  /**
+   * Total rows matching the filter, across every page.
+   *
+   * Optional because a timeline does not need it and counting one is wasted
+   * work. List screens do: without it the UI can only say "100 leads", which
+   * is the page size rather than the truth.
+   */
+  total?: number | undefined;
 }

@@ -10,6 +10,7 @@ import { AppException } from '../../common/errors/app.exception';
 import { AuditRepository } from '../../common/audit/audit.repository';
 import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
 import { LeadsRepository } from './leads.repository';
+import { ContactsRepository } from '../contacts/contacts.repository';
 import type { ListLeadsDto } from './dto/leads.dto';
 import type { CreateLeadDto } from './dto/create-lead.dto';
 import { visibilityFilter } from './lead-visibility';
@@ -35,6 +36,7 @@ export class LeadsService {
 
   constructor(
     private readonly repository: LeadsRepository,
+    private readonly contacts: ContactsRepository,
     private readonly audit: AuditRepository,
   ) {}
 
@@ -42,14 +44,19 @@ export class LeadsService {
     const limit = dto.limit ?? 25;
     const restriction = visibilityFilter(principal);
 
-    const rows = await this.repository.list({
+    const filters = {
       status: dto.status,
       assignedToId: dto.assignedToId,
       search: dto.search,
-      cursor: dto.cursor,
-      limit,
       restrictToUserId: restriction?.assignedToId,
-    });
+    };
+
+    // The total is counted with the SAME filters, so "showing 25 of 812"
+    // describes the list the caller is actually looking at.
+    const [rows, total] = await Promise.all([
+      this.repository.list({ ...filters, cursor: dto.cursor, limit }),
+      this.repository.countMatching(filters),
+    ]);
 
     const hasMore = rows.length > limit;
     const items = (hasMore ? rows.slice(0, limit) : rows).map(toSummary);
@@ -58,6 +65,7 @@ export class LeadsService {
       items,
       hasMore,
       nextCursor: hasMore ? (items[items.length - 1]?.id ?? null) : null,
+      total,
     };
   }
 
@@ -128,7 +136,27 @@ export class LeadsService {
       }
     }
 
-    const leadId = await this.createWithRetry(dto, status, nextFollowUpAt, principal, mobile);
+    // Every lead belongs to a person. Reusing the existing contact for this
+    // mobile is what lets a returning customer's history survive a closed deal:
+    // the second enquiry is a new lead, not a new person.
+    const contact = await this.contacts.findOrCreateByMobile({
+      mobile,
+      firstName: dto.firstName,
+      lastName: dto.lastName,
+      email: dto.email,
+      companyName: dto.companyName,
+      city: dto.city,
+      actorId: principal.userId,
+    });
+
+    const leadId = await this.createWithRetry(
+      dto,
+      status,
+      nextFollowUpAt,
+      principal,
+      mobile,
+      contact.id,
+    );
     const lead = await this.repository.findById(leadId);
     if (!lead) throw AppException.leadNotFound();
 
@@ -230,6 +258,7 @@ export class LeadsService {
     nextFollowUpAt: Date | null,
     principal: TenantPrincipal,
     mobile: string,
+    contactId: string,
     attempt = 1,
   ): Promise<string> {
     const leadNumber = await this.repository.nextLeadNumber();
@@ -250,6 +279,7 @@ export class LeadsService {
         priority: dto.priority ?? 'MEDIUM',
         assignedToId: dto.assignedToId,
         nextFollowUpAt,
+        contactId,
         actorId: principal.userId,
       });
     } catch (error) {
@@ -271,7 +301,15 @@ export class LeadsService {
         this.logger.warn(
           `Lead number ${leadNumber} collided, retrying (attempt ${attempt})`,
         );
-        return this.createWithRetry(dto, status, nextFollowUpAt, principal, mobile, attempt + 1);
+        return this.createWithRetry(
+          dto,
+          status,
+          nextFollowUpAt,
+          principal,
+          mobile,
+          contactId,
+          attempt + 1,
+        );
       }
 
       throw error;

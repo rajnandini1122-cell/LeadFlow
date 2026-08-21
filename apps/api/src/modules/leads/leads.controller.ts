@@ -26,6 +26,8 @@ import {
   UpdateLeadDto,
 } from './dto/update-lead.dto';
 import { LeadMutationsService } from './lead-mutations.service';
+import { LeadImportService } from './import/lead-import.service';
+import { ImportLeadsDto, PreviewImportDto } from './dto/import-leads.dto';
 import { FollowUpsService } from '../follow-ups/follow-ups.service';
 import { CreateFollowUpDto } from '../follow-ups/dto/follow-ups.dto';
 import { Inject, forwardRef } from '@nestjs/common';
@@ -43,6 +45,7 @@ export class LeadsController {
   constructor(
     private readonly leads: LeadsService,
     private readonly mutations: LeadMutationsService,
+    private readonly imports: LeadImportService,
     @Inject(forwardRef(() => FollowUpsService))
     private readonly followUps: FollowUpsService,
   ) {}
@@ -73,6 +76,42 @@ export class LeadsController {
   @ApiOperation({ summary: 'Members who can be assigned a lead' })
   async assignableUsers(): Promise<{ id: string; fullName: string }[]> {
     return this.leads.assignableUsers();
+  }
+
+  /**
+   * Preview and import are both declared before `:id`, for the same
+   * declaration-order reason as `assignable-users`.
+   */
+  @Post('import/preview')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSIONS.LEAD_IMPORT)
+  @ApiOperation({
+    summary: 'Validate a CSV and preview what would be imported',
+    description:
+      'Nothing is written. Returns the suggested column mapping, per-row ' +
+      'validation errors and duplicate matches so the user can confirm before ' +
+      'committing. Importing straight from a file gives no chance to notice a ' +
+      'mismapped column, and there is no undo for two thousand wrong leads.',
+  })
+  async previewImport(@Body() dto: PreviewImportDto) {
+    return this.imports.preview(dto);
+  }
+
+  @Post('import')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSIONS.LEAD_IMPORT)
+  @ApiOperation({
+    summary: 'Import leads from a CSV',
+    description:
+      'Rows are written individually and reported individually: a partial ' +
+      'import is legible, whereas one bad row rolling back a whole file is ' +
+      'not. Duplicates of existing active leads are skipped by default.',
+  })
+  async importLeads(
+    @Body() dto: ImportLeadsDto,
+    @CurrentUser() principal: TenantPrincipal,
+  ) {
+    return this.imports.import(dto, principal);
   }
 
   @Post()

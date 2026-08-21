@@ -25,6 +25,12 @@ async function bootstrap(): Promise<void> {
   app.use(helmet());
   app.use(cookieParser());
 
+  // Express defaults to 100kb, which a few hundred imported leads exceed.
+  // Raised to just above the CSV cap the import DTO enforces, and no further:
+  // the body limit is the only thing standing between an unauthenticated
+  // request and an arbitrarily large allocation.
+  app.useBodyParser('json', { limit: '3mb' });
+
   // Behind a load balancer, req.ip must come from X-Forwarded-For or every
   // rate limit and audit entry records the proxy's address instead of the
   // client's. `1` trusts exactly one hop — trusting all would let a client
