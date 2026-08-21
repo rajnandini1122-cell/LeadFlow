@@ -34,6 +34,18 @@ export const ERROR_CODES = {
   USER_NOT_FOUND: 'USER_NOT_FOUND',
   USER_ALREADY_EXISTS: 'USER_ALREADY_EXISTS',
 
+  // --- organization administration (Phase 7) ---------------------------------
+  /**
+   * The action would leave the organization with nobody able to administer it.
+   * Refused for removal, deactivation, demotion and leaving alike.
+   */
+  LAST_ADMINISTRATOR: 'LAST_ADMINISTRATOR',
+  /**
+   * The member still owns active leads or open follow-ups. Offboarding must
+   * name a colleague to take the work over, or it would be orphaned.
+   */
+  REASSIGNMENT_REQUIRED: 'REASSIGNMENT_REQUIRED',
+
   // --- platform --------------------------------------------------------------
   VALIDATION_ERROR: 'VALIDATION_ERROR',
   RATE_LIMITED: 'RATE_LIMITED',

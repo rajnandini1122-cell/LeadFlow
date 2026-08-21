@@ -22,6 +22,9 @@ import {
   type TeamMemberPerformance,
 } from '../reports/use-reports';
 import { InviteMemberDialog } from './invite-member-dialog';
+import { OffboardMemberDialog } from './offboard-member-dialog';
+import { TransferAdminDialog } from './transfer-admin-dialog';
+import { AuditTrailCard } from './audit-trail-card';
 import { PendingInvitations } from './pending-invitations';
 import { LeaveOrganizationButton, MemberActions } from './member-actions';
 
@@ -34,14 +37,18 @@ import { LeaveOrganizationButton, MemberActions } from './member-actions';
  * organization outgrew that page — and understated silently.
  */
 export function TeamPage(): React.JSX.Element {
-  const { can } = useAuth();
+  const { user, can } = useAuth();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [range, setRange] = useState<RangeSelection>({ preset: 'this_month' });
+  const [offboarding, setOffboarding] = useState<UserListItem | null>(null);
+  const [transferOpen, setTransferOpen] = useState(false);
 
   const canInvite = can('user.invite');
   const canSeePerformance = can('report.view');
+  const canManageMembers = can('user.update');
+  const isOwner = user?.role === 'OWNER';
 
   const team = useQuery({
     queryKey: ['users'],
@@ -88,19 +95,51 @@ export function TeamPage(): React.JSX.Element {
         title="Team"
         subtitle={`${members.length} members in this organization`}
         action={
-          canInvite ? (
-            <button
-              type="button"
-              onClick={() => setDialogOpen(true)}
-              className="rounded-lg bg-slate-900 px-3 py-2 text-sm font-medium text-white transition hover:bg-slate-800"
-            >
-              + Invite member
-            </button>
-          ) : undefined
+          <div className="flex flex-wrap gap-2">
+            {isOwner && (
+              <button
+                type="button"
+                onClick={() => setTransferOpen(true)}
+                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+              >
+                Transfer admin
+              </button>
+            )}
+            {canInvite && (
+              <button
+                type="button"
+                onClick={() => setDialogOpen(true)}
+                className="rounded-lg bg-slate-900 px-3 py-2 text-sm font-medium text-white transition hover:bg-slate-800"
+              >
+                + Invite member
+              </button>
+            )}
+          </div>
         }
       />
 
       <InviteMemberDialog open={dialogOpen} onClose={() => setDialogOpen(false)} />
+
+      <OffboardMemberDialog
+        member={offboarding}
+        open={offboarding !== null}
+        onClose={() => setOffboarding(null)}
+        onDone={(message) => {
+          setNotice(message);
+          setError(null);
+        }}
+      />
+
+      <TransferAdminDialog
+        open={transferOpen}
+        members={members}
+        currentUserId={user?.id}
+        onClose={() => setTransferOpen(false)}
+        onDone={(message) => {
+          setNotice(message);
+          setError(null);
+        }}
+      />
 
       {(notice || error) && (
         <div className="mb-4">
@@ -171,11 +210,15 @@ export function TeamPage(): React.JSX.Element {
                       {member.fullName}
                     </p>
                     <RoleBadge role={member.role} />
-                    {member.status !== 'ACTIVE' && (
-                      <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700">
-                        {member.status}
-                      </span>
-                    )}
+                    <span
+                      className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${
+                        member.status === 'ACTIVE'
+                          ? 'bg-emerald-50 text-emerald-700'
+                          : 'bg-amber-50 text-amber-700'
+                      }`}
+                    >
+                      {member.status === 'ACTIVE' ? 'Active' : member.status}
+                    </span>
                   </div>
                   <p className="mt-0.5 truncate text-xs text-slate-500">
                     {member.email}
@@ -197,6 +240,7 @@ export function TeamPage(): React.JSX.Element {
                     setNotice(message);
                     setError(null);
                   }}
+                  onOffboard={setOffboarding}
                 />
 
                 <div className="hidden w-28 text-right lg:block">
@@ -222,12 +266,23 @@ export function TeamPage(): React.JSX.Element {
         <PendingInvitations canManage={canInvite} />
       </div>
 
+      {canManageMembers && (
+        <div className="mt-6">
+          <AuditTrailCard enabled={canManageMembers} />
+        </div>
+      )}
+
       <div className="mt-6 rounded-xl border border-slate-200 bg-white p-5">
         <h2 className="text-sm font-semibold text-slate-900">Leave this organization</h2>
         <p className="mt-1 mb-3 text-sm text-slate-500">
-          You will lose access immediately. Your other organizations are unaffected.
+          You will lose access immediately. Your other organizations are unaffected. If you
+          still own active leads or open follow-ups you must hand them to a colleague first.
         </p>
-        <LeaveOrganizationButton />
+        <LeaveOrganizationButton
+          colleagues={members
+            .filter((member) => member.status === 'ACTIVE' && member.id !== user?.id)
+            .map((member) => ({ id: member.id, fullName: member.fullName }))}
+        />
       </div>
     </>
   );

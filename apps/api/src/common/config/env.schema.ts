@@ -57,6 +57,17 @@ export const envSchema = z
     DEFAULT_LOCALE: z.string().default('en-US'),
     DEFAULT_COUNTRY: z.string().length(2).default('US'),
 
+    // --- platform operations ------------------------------------------------
+    // Contact number for the PLATFORM operator, not for any tenant. Read in
+    // exactly one place (PlatformService) and used only for operational
+    // alerting and future support tooling. It confers no permission and takes
+    // no part in authentication — see the comment on that service.
+    PLATFORM_MASTER_PHONE: z
+      .string()
+      .regex(/^\+[1-9]\d{7,14}$/, 'must be an E.164 number such as +14155550100')
+      .or(z.literal(''))
+      .default(''),
+
     NODE_ENV: z.enum(['development', 'test', 'staging', 'production']).default('development'),
     PORT: z.coerce.number().int().positive().default(3000),
     API_BASE_URL: z.string().url().default('http://localhost:3000'),

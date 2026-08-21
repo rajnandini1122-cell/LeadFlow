@@ -1,9 +1,10 @@
-import { Injectable } from '@nestjs/common';
-import type {
-  InviteUserResponse,
-  RoleKey,
-  UserListItem,
-  UserStatus,
+import { HttpStatus, Injectable } from '@nestjs/common';
+import {
+  ERROR_CODES,
+  type InviteUserResponse,
+  type RoleKey,
+  type UserListItem,
+  type UserStatus,
 } from '@leadflow/api-types';
 import { AppConfig } from '../../common/config/config.module';
 import { AppException } from '../../common/errors/app.exception';
@@ -12,6 +13,8 @@ import type { TenantPrincipal } from '../../common/tenancy/tenant-context.servic
 import { MembershipCacheService } from '../auth/membership-cache.service';
 import { InvitationsService } from '../invitations/invitations.service';
 import { UsersRepository } from './users.repository';
+import { OffboardingService } from './offboarding.service';
+import { isAdministrativeRole, losesAdminStanding } from './administrators';
 import { EmailService } from '../../common/email/email.service';
 import type { InviteUserDto, UpdateUserDto } from './dto/users.dto';
 
@@ -24,6 +27,7 @@ export class UsersService {
     private readonly config: AppConfig,
     private readonly invitations: InvitationsService,
     private readonly email: EmailService,
+    private readonly offboarding: OffboardingService,
   ) {}
 
   async list(): Promise<UserListItem[]> {
@@ -111,20 +115,38 @@ export class UsersService {
   }
 
   /**
-   * Refuses an action that would leave the organization with no active owner.
+   * Refuses an action that would leave the organization unadministrable.
    *
-   * Shared by role change, suspension, removal and leaving, because four
-   * separate copies of this rule is four chances for one of them to be wrong —
-   * and the failure mode is an organization nobody can administer.
+   * Two invariants, both enforced:
+   *
+   *   1. At least one ACTIVE administrator must remain — a role holding
+   *      user.update, user.invite and org.update. Delegated to
+   *      OffboardingService so removal, deactivation, demotion and leaving all
+   *      go through one implementation.
+   *   2. At least one ACTIVE OWNER must remain. Stricter than (1) on purpose:
+   *      only an owner can grant or revoke ownership, so an organization of
+   *      admins alone could never appoint one again.
    */
-  private async assertNotLastOwner(role: string, status: string): Promise<void> {
-    if (role !== 'OWNER' || status !== 'ACTIVE') return;
+  private async assertRetainsAdministration(member: {
+    userId: string;
+    role: RoleKey;
+    status: string;
+  }): Promise<void> {
+    await this.offboarding.assertRetainsAdministrator(member);
 
-    const owners = await this.repository.countActiveOwners();
-    if (owners <= 1) {
-      throw AppException.forbidden(
-        'This is the last active owner. Make someone else an owner first.',
-      );
+    if (member.role === 'OWNER' && member.status === 'ACTIVE') {
+      const owners = await this.repository.countActiveOwners();
+      if (owners <= 1) {
+        // Same error code as the administrator rule above: from a client's
+        // point of view these are one refusal — the organization would lose
+        // the ability to administer itself — and two codes would mean every
+        // caller had to handle both.
+        throw new AppException(
+          ERROR_CODES.LAST_ADMINISTRATOR,
+          'This is the last active owner. Transfer admin responsibility first.',
+          HttpStatus.FORBIDDEN,
+        );
+      }
     }
   }
 
@@ -144,7 +166,17 @@ export class UsersService {
       throw AppException.forbidden('Only an owner can remove another owner.');
     }
 
-    await this.assertNotLastOwner(member.role.key, member.status);
+    await this.assertRetainsAdministration({
+      userId,
+      role: member.role.key as RoleKey,
+      status: member.status,
+    });
+
+    // Refuses with the counts when this member still owns active leads or open
+    // follow-ups. Removing them anyway would leave those customers pointing at
+    // a membership that no longer works — no query fails, the work simply stops
+    // being anybody's job.
+    await this.offboarding.assertNoOrphanedWork(userId);
 
     const removed = await this.repository.removeMember(userId);
     if (removed === 0) throw AppException.userNotFound();
@@ -169,11 +201,26 @@ export class UsersService {
    * Memberships in other organizations are untouched — they are separate rows
    * and separate sessions.
    */
-  async leave(principal: TenantPrincipal): Promise<void> {
+  async leave(
+    principal: TenantPrincipal,
+    handover: { reassignToId?: string | undefined; includeHistorical?: boolean | undefined } = {},
+  ): Promise<void> {
     const member = await this.repository.findMember(principal.userId);
     if (!member) throw AppException.userNotFound();
 
-    await this.assertNotLastOwner(member.role.key, member.status);
+    await this.assertRetainsAdministration({
+      userId: principal.userId,
+      role: member.role.key as RoleKey,
+      status: member.status,
+    });
+
+    // Hands the work over when a successor was named, and refuses with the
+    // counts when one is needed and none was given.
+    const moved = await this.offboarding.handOver(
+      principal.userId,
+      { ...handover, reason: 'Reassigned when the previous owner left the organization' },
+      principal,
+    );
 
     const removed = await this.repository.removeMember(principal.userId);
     if (removed === 0) throw AppException.userNotFound();
@@ -186,6 +233,13 @@ export class UsersService {
       entityType: 'user',
       entityId: principal.userId,
       before: { role: member.role.key },
+      after: { reassignToId: handover.reassignToId ?? null, ...moved },
+    });
+
+    await this.offboarding.verifyAdministratorRemains({
+      organizationId: principal.organizationId,
+      trigger: 'leave',
+      userId: principal.userId,
     });
   }
 
@@ -213,13 +267,26 @@ export class UsersService {
       throw AppException.forbidden('Only an owner can change owner access.');
     }
 
-    // Demotion or suspension of the final owner is refused by the same rule
-    // that guards removal and leaving.
-    const losingOwner =
-      (dto.role !== undefined && dto.role !== 'OWNER') || dto.status === 'SUSPENDED';
+    // Demotion or suspension of the last administrator is refused by the same
+    // rule that guards removal and leaving.
+    if (
+      losesAdminStanding(
+        { role: before.role.key as RoleKey, status: before.status },
+        { role: dto.role, status: dto.status },
+      )
+    ) {
+      await this.assertRetainsAdministration({
+        userId,
+        role: before.role.key as RoleKey,
+        status: before.status,
+      });
+    }
 
-    if (losingOwner) {
-      await this.assertNotLastOwner(before.role.key, before.status);
+    // Suspension is an exit in everything but name: the member can no longer
+    // sign in, so their active leads and open follow-ups would be orphaned
+    // exactly as they would be by removal.
+    if (dto.status === 'SUSPENDED' && before.status === 'ACTIVE') {
+      await this.offboarding.assertNoOrphanedWork(userId);
     }
 
     const roleId = dto.role ? (await this.repository.findRoleByKey(dto.role))?.id : undefined;
@@ -249,6 +316,14 @@ export class UsersService {
       before: { role: before.role.key, status: before.status },
       after: { role: updated.role.key, status: updated.status },
     });
+
+    if (isAdministrativeRole(before.role.key as RoleKey)) {
+      await this.offboarding.verifyAdministratorRemains({
+        organizationId: principal.organizationId,
+        trigger: 'update_member',
+        userId,
+      });
+    }
 
     return toUserListItem(updated);
   }

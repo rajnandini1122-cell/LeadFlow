@@ -540,6 +540,7 @@ describe('Organization membership and invitations', () => {
     it('removing a member revokes access but preserves their history', async () => {
       const org = await freshOrg();
       const member = await addMember(org.token);
+      const successor = await addMember(org.token);
 
       const lead = await ctx
         .http()
@@ -553,16 +554,27 @@ describe('Organization membership and invitations', () => {
         })
         .expect(201);
 
+      // Phase 7 changed this deliberately. A bare removal used to succeed and
+      // leave the lead pointing at a membership that no longer worked — no
+      // query failed, the customer simply stopped being anybody's job. The
+      // handover is now part of the removal.
       await ctx
         .http()
         .delete(`/api/v1/users/${member.userId}`)
         .set(auth(org.token))
-        .expect(204);
+        .expect(409);
+
+      await ctx
+        .http()
+        .post(`/api/v1/users/${member.userId}/offboard`)
+        .set(auth(org.token))
+        .send({ action: 'REMOVE', reassignToId: successor.userId })
+        .expect(200);
       ctx.redis.flush();
 
       await ctx.http().get('/api/v1/auth/me').set(auth(member.token)).expect(401);
 
-      // Referential integrity: the lead survives and still names who owned it.
+      // Referential integrity: the lead survives, and now has a working owner.
       // Hard-deleting the user would erase sales history.
       const stillThere = await ctx
         .http()
@@ -570,7 +582,16 @@ describe('Organization membership and invitations', () => {
         .set(auth(org.token))
         .expect(200);
 
-      expect(stillThere.body.data.assignedTo?.id).toBe(member.userId);
+      expect(stillThere.body.data.assignedTo?.id).toBe(successor.userId);
+
+      // The removed member's name still resolves on the timeline they created.
+      const activities = await ctx
+        .http()
+        .get(`/api/v1/leads/${lead.body.data.id}/activities`)
+        .set(auth(org.token))
+        .expect(200);
+
+      expect((activities.body.data.items as unknown[]).length).toBeGreaterThan(0);
     });
 
     it('a removed member cannot log back in to that organization', async () => {

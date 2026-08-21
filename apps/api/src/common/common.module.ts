@@ -4,6 +4,7 @@ import { PrismaService } from './prisma/prisma.service';
 import { RedisService } from './redis/redis.service';
 import { TenantContextService } from './tenancy/tenant-context.service';
 import { AuditRepository } from './audit/audit.repository';
+import { PlatformService } from './platform/platform.service';
 
 /**
  * Cross-cutting infrastructure: configuration, database, cache, tenant context,
@@ -16,7 +17,14 @@ import { AuditRepository } from './audit/audit.repository';
 @Global()
 @Module({
   imports: [AppConfigModule],
-  providers: [PrismaService, RedisService, TenantContextService, AuditRepository],
-  exports: [AppConfigModule, PrismaService, RedisService, TenantContextService, AuditRepository],
+  providers: [PrismaService, RedisService, TenantContextService, AuditRepository, PlatformService],
+  exports: [
+    AppConfigModule,
+    PrismaService,
+    RedisService,
+    TenantContextService,
+    AuditRepository,
+    PlatformService,
+  ],
 })
 export class CommonModule {}

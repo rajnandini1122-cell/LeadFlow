@@ -11,13 +11,16 @@ import {
   Post,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { AppException } from '../../common/errors/app.exception';
 import { PERMISSIONS, type InviteUserResponse, type UserListItem } from '@leadflow/api-types';
 import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { UsersService } from './users.service';
+import { OffboardingService } from './offboarding.service';
 import { InvitationsService } from '../invitations/invitations.service';
 import { InviteUserDto, UpdateUserDto } from './dto/users.dto';
+import { OffboardMemberDto, TransferAdminDto } from './dto/offboarding.dto';
 
 /**
  * Controllers stay thin (spec §33): validate shape, delegate, return.
@@ -29,6 +32,7 @@ export class UsersController {
   constructor(
     private readonly users: UsersService,
     private readonly invitations: InvitationsService,
+    private readonly offboarding: OffboardingService,
   ) {}
 
   @Get()
@@ -77,6 +81,71 @@ export class UsersController {
   @ApiOperation({ summary: 'Revoke a pending invitation' })
   async revokeInvitation(@Param('id', new ParseUUIDPipe({ version: '7' })) id: string) {
     await this.invitations.revoke(id);
+  }
+
+  @Post('transfer-admin')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSIONS.ROLE_ASSIGN)
+  @ApiOperation({
+    summary: 'Hand admin responsibility to another active member',
+    description:
+      'Owner-only. Exists as its own operation because an owner cannot change ' +
+      'their own role — without it, a departing owner has no way to name a ' +
+      'successor. With stepDown the caller becomes an ADMIN, keeping ' +
+      'day-to-day access while giving up ownership.',
+  })
+  async transferAdmin(
+    @Body() dto: TransferAdminDto,
+    @CurrentUser() principal: TenantPrincipal,
+  ) {
+    if (principal.role !== 'OWNER') {
+      throw AppException.forbidden('Only an owner can transfer admin responsibility.');
+    }
+    return this.offboarding.transferAdmin(
+      { toUserId: dto.toUserId, stepDown: dto.stepDown !== false },
+      principal,
+    );
+  }
+
+  @Get(':id/workload')
+  @RequirePermissions(PERMISSIONS.USER_UPDATE)
+  @ApiOperation({
+    summary: 'What a member is currently carrying',
+    description:
+      'Active leads and open follow-ups are what block an exit; won, lost and ' +
+      'archived counts are shown alongside so the consequences of a handover ' +
+      'are visible before it is confirmed.',
+  })
+  async workload(@Param('id', new ParseUUIDPipe({ version: '7' })) id: string) {
+    return this.offboarding.workload(id);
+  }
+
+  @Post(':id/offboard')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSIONS.USER_REMOVE)
+  @ApiOperation({
+    summary: 'Hand a member’s work over, then deactivate or remove them',
+    description:
+      'Strictly in that order: reassign first, deactivate second. The reverse ' +
+      'would leave a window in which live customers had an owner who could no ' +
+      'longer sign in. Returns 409 REASSIGNMENT_REQUIRED, with counts, when ' +
+      'active work exists and no successor was named.',
+  })
+  async offboard(
+    @Param('id', new ParseUUIDPipe({ version: '7' })) id: string,
+    @Body() dto: OffboardMemberDto,
+    @CurrentUser() principal: TenantPrincipal,
+  ) {
+    return this.offboarding.offboard(
+      id,
+      {
+        action: dto.action,
+        reassignToId: dto.reassignToId,
+        includeHistorical: dto.includeHistorical,
+        reason: dto.reason,
+      },
+      principal,
+    );
   }
 
   @Get(':id')
