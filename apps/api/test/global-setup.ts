@@ -101,6 +101,8 @@ export default async function globalSetup(): Promise<void> {
   process.env['WHATSAPP_APP_SECRET'] = 'test-whatsapp-app-secret';
   process.env['INSTAGRAM_APP_SECRET'] = 'test-instagram-app-secret';
   process.env['INSTAGRAM_VERIFY_TOKEN'] = 'test-instagram-verify-token';
+  process.env['FACEBOOK_APP_SECRET'] = 'test-facebook-app-secret';
+  process.env['FACEBOOK_VERIFY_TOKEN'] = 'test-facebook-verify-token';
   process.env['WHATSAPP_VERIFY_TOKEN'] = 'test-whatsapp-verify-token';
   // 32 zero bytes, base64. Sufficient for a round-trip; obviously not a key
   // anything real would use.

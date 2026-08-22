@@ -1,62 +1,70 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../../../common/prisma/prisma.service';
 import { TenantContextService } from '../../../../common/tenancy/tenant-context.service';
+import type { ChannelType } from '../../../../generated/prisma/enums';
 
 /**
- * Integration lookups for the Instagram adapter.
+ * Integration lookups for the Messenger-protocol channels.
  *
- * Deliberately a sibling of WhatsAppIntegrationRepository rather than a shared
- * base class. The two are structurally similar today and there is a real
- * temptation to fold them together — but the one method that matters here runs
- * OUTSIDE tenant scope, and a shared abstraction is exactly where that
- * exception would stop being visible to whoever reviews it next.
+ * Shared by Instagram and Facebook because the queries differ only in a channel
+ * constant. WhatsApp keeps its own, since its inbound path also has to reason
+ * about outbound credentials this one never loads.
+ *
+ * One method here runs OUTSIDE tenant scope, and that is deliberately called
+ * out below rather than buried — it is the exception a reviewer needs to see.
  */
 @Injectable()
-export class InstagramIntegrationRepository {
+export class MessengerIntegrationRepository {
   constructor(
     private readonly prisma: PrismaService,
     private readonly tenantContext: TenantContextService,
   ) {}
 
   /**
-   * The integration that owns an Instagram business account id.
+   * The integration that owns a provider account.
    *
    * Runs as system because a webhook arrives with no session and no tenant —
    * this lookup is what ESTABLISHES the tenant. Safe for exactly one reason:
-   * `@@unique([channel, providerAccountId])` is global, so an account id
-   * matches at most one row and there is never a choice to make.
+   * `@@unique([channel, providerAccountId])` is global, so a Page id or an
+   * Instagram account id matches at most one row and there is never a choice
+   * to make. Were that constraint per-tenant, this query could return two
+   * integrations in different organizations and picking one would be a guess.
    *
    * The encrypted token is deliberately not selected. Nothing on the inbound
-   * path needs it, and a credential that is never loaded cannot leak.
+   * path needs it, and a credential never loaded cannot leak.
    */
-  async findByAccountId(instagramAccountId: string) {
+  async findByAccountId(channel: ChannelType, accountId: string) {
     return this.tenantContext.runAsSystem(
-      'instagram: resolve inbound webhook to its organization',
+      `${channel.toLowerCase()}: resolve inbound webhook to its organization`,
       () =>
         this.prisma.client.channelIntegration.findFirst({
-          where: { channel: 'INSTAGRAM', providerAccountId: instagramAccountId },
+          where: { channel, providerAccountId: accountId },
           select: { id: true, organizationId: true, enabled: true, status: true },
         }),
     );
   }
 
-  async findForCurrentTenant() {
-    return this.prisma.client.channelIntegration.findFirst({ where: { channel: 'INSTAGRAM' } });
+  async findForCurrentTenant(channel: ChannelType) {
+    return this.prisma.client.channelIntegration.findFirst({ where: { channel } });
   }
 
   /**
    * Whether another organization already connected this account.
    *
-   * Checked before writing so the caller gets a readable conflict instead of a
-   * unique-constraint violation surfacing as a 500. The constraint remains the
-   * real guarantee.
+   * Checked before writing so the caller gets a readable conflict rather than
+   * a unique-constraint violation surfacing as a 500. The constraint remains
+   * the real guarantee; this is the readable error in front of it.
    */
-  async claimedByAnotherTenant(accountId: string, organizationId: string): Promise<boolean> {
+  async claimedByAnotherTenant(
+    channel: ChannelType,
+    accountId: string,
+    organizationId: string,
+  ): Promise<boolean> {
     const existing = await this.tenantContext.runAsSystem(
-      'instagram: check an account is not already connected elsewhere',
+      `${channel.toLowerCase()}: check an account is not already connected elsewhere`,
       () =>
         this.prisma.client.channelIntegration.findFirst({
-          where: { channel: 'INSTAGRAM', providerAccountId: accountId },
+          where: { channel, providerAccountId: accountId },
           select: { organizationId: true },
         }),
     );
@@ -65,19 +73,20 @@ export class InstagramIntegrationRepository {
   }
 
   async upsertForCurrentTenant(input: {
+    channel: ChannelType;
     providerAccountId: string;
-    /** The linked Facebook Page id, which Instagram messaging requires. */
-    pageId: string | null;
+    /** The linked Page id for Instagram; unused for Facebook, where the Page IS the account. */
+    linkedAccountId: string | null;
     encryptedAccessToken: string;
     accessTokenHint: string;
     actorId: string;
   }) {
     const organizationId = this.tenantContext.requireOrganizationId();
-    const existing = await this.findForCurrentTenant();
+    const existing = await this.findForCurrentTenant(input.channel);
 
     const data = {
       providerAccountId: input.providerAccountId,
-      businessAccountId: input.pageId,
+      businessAccountId: input.linkedAccountId,
       displayName: null,
       encryptedAccessToken: input.encryptedAccessToken,
       accessTokenHint: input.accessTokenHint,
@@ -96,7 +105,7 @@ export class InstagramIntegrationRepository {
     }
 
     return this.prisma.client.channelIntegration.create({
-      data: { organizationId, channel: 'INSTAGRAM', ...data },
+      data: { organizationId, channel: input.channel, ...data },
     });
   }
 

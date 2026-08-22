@@ -209,8 +209,11 @@ describe('Channel integrations', () => {
      * and more important: the screen never implies a channel can do something
      * it cannot. Instagram is capture-only, and it says so.
      */
+    // UPDATED IN PHASE G: Messenger is now connectable, and capture-only like
+    // Instagram. What must stay true is that the screen never implies a
+    // channel can do something it cannot.
     expect(await screen.findByText(/capture-only/i)).toBeInTheDocument();
-    expect(screen.getByText(/facebook messenger cannot be connected/i)).toBeInTheDocument();
+    expect(screen.getByText(/answer those in the meta apps/i)).toBeInTheDocument();
   });
 
   it('offers Instagram setup once the server reports it connectable', async () => {
@@ -261,7 +264,7 @@ describe('Channel integrations', () => {
 
     await waitFor(() => {
       expect(apiClient.apiPost).toHaveBeenCalledWith('/channel-integrations/instagram/connect', {
-        instagramAccountId: '17841400008460056',
+        accountId: '17841400008460056',
         accessToken: 'IGQV-secret-token',
       });
     });
@@ -305,6 +308,38 @@ describe('Channel integrations', () => {
     // honour.
     expect(buttons.some((button) => !(button as HTMLButtonElement).disabled)).toBe(true);
     expect(buttons.some((button) => (button as HTMLButtonElement).disabled)).toBe(true);
+  });
+
+  it('offers Facebook Messenger setup with its own identifier', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(apiClient, 'apiGet').mockImplementation((url: string) => {
+      if (url === '/channel-integrations') {
+        return Promise.resolve([
+          { ...NOT_CONNECTED, channel: 'FACEBOOK', connectable: true },
+        ] as never);
+      }
+      return Promise.resolve({ settings: { sharedUnassignedQueue: false } } as never);
+    });
+    vi.spyOn(apiClient, 'apiPost').mockResolvedValue({ id: 'i-1', status: 'CONNECTED' } as never);
+
+    renderWith(<ChannelIntegrationsPage />);
+    await user.click(await screen.findByRole('button', { name: 'Connect' }));
+
+    // The Page IS the account for Messenger, so there is no second identifier
+    // and no unlabelled box pretending otherwise.
+    expect(screen.getByLabelText(/facebook page id/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/linked facebook page id/i)).toBeNull();
+
+    await user.type(screen.getByLabelText(/facebook page id/i), '109876543210987');
+    await user.type(screen.getByLabelText(/access token/i), 'EAAP-page-token');
+    await user.click(screen.getByRole('button', { name: /save and verify/i }));
+
+    await waitFor(() => {
+      expect(apiClient.apiPost).toHaveBeenCalledWith('/channel-integrations/facebook/connect', {
+        accountId: '109876543210987',
+        accessToken: 'EAAP-page-token',
+      });
+    });
   });
 
   it('never shows a stored access token, only its last four characters', async () => {

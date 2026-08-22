@@ -1460,12 +1460,19 @@ describe('Omnichannel capture', () => {
         ]),
       );
 
+      /*
+       * UPDATED AGAIN IN PHASE G.
+       *
+       * All three supported channels now have a real setup flow, so there is
+       * no longer a channel left to assert false against. What this still
+       * pins down is that the list is DERIVED — every supported channel is
+       * reported, and its connectability comes from whether an implementation
+       * exists rather than from a hardcoded answer.
+       */
+      expect(Object.keys(byChannel).sort()).toEqual(['FACEBOOK', 'INSTAGRAM', 'WHATSAPP']);
       expect(byChannel['WHATSAPP']).toBe(true);
-      // UPDATED IN PHASE F: Instagram gained a real setup flow. Facebook has
-      // not, and claiming otherwise would have an owner believing their
-      // Messenger account is live when nothing is listening to it.
       expect(byChannel['INSTAGRAM']).toBe(true);
-      expect(byChannel['FACEBOOK']).toBe(false);
+      expect(byChannel['FACEBOOK']).toBe(true);
     });
 
     it('shows a channel with no record as NOT_CONNECTED and invents no timestamps', async () => {

@@ -246,27 +246,37 @@ export function useConnectWhatsApp(): UseMutationResult<
   });
 }
 
-export function useConnectInstagram(): UseMutationResult<
+/**
+ * Connect an Instagram account or a Facebook Page.
+ *
+ * One hook for both, because both endpoints take the same three values. The
+ * slug picks the route; nothing else differs.
+ */
+export function useConnectMessenger(
+  slug: 'instagram' | 'facebook',
+): UseMutationResult<
   ConnectWhatsAppResult,
   Error,
-  { instagramAccountId: string; pageId?: string; accessToken: string }
+  { accountId: string; linkedAccountId?: string; accessToken: string }
 > {
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: (input) =>
-      apiPost<ConnectWhatsAppResult>('/channel-integrations/instagram/connect', input),
+      apiPost<ConnectWhatsAppResult>(`/channel-integrations/${slug}/connect`, input),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['channel-integrations'] });
     },
   });
 }
 
-export function useDisconnectInstagram(): UseMutationResult<unknown, Error, void> {
+export function useDisconnectMessenger(
+  slug: 'instagram' | 'facebook',
+): UseMutationResult<unknown, Error, void> {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: () => apiPost('/channel-integrations/instagram/disconnect'),
+    mutationFn: () => apiPost(`/channel-integrations/${slug}/disconnect`),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['channel-integrations'] });
     },

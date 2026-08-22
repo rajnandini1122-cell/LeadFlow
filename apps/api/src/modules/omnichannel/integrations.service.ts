@@ -28,17 +28,20 @@ export type SupportedChannel = (typeof SUPPORTED_CHANNELS)[number];
 /**
  * Providers with a working implementation.
  *
- * WhatsApp arrived in Phase E1, Instagram in Phase F. Facebook Messenger is
- * still absent, and the settings screen reads this list rather than assuming —
- * so adding one later turns its Connect button on with no other change, and
- * forgetting to add one leaves a button that is honestly disabled rather than
- * broken.
+ * WhatsApp arrived in Phase E1, Instagram in Phase F, Facebook Messenger in
+ * Phase G. The settings screen reads this list rather than assuming, so a
+ * future channel turns its Connect button on with no other change, and one
+ * that is forgotten leaves a button honestly disabled rather than broken.
  *
- * Note this says nothing about SENDING. Instagram is inbound only; whether a
- * conversation can be replied to is decided by send-capability.ts, which
- * refuses every channel but WhatsApp.
+ * Note this says nothing about SENDING. Instagram and Messenger are inbound
+ * only; whether a conversation can be replied to is decided by
+ * send-capability.ts, which refuses every channel but WhatsApp.
  */
-export const IMPLEMENTED_PROVIDERS: readonly SupportedChannel[] = ['WHATSAPP', 'INSTAGRAM'];
+export const IMPLEMENTED_PROVIDERS: readonly SupportedChannel[] = [
+  'WHATSAPP',
+  'INSTAGRAM',
+  'FACEBOOK',
+];
 
 export interface IntegrationView {
   channel: SupportedChannel;

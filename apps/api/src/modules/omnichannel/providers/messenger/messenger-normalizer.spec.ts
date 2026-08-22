@@ -1,13 +1,21 @@
-import { parseInstagramWebhook } from './instagram-normalizer';
+import { parseMessengerWebhook } from './messenger-normalizer';
 
 /**
- * Reading Instagram's payloads.
+ * Reading Meta Messenger payloads.
  *
- * These cases exist mostly to pin down the ways Instagram differs from
- * WhatsApp — a Messenger-shaped envelope, millisecond timestamps, and echoes of
- * the business's own messages arriving on the same webhook. Each of those fails
- * quietly rather than loudly if it is got wrong.
+ * These cases pin down the ways Messenger differs from WhatsApp — a different
+ * envelope, millisecond timestamps, and echoes of the business's own messages
+ * arriving on the same webhook. Each fails quietly rather than loudly if it is
+ * got wrong.
+ *
+ * Written against Instagram originally and now the regression suite for the
+ * shared parser that Facebook Messenger also uses. The Facebook cases at the
+ * bottom check the one thing that genuinely differs: the envelope's `object`.
  */
+
+/** Instagram unless a case says otherwise — the parser is channel-agnostic. */
+const parse = (body: unknown, expectedObject = 'instagram') =>
+  parseMessengerWebhook(body, expectedObject);
 
 const ACCOUNT_ID = '17841400008460056';
 const SENDER_ID = '1234567890123456';
@@ -32,7 +40,7 @@ function webhook(events: unknown[], accountId = ACCOUNT_ID, object = 'instagram'
 describe('parseInstagramWebhook', () => {
   describe('a normal text DM', () => {
     it('extracts everything ingestion needs', () => {
-      const result = parseInstagramWebhook(webhook([messagingEvent()]));
+      const result = parse(webhook([messagingEvent()]));
 
       expect(result.messages).toHaveLength(1);
       expect(result.messages[0]).toEqual({
@@ -41,13 +49,13 @@ describe('parseInstagramWebhook', () => {
         messageType: 'TEXT',
         content: 'Need pricing for 500kg onion powder.',
         timestamp: new Date(1756000000000),
-        instagramAccountId: ACCOUNT_ID,
+        accountId: ACCOUNT_ID,
       });
     });
 
     it('reads the timestamp as MILLISECONDS, not seconds', () => {
       const millis = 1_756_000_000_000;
-      const result = parseInstagramWebhook(
+      const result = parse(
         webhook([messagingEvent({ timestamp: millis })]),
       );
 
@@ -58,8 +66,8 @@ describe('parseInstagramWebhook', () => {
     });
 
     it('takes the tenant key from the entry, not from the payload elsewhere', () => {
-      const result = parseInstagramWebhook(webhook([messagingEvent()], '17841400009999999'));
-      expect(result.messages[0]?.instagramAccountId).toBe('17841400009999999');
+      const result = parse(webhook([messagingEvent()], '17841400009999999'));
+      expect(result.messages[0]?.accountId).toBe('17841400009999999');
     });
   });
 
@@ -67,7 +75,7 @@ describe('parseInstagramWebhook', () => {
     it('ignores an echo of a message the business sent', () => {
       // Instagram reflects our own outgoing messages back. Ingesting one would
       // create a conversation with the business as the customer.
-      const result = parseInstagramWebhook(
+      const result = parse(
         webhook([
           messagingEvent({
             sender: { id: ACCOUNT_ID },
@@ -82,7 +90,7 @@ describe('parseInstagramWebhook', () => {
     });
 
     it('ignores a deletion', () => {
-      const result = parseInstagramWebhook(
+      const result = parse(
         webhook([messagingEvent({ message: { mid: 'mid.x', is_deleted: true } })]),
       );
 
@@ -96,19 +104,86 @@ describe('parseInstagramWebhook', () => {
       ['a postback', { postback: { mid: 'mid.x', title: 'Get started' } }],
     ])('ignores %s', (_label, extra) => {
       const event = { sender: { id: SENDER_ID }, recipient: { id: ACCOUNT_ID }, timestamp: 1, ...extra };
-      const result = parseInstagramWebhook(webhook([event]));
+      const result = parse(webhook([event]));
 
       expect(result.messages).toHaveLength(0);
       expect(result.ignored).toBe(1);
     });
 
     it('ignores a webhook for a different Meta product entirely', () => {
-      const result = parseInstagramWebhook(
+      const result = parse(
         webhook([messagingEvent()], ACCOUNT_ID, 'whatsapp_business_account'),
       );
 
       expect(result.messages).toHaveLength(0);
       expect(result.ignored).toBe(1);
+    });
+  });
+
+  describe('Facebook Messenger', () => {
+    const PAGE_ID = '109876543210987';
+
+    it('reads a page message with the same parser', () => {
+      const result = parse(webhook([messagingEvent()], PAGE_ID, 'page'), 'page');
+
+      expect(result.messages).toHaveLength(1);
+      expect(result.messages[0]).toMatchObject({
+        externalMessageId: 'mid.abc123',
+        externalUserId: SENDER_ID,
+        messageType: 'TEXT',
+        accountId: PAGE_ID,
+      });
+    });
+
+    it('refuses an Instagram payload delivered to the Facebook endpoint', () => {
+      // The two endpoints are configured separately at Meta. A payload on the
+      // wrong one means something is misconfigured, not that it should be
+      // ingested under the wrong channel.
+      const result = parse(webhook([messagingEvent()], PAGE_ID, 'instagram'), 'page');
+
+      expect(result.messages).toHaveLength(0);
+      expect(result.ignored).toBe(1);
+    });
+
+    it('refuses a Facebook payload delivered to the Instagram endpoint', () => {
+      const result = parse(webhook([messagingEvent()], PAGE_ID, 'page'), 'instagram');
+
+      expect(result.messages).toHaveLength(0);
+      expect(result.ignored).toBe(1);
+    });
+
+    it('ignores an echo from the page', () => {
+      const result = parse(
+        webhook(
+          [messagingEvent({ message: { mid: 'mid.e', text: 'ours', is_echo: true } })],
+          PAGE_ID,
+          'page',
+        ),
+        'page',
+      );
+
+      expect(result.messages).toHaveLength(0);
+      expect(result.ignored).toBe(1);
+    });
+
+    it.each([
+      ['image', 'IMAGE'],
+      ['video', 'VIDEO'],
+      ['audio', 'AUDIO'],
+      ['file', 'DOCUMENT'],
+      ['fallback', 'OTHER'],
+    ])('records a %s attachment as %s with no content', (type, expected) => {
+      const result = parse(
+        webhook(
+          [messagingEvent({ message: { mid: 'mid.a', attachments: [{ type }] } })],
+          PAGE_ID,
+          'page',
+        ),
+        'page',
+      );
+
+      expect(result.messages[0]?.messageType).toBe(expected);
+      expect(result.messages[0]?.content).toBeNull();
     });
   });
 
@@ -119,7 +194,7 @@ describe('parseInstagramWebhook', () => {
       ['audio', 'AUDIO'],
       ['file', 'DOCUMENT'],
     ])('records a %s attachment with its real type and no content', (type, expected) => {
-      const result = parseInstagramWebhook(
+      const result = parse(
         webhook([
           messagingEvent({
             message: { mid: 'mid.att', attachments: [{ type, payload: { url: 'https://x' } }] },
@@ -133,7 +208,7 @@ describe('parseInstagramWebhook', () => {
     });
 
     it('records a story reply as OTHER rather than guessing', () => {
-      const result = parseInstagramWebhook(
+      const result = parse(
         webhook([
           messagingEvent({
             message: { mid: 'mid.story', reply_to: { story: { id: 's1', url: 'https://x' } } },
@@ -146,7 +221,7 @@ describe('parseInstagramWebhook', () => {
     });
 
     it('records an unknown future attachment type as OTHER', () => {
-      const result = parseInstagramWebhook(
+      const result = parse(
         webhook([messagingEvent({ message: { mid: 'mid.new', attachments: [{ type: 'hologram' }] } })]),
       );
 
@@ -156,7 +231,7 @@ describe('parseInstagramWebhook', () => {
     it('does not download anything for an attachment', () => {
       // Nothing in the normalizer touches the network. The payload URL is read
       // for its type and otherwise left alone.
-      const result = parseInstagramWebhook(
+      const result = parse(
         webhook([
           messagingEvent({
             message: { mid: 'mid.att', attachments: [{ type: 'image', payload: { url: 'https://x' } }] },
@@ -170,7 +245,7 @@ describe('parseInstagramWebhook', () => {
 
   describe('batches', () => {
     it('reads several events from one delivery', () => {
-      const result = parseInstagramWebhook(
+      const result = parse(
         webhook([
           messagingEvent({ message: { mid: 'mid.1', text: 'one' } }),
           messagingEvent({ message: { mid: 'mid.2', text: 'two' } }),
@@ -181,7 +256,7 @@ describe('parseInstagramWebhook', () => {
     });
 
     it('keeps the good events when one is unreadable', () => {
-      const result = parseInstagramWebhook(
+      const result = parse(
         webhook([
           messagingEvent({ message: { mid: 'mid.1', text: 'one' } }),
           // Not an object at all — genuinely unreadable.
@@ -198,7 +273,7 @@ describe('parseInstagramWebhook', () => {
       // An object with no `message` is indistinguishable from the reactions and
       // receipts we deliberately skip. Both must be no-ops, and neither is a
       // parsing failure worth alerting on.
-      const result = parseInstagramWebhook(
+      const result = parse(
         webhook([
           messagingEvent({ message: { mid: 'mid.1', text: 'one' } }),
           { some_future_event: { id: 'x' } },
@@ -211,7 +286,7 @@ describe('parseInstagramWebhook', () => {
     });
 
     it('separates an echo from a real message in the same batch', () => {
-      const result = parseInstagramWebhook(
+      const result = parse(
         webhook([
           messagingEvent({ message: { mid: 'mid.echo', text: 'ours', is_echo: true } }),
           messagingEvent({ message: { mid: 'mid.real', text: 'theirs' } }),
@@ -224,7 +299,7 @@ describe('parseInstagramWebhook', () => {
     });
 
     it('reads events across several entries', () => {
-      const result = parseInstagramWebhook({
+      const result = parse({
         object: 'instagram',
         entry: [
           { id: ACCOUNT_ID, messaging: [messagingEvent({ message: { mid: 'mid.a', text: 'a' } })] },
@@ -238,11 +313,11 @@ describe('parseInstagramWebhook', () => {
 
   describe('malformed input', () => {
     it.each([null, undefined, 'a string', 42, []])('survives %p', (body) => {
-      expect(() => parseInstagramWebhook(body)).not.toThrow();
+      expect(() => parse(body)).not.toThrow();
     });
 
     it('refuses an entry with no account id, rather than guessing a tenant', () => {
-      const result = parseInstagramWebhook({
+      const result = parse({
         object: 'instagram',
         entry: [{ messaging: [messagingEvent()] }],
       });
@@ -252,7 +327,7 @@ describe('parseInstagramWebhook', () => {
     });
 
     it('drops a message with no mid, which could not be deduplicated', () => {
-      const result = parseInstagramWebhook(
+      const result = parse(
         webhook([messagingEvent({ message: { text: 'hello' } })]),
       );
 
@@ -261,7 +336,7 @@ describe('parseInstagramWebhook', () => {
     });
 
     it('drops a message with no sender', () => {
-      const result = parseInstagramWebhook(webhook([messagingEvent({ sender: undefined })]));
+      const result = parse(webhook([messagingEvent({ sender: undefined })]));
 
       expect(result.messages).toHaveLength(0);
       expect(result.malformed).toBe(1);
@@ -269,7 +344,7 @@ describe('parseInstagramWebhook', () => {
 
     it('falls back to now rather than losing a message to a bad timestamp', () => {
       const before = Date.now();
-      const result = parseInstagramWebhook(
+      const result = parse(
         webhook([messagingEvent({ timestamp: 'not-a-number' })]),
       );
 

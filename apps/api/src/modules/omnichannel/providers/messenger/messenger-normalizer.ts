@@ -1,10 +1,14 @@
 import type { MessageType } from '../../../../generated/prisma/enums';
 
 /**
- * Instagram Direct Message payloads, turned into events the platform knows.
+ * Meta Messenger payloads, turned into events the platform knows.
  *
- * Instagram is NOT WhatsApp wearing a different hat, and copying that
- * normalizer would have been wrong in three ways that all fail quietly:
+ * Shared by Instagram Direct and Facebook Messenger, which are the same wire
+ * format under two names. The only difference this file cares about is the
+ * envelope's `object` value, passed in by the caller's channel descriptor.
+ *
+ * Neither is WhatsApp wearing a different hat, and copying that normalizer
+ * would have been wrong in three ways that all fail quietly:
  *
  *   * the envelope is Messenger-shaped — `entry[].messaging[]`, not
  *     `entry[].changes[].value.messages[]`
@@ -15,25 +19,30 @@ import type { MessageType } from '../../../../generated/prisma/enums';
  *     webhook, which WhatsApp does not do at all
  *
  * Everything downstream is unchanged: identity resolution, lead matching,
- * ownership and the review queue never learn that Instagram exists.
+ * ownership and the review queue never learn which channel a message came from.
  */
 
-/** One inbound DM, before a tenant has been established. */
-export interface InstagramInboundMessage {
+/** One inbound message, before a tenant has been established. */
+export interface MessengerInboundMessage {
   /** Meta's message id — `mid.*`. The idempotency key. */
   externalMessageId: string;
-  /** The sender's Instagram-scoped id. Stable for this app and this user. */
+  /** The sender's provider-scoped id. Stable for this app and this user. */
   externalUserId: string;
   messageType: MessageType;
   /** Present for text; null for anything this phase does not read. */
   content: string | null;
   timestamp: Date;
-  /** The business account that received it — resolves the tenant. */
-  instagramAccountId: string;
+  /**
+   * The business account that received it — resolves the tenant.
+   *
+   * An Instagram professional account id, or a Facebook Page id. Which one is
+   * decided by the endpoint the delivery arrived on, never by the payload.
+   */
+  accountId: string;
 }
 
-export interface ParsedInstagramWebhook {
-  messages: InstagramInboundMessage[];
+export interface ParsedMessengerWebhook {
+  messages: MessengerInboundMessage[];
   /**
    * Events understood and deliberately not acted on: echoes of our own
    * messages, reactions, read receipts, deletions.
@@ -58,7 +67,7 @@ function asString(value: unknown): string | undefined {
 }
 
 /**
- * Instagram sends milliseconds since the epoch, as a number.
+ * Messenger sends milliseconds since the epoch, as a number.
  *
  * The single most important difference from the WhatsApp normalizer. Treating
  * these as seconds would place every message roughly fifty thousand years in
@@ -97,8 +106,11 @@ const ATTACHMENT_TYPES: Record<string, MessageType> = {
  * rest — Meta redelivers the whole batch on failure, so discarding the good
  * ones means reprocessing them and still never fixing the bad one.
  */
-export function parseInstagramWebhook(body: unknown): ParsedInstagramWebhook {
-  const result: ParsedInstagramWebhook = { messages: [], ignored: 0, malformed: 0 };
+export function parseMessengerWebhook(
+  body: unknown,
+  expectedObject: string,
+): ParsedMessengerWebhook {
+  const result: ParsedMessengerWebhook = { messages: [], ignored: 0, malformed: 0 };
 
   const root = asRecord(body);
   if (!root) {
@@ -106,9 +118,14 @@ export function parseInstagramWebhook(body: unknown): ParsedInstagramWebhook {
     return result;
   }
 
-  // Meta sends the same envelope shape for several products. Anything that is
-  // not Instagram is not ours to interpret.
-  if (asString(root['object']) !== 'instagram') {
+  /*
+   * Meta sends the same envelope shape for several products.
+   *
+   * The two Messenger endpoints are configured separately at Meta, so an
+   * Instagram payload arriving on the Facebook webhook means something is
+   * misconfigured — not that it should be ingested under the wrong channel.
+   */
+  if (asString(root['object']) !== expectedObject) {
     result.ignored += 1;
     return result;
   }
@@ -121,7 +138,7 @@ export function parseInstagramWebhook(body: unknown): ParsedInstagramWebhook {
     }
 
     /*
-     * The business's own Instagram account id.
+     * The business's own account id.
      *
      * This is what resolves the tenant. `recipient.id` on each event carries
      * the same value for an inbound message, but entry.id is the one Meta
@@ -160,7 +177,7 @@ export function parseInstagramWebhook(body: unknown): ParsedInstagramWebhook {
 function parseMessagingEvent(
   event: Record<string, unknown>,
   accountId: string,
-): InstagramInboundMessage | 'IGNORED' | null {
+): MessengerInboundMessage | 'IGNORED' | null {
   /*
    * Reactions, read receipts and postbacks share this envelope.
    *
@@ -176,7 +193,8 @@ function parseMessagingEvent(
   /*
    * Echoes — messages the BUSINESS sent, reflected back.
    *
-   * Instagram does this and WhatsApp does not. Ingesting one would create a
+   * Both Messenger channels do this and WhatsApp does not. Ingesting one
+   * would create a
    * conversation with the business as the customer, resolve the business's own
    * account as a contact, and potentially open a lead against itself.
    */
@@ -208,7 +226,7 @@ function parseMessagingEvent(
       messageType: 'TEXT',
       content: text,
       timestamp: parseTimestamp(event['timestamp']),
-      instagramAccountId: accountId,
+      accountId,
     };
   }
 
@@ -229,6 +247,6 @@ function parseMessagingEvent(
     messageType: (attachmentType ? ATTACHMENT_TYPES[attachmentType] : undefined) ?? 'OTHER',
     content: null,
     timestamp: parseTimestamp(event['timestamp']),
-    instagramAccountId: accountId,
+    accountId,
   };
 }

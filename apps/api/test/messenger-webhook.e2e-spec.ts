@@ -605,7 +605,7 @@ describe('Instagram webhook', () => {
         .http()
         .post('/api/v1/channel-integrations/instagram/connect')
         .set(auth(ctx.orgA.rep.accessToken))
-        .send({ instagramAccountId: '123', accessToken: 'irrelevant' });
+        .send({ accountId: '123', accessToken: 'irrelevant' });
 
       expect(response.status).toBe(403);
     });
@@ -615,9 +615,315 @@ describe('Instagram webhook', () => {
         .http()
         .post('/api/v1/channel-integrations/instagram/connect')
         .set(auth(ctx.orgA.owner.accessToken))
-        .send({ instagramAccountId: accounts.b, accessToken: 'some-token' });
+        .send({ accountId: accounts.b, accessToken: 'some-token' });
 
       expect(response.status).toBe(409);
+    });
+  });
+
+  // ===========================================================================
+  // PHASE G — Facebook Messenger on the same machinery
+  // ===========================================================================
+
+  describe('Facebook Messenger', () => {
+    const FB_SECRET = 'test-facebook-app-secret';
+    const page = '109876000000001';
+
+    function fbSign(body: string, secret = FB_SECRET): string {
+      return `sha256=${createHmac('sha256', secret).update(Buffer.from(body)).digest('hex')}`;
+    }
+
+    async function deliverFb(payload: unknown, options: { signature?: string | null } = {}) {
+      const body = JSON.stringify(payload);
+      const request = ctx
+        .http()
+        .post('/api/v1/webhooks/facebook')
+        .set('Content-Type', 'application/json');
+
+      const signature = options.signature === undefined ? fbSign(body) : options.signature;
+      if (signature !== null) request.set('X-Hub-Signature-256', signature);
+
+      return request.send(body);
+    }
+
+    function fbPayload(input: { pageId: string; senderId?: string; text?: string; mid?: string }) {
+      return {
+        object: 'page',
+        entry: [
+          {
+            id: input.pageId,
+            time: Date.now(),
+            messaging: [
+              {
+                sender: { id: input.senderId ?? `psid.${unique()}` },
+                recipient: { id: input.pageId },
+                timestamp: Date.now(),
+                message: {
+                  mid: input.mid ?? `mid.${unique()}`,
+                  text: input.text ?? 'Do you deliver to Nashik?',
+                },
+              },
+            ],
+          },
+        ],
+      };
+    }
+
+    async function countFacebook(organizationId: string): Promise<number> {
+      return tenancy.runForOrganization(organizationId, 'test: count', () =>
+        prisma.client.message.count({ where: { channel: 'FACEBOOK' } }),
+      );
+    }
+
+    beforeAll(async () => {
+      await tenancy.runForOrganization(ctx.orgA.id, 'test: connect facebook', () =>
+        prisma.client.channelIntegration.create({
+          data: {
+            organizationId: ctx.orgA.id,
+            channel: 'FACEBOOK',
+            status: 'CONNECTED',
+            enabled: true,
+            providerAccountId: page,
+            displayName: 'Test Page',
+          },
+        }),
+      );
+    });
+
+    it('verifies its own subscription token', async () => {
+      const response = await ctx
+        .http()
+        .get('/api/v1/webhooks/facebook')
+        .query({
+          'hub.mode': 'subscribe',
+          'hub.verify_token': 'test-facebook-verify-token',
+          'hub.challenge': '55443322',
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.text).toContain('55443322');
+    });
+
+    it('does not accept the Instagram verify token', async () => {
+      // Three products, three secrets. Sharing one by accident would mean a
+      // leak of any compromised all of them.
+      const response = await ctx
+        .http()
+        .get('/api/v1/webhooks/facebook')
+        .query({
+          'hub.mode': 'subscribe',
+          'hub.verify_token': VERIFY_TOKEN,
+          'hub.challenge': '1',
+        });
+
+      expect(response.status).toBe(403);
+    });
+
+    it('rejects a body signed with the Instagram secret and writes NOTHING', async () => {
+      const before = await countFacebook(ctx.orgA.id);
+      const body = JSON.stringify(fbPayload({ pageId: page }));
+
+      const response = await ctx
+        .http()
+        .post('/api/v1/webhooks/facebook')
+        .set('Content-Type', 'application/json')
+        .set('X-Hub-Signature-256', fbSign(body, APP_SECRET))
+        .send(body);
+
+      expect(response.status).toBe(403);
+      expect(await countFacebook(ctx.orgA.id)).toBe(before);
+    });
+
+    it('rejects an unsigned request', async () => {
+      const response = await deliverFb(fbPayload({ pageId: page }), { signature: null });
+      expect(response.status).toBe(403);
+    });
+
+    it('ingests a text message into the existing pipeline', async () => {
+      const before = await countFacebook(ctx.orgA.id);
+      const senderId = `psid.${unique()}`;
+
+      const response = await deliverFb(
+        fbPayload({ pageId: page, senderId, text: 'What is your bulk price?' }),
+      );
+
+      expect(response.status).toBe(200);
+      expect(await countFacebook(ctx.orgA.id)).toBe(before + 1);
+
+      const queue = await ctx
+        .http()
+        .get('/api/v1/conversations/review')
+        .set(auth(ctx.orgA.owner.accessToken));
+
+      const row = queue.body.data.items.find(
+        (item: { lastMessagePreview: string | null }) =>
+          item.lastMessagePreview === 'What is your bulk price?',
+      );
+
+      expect(row).toBeDefined();
+      expect(row.channel).toBe('FACEBOOK');
+      // No phone number on Messenger either, so identity resolution correctly
+      // declines to guess.
+      expect(row.contact).toBeNull();
+      // The Phase C keyword rules applied without knowing about Messenger.
+      expect(row.potentialLead).toBe(true);
+    });
+
+    it('ignores a page whose Page nobody connected', async () => {
+      const before = await countFacebook(ctx.orgA.id);
+
+      const response = await deliverFb(fbPayload({ pageId: '109999999999999' }));
+
+      expect(response.status).toBe(200);
+      expect(await countFacebook(ctx.orgA.id)).toBe(before);
+    });
+
+    it('never ingests into another organization', async () => {
+      const beforeB = await countFacebook(ctx.orgB.id);
+
+      await deliverFb(fbPayload({ pageId: page }));
+
+      expect(await countFacebook(ctx.orgB.id)).toBe(beforeB);
+    });
+
+    it('stores one message however many times Meta delivers it', async () => {
+      const before = await countFacebook(ctx.orgA.id);
+      const body = fbPayload({ pageId: page, mid: `mid.${unique()}` });
+
+      await deliverFb(body);
+      await deliverFb(body);
+      await deliverFb(body);
+
+      expect(await countFacebook(ctx.orgA.id)).toBe(before + 1);
+    });
+
+    it('ingests nothing while the integration is disabled', async () => {
+      const integration = await tenancy.runForOrganization(ctx.orgA.id, 'test: find', () =>
+        prisma.client.channelIntegration.findFirst({ where: { channel: 'FACEBOOK' } }),
+      );
+
+      await tenancy.runForOrganization(ctx.orgA.id, 'test: disable', () =>
+        prisma.client.channelIntegration.update({
+          where: { id: integration!.id },
+          data: { enabled: false },
+        }),
+      );
+
+      const before = await countFacebook(ctx.orgA.id);
+      const response = await deliverFb(fbPayload({ pageId: page }));
+
+      expect(response.status).toBe(200);
+      expect(await countFacebook(ctx.orgA.id)).toBe(before);
+
+      await tenancy.runForOrganization(ctx.orgA.id, 'test: re-enable', () =>
+        prisma.client.channelIntegration.update({
+          where: { id: integration!.id },
+          data: { enabled: true },
+        }),
+      );
+    });
+
+    it('does not merge a Messenger sender with an Instagram one', async () => {
+      const shared = `shared.${unique()}`;
+
+      // The same opaque id on two channels is NOT evidence of the same person —
+      // these are provider-scoped identities from different products.
+      await deliver(payload({ accountId: accounts.a, senderId: shared, text: 'from instagram' }));
+      await deliverFb(fbPayload({ pageId: page, senderId: shared, text: 'from messenger' }));
+
+      const conversations = await tenancy.runForOrganization(ctx.orgA.id, 'test: count', () =>
+        prisma.client.conversation.findMany({
+          where: { externalConversationId: { endsWith: `:${shared}` } },
+          select: { channel: true },
+        }),
+      );
+
+      expect(conversations).toHaveLength(2);
+      expect(conversations.map((c) => c.channel).sort()).toEqual(['FACEBOOK', 'INSTAGRAM']);
+    });
+
+    it('is inbound only, and the API refuses a reply', async () => {
+      const senderId = `psid.${unique()}`;
+      await deliverFb(fbPayload({ pageId: page, senderId, text: 'hello' }));
+
+      const conversation = await tenancy.runForOrganization(ctx.orgA.id, 'test: find', () =>
+        prisma.client.conversation.findFirst({
+          where: { externalConversationId: `${page}:${senderId}` },
+        }),
+      );
+
+      const detail = await ctx
+        .http()
+        .get(`/api/v1/conversations/${conversation!.id}`)
+        .set(auth(ctx.orgA.owner.accessToken));
+      expect(detail.body.data.canSend).toBe(false);
+      expect(detail.body.data.sendDisabledReason).toMatch(/not available for this channel/i);
+
+      const send = await ctx
+        .http()
+        .post(`/api/v1/conversations/${conversation!.id}/messages`)
+        .set(auth(ctx.orgA.owner.accessToken))
+        .send({ content: 'we do', idempotencyKey: `key-${unique()}` });
+
+      // Hiding the composer is presentation; the API is what enforces it.
+      expect(send.status).toBe(409);
+    });
+
+    it('appears in the unified inbox under the Facebook filter', async () => {
+      await deliverFb(fbPayload({ pageId: page, text: 'price list please' }));
+
+      const inbox = await ctx
+        .http()
+        .get('/api/v1/conversations/inbox')
+        .query({ channel: 'FACEBOOK' })
+        .set(auth(ctx.orgA.owner.accessToken));
+
+      expect(inbox.status).toBe(200);
+      expect(inbox.body.data.items.length).toBeGreaterThan(0);
+      expect(
+        inbox.body.data.items.every((i: { channel: string }) => i.channel === 'FACEBOOK'),
+      ).toBe(true);
+    });
+
+    it('obeys the existing conversation visibility policy', async () => {
+      const senderId = `psid.${unique()}`;
+      await deliverFb(fbPayload({ pageId: page, senderId, text: 'unowned' }));
+
+      const conversation = await tenancy.runForOrganization(ctx.orgA.id, 'test: find', () =>
+        prisma.client.conversation.findFirst({
+          where: { externalConversationId: `${page}:${senderId}` },
+        }),
+      );
+
+      const asRep = await ctx
+        .http()
+        .get(`/api/v1/conversations/${conversation!.id}`)
+        .set(auth(ctx.orgA.rep.accessToken));
+      expect(asRep.status).toBe(404);
+
+      const asOwner = await ctx
+        .http()
+        .get(`/api/v1/conversations/${conversation!.id}`)
+        .set(auth(ctx.orgA.owner.accessToken));
+      expect(asOwner.status).toBe(200);
+    });
+
+    it('reports Facebook as connectable and refuses a rep connecting one', async () => {
+      const list = await ctx
+        .http()
+        .get('/api/v1/channel-integrations')
+        .set(auth(ctx.orgA.owner.accessToken));
+
+      const facebook = list.body.data.find((row: { channel: string }) => row.channel === 'FACEBOOK');
+      expect(facebook.connectable).toBe(true);
+
+      const attempt = await ctx
+        .http()
+        .post('/api/v1/channel-integrations/facebook/connect')
+        .set(auth(ctx.orgA.rep.accessToken))
+        .send({ accountId: '123', accessToken: 'irrelevant' });
+
+      expect(attempt.status).toBe(403);
     });
   });
 

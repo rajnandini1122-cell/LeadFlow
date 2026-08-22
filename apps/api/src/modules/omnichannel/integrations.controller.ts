@@ -16,9 +16,13 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { IntegrationsService } from './integrations.service';
 import { WhatsAppSetupService } from './providers/whatsapp/whatsapp-setup.service';
-import { InstagramSetupService } from './providers/instagram/instagram-setup.service';
+import { MessengerSetupService } from './providers/messenger/messenger-setup.service';
 import {
-  ConnectInstagramDto,
+  FACEBOOK_CHANNEL,
+  INSTAGRAM_CHANNEL,
+} from './providers/messenger/messenger-channels';
+import {
+  ConnectMessengerDto,
   ConnectWhatsAppDto,
   SetIntegrationEnabledDto,
 } from './dto/conversations.dto';
@@ -42,7 +46,7 @@ export class IntegrationsController {
   constructor(
     private readonly integrations: IntegrationsService,
     private readonly whatsapp: WhatsAppSetupService,
-    private readonly instagram: InstagramSetupService,
+    private readonly messenger: MessengerSetupService,
   ) {}
 
   @Get()
@@ -87,7 +91,12 @@ export class IntegrationsController {
   }
 
   /**
-   * Connect this organization's Instagram professional account.
+   * Connect an Instagram account or a Facebook Page.
+   *
+   * Two routes rather than one with a channel parameter: the permission, the
+   * shape and the audit action are identical, but a channel supplied in a body
+   * is a value a client chooses, and these decide which provider credentials
+   * get written. The route is the channel.
    *
    * Like WhatsApp, the response reports what actually happened: a failed
    * validation comes back as ERROR with a non-secret explanation rather than a
@@ -98,13 +107,14 @@ export class IntegrationsController {
   @RequirePermissions(PERMISSIONS.ORG_UPDATE)
   @ApiOperation({ summary: 'Connect an Instagram professional account' })
   async connectInstagram(
-    @Body() dto: ConnectInstagramDto,
+    @Body() dto: ConnectMessengerDto,
     @CurrentUser() principal: TenantPrincipal,
   ) {
-    return this.instagram.connect(
+    return this.messenger.connect(
+      INSTAGRAM_CHANNEL,
       {
-        instagramAccountId: dto.instagramAccountId,
-        ...(dto.pageId ? { pageId: dto.pageId } : {}),
+        accountId: dto.accountId,
+        linkedAccountId: dto.linkedAccountId,
         accessToken: dto.accessToken,
       },
       principal.userId,
@@ -117,7 +127,35 @@ export class IntegrationsController {
   @RequirePermissions(PERMISSIONS.ORG_UPDATE)
   @ApiOperation({ summary: 'Disconnect Instagram, keeping all history' })
   async disconnectInstagram(@CurrentUser() principal: TenantPrincipal) {
-    return this.instagram.disconnect(principal.userId);
+    return this.messenger.disconnect(INSTAGRAM_CHANNEL, principal.userId);
+  }
+
+  @Post('facebook/connect')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSIONS.ORG_UPDATE)
+  @ApiOperation({ summary: 'Connect a Facebook Page for Messenger' })
+  async connectFacebook(
+    @Body() dto: ConnectMessengerDto,
+    @CurrentUser() principal: TenantPrincipal,
+  ) {
+    return this.messenger.connect(
+      FACEBOOK_CHANNEL,
+      {
+        accountId: dto.accountId,
+        linkedAccountId: dto.linkedAccountId,
+        accessToken: dto.accessToken,
+      },
+      principal.userId,
+      principal.organizationId,
+    );
+  }
+
+  @Post('facebook/disconnect')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSIONS.ORG_UPDATE)
+  @ApiOperation({ summary: 'Disconnect Facebook Messenger, keeping all history' })
+  async disconnectFacebook(@CurrentUser() principal: TenantPrincipal) {
+    return this.messenger.disconnect(FACEBOOK_CHANNEL, principal.userId);
   }
 
   @Patch(':id')

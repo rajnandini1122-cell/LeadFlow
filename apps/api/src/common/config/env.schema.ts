@@ -126,6 +126,16 @@ export const envSchema = z
     /** Shared string Meta echoes back when the Instagram webhook is saved. */
     INSTAGRAM_VERIFY_TOKEN: z.string().optional(),
     /**
+     * Meta app secret for the Messenger product.
+     *
+     * Separate again, for the same reason: the three products can live in
+     * three different Meta apps, and sharing a secret by accident would mean a
+     * leak of any one compromised all three.
+     */
+    FACEBOOK_APP_SECRET: z.string().optional(),
+    /** Shared string Meta echoes back when the Messenger webhook is saved. */
+    FACEBOOK_VERIFY_TOKEN: z.string().optional(),
+    /**
      * Whether the stale-outbound-message sweep runs in this process.
      *
      * On by default. Turned off in the test suite, where recovery is invoked

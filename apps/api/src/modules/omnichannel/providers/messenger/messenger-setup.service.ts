@@ -9,33 +9,36 @@ import {
   sealSecret,
   SecretBoxError,
 } from '../../../../common/crypto/secret-box';
-import { InstagramIntegrationRepository } from './instagram-integration.repository';
+import { MessengerIntegrationRepository } from './messenger-integration.repository';
+import type { MessengerChannelConfig } from './messenger-channels';
 
 /**
- * Connecting a tenant's Instagram professional account.
+ * Connecting a tenant's Instagram account or Facebook Page.
  *
  * Same rule as WhatsApp, for the same reason: CONNECTED is written only after
  * the credentials have actually worked against Meta. Accepting a form and
- * calling it connected leaves an owner believing their DMs are being captured,
- * and the first they hear otherwise is a customer who never got an answer.
+ * calling it connected leaves an owner believing their messages are being
+ * captured, and the first they hear otherwise is a customer who never got an
+ * answer.
  *
- * Not OAuth, and not pretending to be. Instagram messaging requires a Page
- * access token from an app the business has already authorised at Meta; the
- * owner pastes the identifiers and the token, exactly as for WhatsApp. A
- * browser redirect flow here would be theatre around the same three values.
+ * Not OAuth, and not pretending to be. Both channels need a token from an app
+ * the business has already authorised at Meta; the owner pastes the identifiers
+ * and the token. A browser redirect flow here would be theatre around the same
+ * two values.
  */
 @Injectable()
-export class InstagramSetupService {
-  private readonly logger = new Logger(InstagramSetupService.name);
+export class MessengerSetupService {
+  private readonly logger = new Logger(MessengerSetupService.name);
 
   constructor(
     private readonly config: AppConfig,
-    private readonly repository: InstagramIntegrationRepository,
+    private readonly repository: MessengerIntegrationRepository,
     private readonly audit: AuditRepository,
   ) {}
 
   async connect(
-    input: { instagramAccountId: string; pageId?: string; accessToken: string },
+    channel: MessengerChannelConfig,
+    input: { accountId: string; linkedAccountId?: string | undefined; accessToken: string },
     actorId: string,
     organizationId: string,
   ) {
@@ -46,7 +49,7 @@ export class InstagramSetupService {
       key = parseEncryptionKey(this.config.get('CREDENTIAL_ENCRYPTION_KEY'));
     } catch (error) {
       this.logger.error(
-        `Cannot connect Instagram: ${
+        `Cannot connect ${channel.label}: ${
           error instanceof SecretBoxError ? error.message : 'encryption key unavailable'
         }`,
       );
@@ -57,36 +60,37 @@ export class InstagramSetupService {
       );
     }
 
-    if (await this.repository.claimedByAnotherTenant(input.instagramAccountId, organizationId)) {
+    if (await this.repository.claimedByAnotherTenant(channel.channel, input.accountId, organizationId)) {
       throw new AppException(
         ERROR_CODES.CONFLICT,
-        'That Instagram account is already connected to another LeadFlow organization.',
+        `That ${channel.label} account is already connected to another LeadFlow organization.`,
         409,
       );
     }
 
     const integration = await this.repository.upsertForCurrentTenant({
-      providerAccountId: input.instagramAccountId,
-      pageId: input.pageId ?? null,
+      channel: channel.channel,
+      providerAccountId: input.accountId,
+      linkedAccountId: input.linkedAccountId ?? null,
       encryptedAccessToken: sealSecret(input.accessToken, key),
       accessTokenHint: credentialHint(input.accessToken),
       actorId,
     });
 
     await this.audit.record({
-      action: 'omnichannel.instagram_connect_attempted',
+      action: `omnichannel.${channel.channel.toLowerCase()}_connect_attempted`,
       entityType: 'channel_integration',
       entityId: integration.id,
       actorUserId: actorId,
       after: {
-        instagramAccountId: input.instagramAccountId,
-        pageId: input.pageId ?? null,
+        accountId: input.accountId,
+        linkedAccountId: input.linkedAccountId ?? null,
         // The hint, never the token.
         accessTokenHint: credentialHint(input.accessToken),
       },
     });
 
-    const validation = await this.validate(input.instagramAccountId, input.accessToken);
+    const validation = await this.validate(channel, input.accountId, input.accessToken);
 
     if (!validation.ok) {
       await this.repository.markError(integration.id, validation.message);
@@ -96,29 +100,29 @@ export class InstagramSetupService {
     await this.repository.markConnected(integration.id, validation.displayName);
 
     await this.audit.record({
-      action: 'omnichannel.instagram_connected',
+      action: `omnichannel.${channel.channel.toLowerCase()}_connected`,
       entityType: 'channel_integration',
       entityId: integration.id,
       actorUserId: actorId,
-      after: {
-        instagramAccountId: input.instagramAccountId,
-        displayName: validation.displayName,
-      },
+      after: { accountId: input.accountId, displayName: validation.displayName },
     });
 
     return { id: integration.id, status: 'CONNECTED' as const, displayName: validation.displayName };
   }
 
-  async disconnect(actorId: string) {
-    const integration = await this.repository.findForCurrentTenant();
+  async disconnect(channel: MessengerChannelConfig, actorId: string) {
+    const integration = await this.repository.findForCurrentTenant(channel.channel);
     if (!integration) {
-      throw AppException.notFound(ERROR_CODES.NOT_FOUND, 'No Instagram integration is connected.');
+      throw AppException.notFound(
+        ERROR_CODES.NOT_FOUND,
+        `No ${channel.label} integration is connected.`,
+      );
     }
 
     await this.repository.disconnect(integration.id);
 
     await this.audit.record({
-      action: 'omnichannel.instagram_disconnected',
+      action: `omnichannel.${channel.channel.toLowerCase()}_disconnected`,
       entityType: 'channel_integration',
       entityId: integration.id,
       actorUserId: actorId,
@@ -132,19 +136,20 @@ export class InstagramSetupService {
    *
    * Reading the account node exercises exactly what matters: that the token is
    * valid, unexpired, and actually scoped to THIS account. A token that works
-   * for a different account would otherwise sit there looking healthy until the
-   * first real DM failed to be attributed.
+   * for a different Page would otherwise sit there looking healthy until the
+   * first real message was misattributed.
    *
    * Every failure is one short non-secret sentence. Meta's error bodies echo
    * request parameters back and are not something to store in a column the
    * settings screen renders.
    */
   private async validate(
+    channel: MessengerChannelConfig,
     accountId: string,
     accessToken: string,
   ): Promise<{ ok: true; displayName: string | null } | { ok: false; message: string }> {
     const version = this.config.get('WHATSAPP_API_VERSION');
-    const url = `https://graph.facebook.com/${version}/${encodeURIComponent(accountId)}?fields=username,name`;
+    const url = `https://graph.facebook.com/${version}/${encodeURIComponent(accountId)}?fields=${channel.validationFields}`;
 
     try {
       const response = await fetch(url, {
@@ -154,39 +159,28 @@ export class InstagramSetupService {
 
       if (!response.ok) {
         if (response.status === 401 || response.status === 403) {
-          return {
-            ok: false,
-            message:
-              'Instagram rejected the access token. Check it has not expired and that the app ' +
-              'has instagram_manage_messages permission.',
-          };
+          return { ok: false, message: channel.setupErrors.unauthorized };
         }
         if (response.status === 404) {
-          return {
-            ok: false,
-            message:
-              'Meta does not recognise that Instagram account id for this token. Check the ' +
-              'account is a professional account linked to the connected Facebook Page.',
-          };
+          return { ok: false, message: channel.setupErrors.notFound };
         }
         return { ok: false, message: `Meta returned an error (HTTP ${response.status}).` };
       }
 
-      const payload = (await response.json()) as { username?: string; name?: string };
+      const payload = (await response.json()) as Record<string, unknown>;
+      const displayName = channel.displayName(payload);
 
-      // A username proves we read the right account, not just any account.
-      if (!payload.username && !payload.name) {
-        return {
-          ok: false,
-          message: 'Instagram did not return account details for that id. Check the account type.',
-        };
-      }
+      // A name proves we read the right account, not merely that a call
+      // succeeded against some account.
+      if (!displayName) return { ok: false, message: channel.setupErrors.noDetails };
 
-      return { ok: true, displayName: payload.username ? `@${payload.username}` : (payload.name ?? null) };
+      return { ok: true, displayName };
     } catch (error) {
       // Never the URL — it carries the account id — and never the token.
       this.logger.warn(
-        `Instagram validation call failed: ${error instanceof Error ? error.name : 'unknown error'}`,
+        `${channel.label} validation call failed: ${
+          error instanceof Error ? error.name : 'unknown error'
+        }`,
       );
       return { ok: false, message: 'Could not reach Meta to verify the credentials.' };
     }

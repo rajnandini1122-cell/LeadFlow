@@ -14,10 +14,13 @@ import { WhatsAppIntegrationRepository } from './providers/whatsapp/whatsapp-int
 import { WhatsAppSetupService } from './providers/whatsapp/whatsapp-setup.service';
 import { WhatsAppWebhookController } from './providers/whatsapp/whatsapp-webhook.controller';
 import { WhatsAppWebhookService } from './providers/whatsapp/whatsapp-webhook.service';
-import { InstagramIntegrationRepository } from './providers/instagram/instagram-integration.repository';
-import { InstagramSetupService } from './providers/instagram/instagram-setup.service';
-import { InstagramWebhookController } from './providers/instagram/instagram-webhook.controller';
-import { InstagramWebhookService } from './providers/instagram/instagram-webhook.service';
+import { MessengerIntegrationRepository } from './providers/messenger/messenger-integration.repository';
+import { MessengerSetupService } from './providers/messenger/messenger-setup.service';
+import { MessengerWebhookService } from './providers/messenger/messenger-webhook.service';
+import {
+  FacebookWebhookController,
+  InstagramWebhookController,
+} from './providers/messenger/messenger-webhook.controller';
 
 /**
  * Omnichannel capture.
@@ -34,6 +37,7 @@ import { InstagramWebhookService } from './providers/instagram/instagram-webhook
     IntegrationsController,
     WhatsAppWebhookController,
     InstagramWebhookController,
+    FacebookWebhookController,
   ],
   providers: [
     OmnichannelRepository,
@@ -46,9 +50,9 @@ import { InstagramWebhookService } from './providers/instagram/instagram-webhook
     WhatsAppSetupService,
     WhatsAppWebhookService,
     WhatsAppOutboundService,
-    InstagramIntegrationRepository,
-    InstagramSetupService,
-    InstagramWebhookService,
+    MessengerIntegrationRepository,
+    MessengerSetupService,
+    MessengerWebhookService,
     OutboundMessagingService,
     OutboundRecoveryService,
   ],

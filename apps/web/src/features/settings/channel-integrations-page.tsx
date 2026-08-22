@@ -8,9 +8,9 @@ import { useAuth } from '../auth/auth-context';
 import { useState, type FormEvent } from 'react';
 import {
   CHANNEL_PRESENTATION,
-  useConnectInstagram,
+  useConnectMessenger,
   useConnectWhatsApp,
-  useDisconnectInstagram,
+  useDisconnectMessenger,
   useDisconnectWhatsApp,
   useIntegrations,
   useSetIntegrationEnabled,
@@ -84,8 +84,7 @@ export function ChannelIntegrationsPage(): React.JSX.Element {
         <p className="mt-1 text-pretty">
           Connected channels capture what customers send you and match it to your leads.
           WhatsApp also supports replying, within the 24-hour window WhatsApp allows. Instagram
-          is capture-only for now — answer those in the Instagram app. Facebook Messenger cannot
-          be connected in this release.
+          and Facebook Messenger are capture-only for now — answer those in the Meta apps.
         </p>
       </div>
 
@@ -308,6 +307,18 @@ const SETUP_FIELDS: Record<
     primary: { id: 'instagramAccountId', label: 'Instagram professional account ID' },
     secondary: { id: 'pageId', label: 'Linked Facebook Page ID (optional)' },
   },
+  FACEBOOK: {
+    hint: 'From your Meta app dashboard, under Messenger \u203a Settings.',
+    primary: { id: 'facebookPageId', label: 'Facebook Page ID' },
+    // The Page IS the account for Messenger, so there is no second id to give.
+    secondary: { id: 'facebookUnused', label: '' },
+  },
+};
+
+/** Slug per channel, for the connect and disconnect routes. */
+const MESSENGER_SLUGS: Record<string, 'instagram' | 'facebook'> = {
+  INSTAGRAM: 'instagram',
+  FACEBOOK: 'facebook',
 };
 
 /**
@@ -325,14 +336,16 @@ const SETUP_FIELDS: Record<
 function ProviderSetup({ integration }: { integration: IntegrationView }): React.JSX.Element | null {
   const fields = SETUP_FIELDS[integration.channel];
 
-  const connectWhatsApp = useConnectWhatsApp();
-  const connectInstagram = useConnectInstagram();
-  const disconnectWhatsApp = useDisconnectWhatsApp();
-  const disconnectInstagram = useDisconnectInstagram();
+  const messengerSlug = MESSENGER_SLUGS[integration.channel] ?? 'instagram';
+  const isMessenger = integration.channel !== 'WHATSAPP';
 
-  const isInstagram = integration.channel === 'INSTAGRAM';
-  const connect = isInstagram ? connectInstagram : connectWhatsApp;
-  const disconnect = isInstagram ? disconnectInstagram : disconnectWhatsApp;
+  const connectWhatsApp = useConnectWhatsApp();
+  const connectMessenger = useConnectMessenger(messengerSlug);
+  const disconnectWhatsApp = useDisconnectWhatsApp();
+  const disconnectMessenger = useDisconnectMessenger(messengerSlug);
+
+  const connect = isMessenger ? connectMessenger : connectWhatsApp;
+  const disconnect = isMessenger ? disconnectMessenger : disconnectWhatsApp;
 
   const connected = integration.status === 'CONNECTED';
   const [open, setOpen] = useState(false);
@@ -350,10 +363,10 @@ function ProviderSetup({ integration }: { integration: IntegrationView }): React
     event.preventDefault();
     setFailure(null);
 
-    const payload = isInstagram
+    const payload = isMessenger
       ? {
-          instagramAccountId: primary.trim(),
-          ...(secondary.trim() ? { pageId: secondary.trim() } : {}),
+          accountId: primary.trim(),
+          ...(secondary.trim() ? { linkedAccountId: secondary.trim() } : {}),
           accessToken: accessToken.trim(),
         }
       : {
@@ -429,12 +442,14 @@ function ProviderSetup({ integration }: { integration: IntegrationView }): React
         onChange={setPrimary}
         required
       />
-      <Field
-        id={fields.secondary.id}
-        label={fields.secondary.label}
-        value={secondary}
-        onChange={setSecondary}
-      />
+      {fields.secondary.label && (
+        <Field
+          id={fields.secondary.id}
+          label={fields.secondary.label}
+          value={secondary}
+          onChange={setSecondary}
+        />
+      )}
       <Field
         id={`${integration.channel}-access-token`}
         label="Access token"

@@ -152,20 +152,30 @@ export class ConnectWhatsAppDto {
   accessToken!: string;
 }
 
-export class ConnectInstagramDto {
-  @ApiProperty({ description: 'The Instagram professional account id.' })
+/**
+ * Connecting an Instagram account or a Facebook Page.
+ *
+ * One DTO for both, because both need exactly the same three values. The
+ * endpoint decides which channel it is; the shape does not differ.
+ */
+export class ConnectMessengerDto {
+  @ApiProperty({
+    description: 'The Instagram professional account id, or the Facebook Page id.',
+  })
   @IsString()
   @MaxLength(120)
-  instagramAccountId!: string;
+  accountId!: string;
 
-  @ApiPropertyOptional({ description: 'The linked Facebook Page id.' })
+  @ApiPropertyOptional({
+    description: 'For Instagram, the linked Facebook Page id. Unused for Messenger.',
+  })
   @IsOptional()
   @IsString()
   @MaxLength(120)
-  pageId?: string;
+  linkedAccountId?: string;
 
   /** Write-only: encrypted immediately and never returned by any endpoint. */
-  @ApiProperty({ description: 'Page access token. Stored encrypted; never returned.' })
+  @ApiProperty({ description: 'Access token. Stored encrypted; never returned.' })
   @IsString()
   @MaxLength(1000)
   accessToken!: string;
