@@ -26,6 +26,17 @@ export interface TenantStore extends ClsStore {
    * every use is audit-logged with a stated reason.
    */
   system?: { reason: string };
+  /**
+   * Set only inside `runForOrganization()`: a real tenant, but no acting user.
+   *
+   * This is what inbound webhook ingestion runs under. It is deliberately NOT
+   * `system` — scoping stays fully ON and pinned to one organization, so a bug
+   * in ingestion can still only ever touch the tenant the message belongs to.
+   * The difference from `principal` is that there is genuinely nobody to
+   * attribute the work to, and inventing a user id would put a fictional actor
+   * on real audit rows.
+   */
+  ingestion?: { organizationId: string; reason: string };
   requestId?: string;
 }
 
@@ -43,7 +54,12 @@ export class TenantContextService {
   }
 
   get organizationId(): string | undefined {
-    return this.principal?.organizationId;
+    return this.principal?.organizationId ?? this.ingestionOrganizationId;
+  }
+
+  /** The tenant fixed by `runForOrganization()`, if that is what we are in. */
+  private get ingestionOrganizationId(): string | undefined {
+    return this.cls.isActive() ? this.cls.get('ingestion')?.organizationId : undefined;
   }
 
   get userId(): string | undefined {
@@ -127,5 +143,29 @@ export class TenantContextService {
   async runAsSystem<T>(reason: string, fn: () => Promise<T>): Promise<T> {
     // See runWithTenant for why the await must happen inside the scope.
     return this.cls.runWith({ system: { reason } } as TenantStore, async () => await fn());
+  }
+
+  /**
+   * Run inside one tenant with no acting user — inbound channel ingestion.
+   *
+   * A webhook arrives with no session, so there is no principal to run under,
+   * but it is emphatically NOT cross-tenant work: the message belongs to
+   * exactly one organization and must never reach another. So this pins the
+   * tenant and leaves scoping switched on, rather than using `runAsSystem()`,
+   * which would disable it entirely.
+   *
+   * `userId` stays undefined here on purpose. Audit rows and lead activities
+   * created under this scope record no actor, which is the truth: the system
+   * received a message, a person did not do anything.
+   */
+  async runForOrganization<T>(
+    organizationId: string,
+    reason: string,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    // See runWithTenant for why the await must happen inside the scope.
+    return this.cls.runWith({ ingestion: { organizationId, reason } } as TenantStore, async () =>
+      await fn(),
+    );
   }
 }

@@ -147,6 +147,12 @@ enum ActivityType {
   LEAD_WON
   LEAD_LOST
 
+  /// Omnichannel. Appended, never reordered: these are stored values, and the
+  /// existing ones keep exactly the meaning they have always had.
+  CHANNEL_MESSAGE_RECEIVED
+  CONVERSATION_LINKED
+  CONVERSATION_UNLINKED
+
   @@map("activity_type")
 }
 
@@ -940,6 +946,23 @@ enum ConversationStatus {
   @@map("conversation_status")
 }
 
+/// How far a conversation has got towards belonging to a lead.
+///
+/// Separate from ConversationStatus, which is about whether the thread is still
+/// live. A conversation can be OPEN and UNLINKED (a stranger asking a question)
+/// or CLOSED and LINKED (a deal that was won and the chat archived).
+enum ConversationLinkState {
+  /// No lead matched, and none is claimed to.
+  UNLINKED
+  /// Attached to exactly one lead.
+  LINKED
+  /// Several active leads matched the same person and the system refused to
+  /// pick one. A human decides; nothing is attached in the meantime.
+  REVIEW_REQUIRED
+
+  @@map("conversation_link_state")
+}
+
 /// One thread with one person on one channel.
 ///
 /// `leadId` is nullable on purpose: not every conversation is a lead, and
@@ -967,8 +990,11 @@ model Conversation {
   /// inventing an entity the rest of the product does not have.
   companyName String? @map("company_name") @db.VarChar(200)
 
-  status        ConversationStatus @default(OPEN)
-  lastMessageAt DateTime?          @map("last_message_at") @db.Timestamptz(6)
+  status        ConversationStatus    @default(OPEN)
+  /// Defaults to UNLINKED so a conversation is never presumed to belong to a
+  /// lead it was not actually matched to.
+  linkState     ConversationLinkState @default(UNLINKED) @map("link_state")
+  lastMessageAt DateTime?             @map("last_message_at") @db.Timestamptz(6)
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -983,6 +1009,7 @@ model Conversation {
   /// Webhook idempotency: a redelivered thread must find its existing row.
   @@unique([organizationId, channel, externalConversationId])
   @@index([organizationId, status, lastMessageAt(sort: Desc)])
+  @@index([organizationId, linkState, lastMessageAt(sort: Desc)])
   @@index([organizationId, ownerId, status])
   @@index([organizationId, leadId])
   @@index([organizationId, contactId])

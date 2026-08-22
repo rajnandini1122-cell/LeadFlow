@@ -21,6 +21,7 @@ import { UsersModule } from './modules/users/users.module';
 import { OrganizationsModule } from './modules/organizations/organizations.module';
 import { LeadsModule } from './modules/leads/leads.module';
 import { ContactsModule } from './modules/contacts/contacts.module';
+import { OmnichannelModule } from './modules/omnichannel/omnichannel.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { ReportsModule } from './modules/reports/reports.module';
 import { SubscriptionsModule } from './modules/subscriptions/subscriptions.module';
@@ -97,6 +98,7 @@ import { HealthModule } from './modules/health/health.module';
     InvitationsModule,
     LeadsModule,
     ContactsModule,
+    OmnichannelModule,
     FollowUpsModule,
     DashboardModule,
     ReportsModule,
