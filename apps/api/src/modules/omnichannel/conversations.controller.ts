@@ -16,6 +16,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { ConversationLinkingService } from './conversation-linking.service';
 import { ConversationReviewService } from './conversation-review.service';
+import { OutboundMessagingService } from './outbound-messaging.service';
 import {
   ArchiveConversationDto,
   AssignConversationDto,
@@ -23,6 +24,7 @@ import {
   LinkConversationDto,
   ListConversationsDto,
   ReviewQueueDto,
+  SendMessageDto,
 } from './dto/conversations.dto';
 
 /**
@@ -49,6 +51,7 @@ export class ConversationsController {
   constructor(
     private readonly linking: ConversationLinkingService,
     private readonly review: ConversationReviewService,
+    private readonly outbound: OutboundMessagingService,
   ) {}
 
   @Get()
@@ -113,6 +116,34 @@ export class ConversationsController {
     @CurrentUser() principal: TenantPrincipal,
   ) {
     return this.review.detail(id, principal);
+  }
+
+  /**
+   * Reply to a customer.
+   *
+   * A message belongs to a conversation, so it lives under one — not under a
+   * provider-shaped route. Nothing about WhatsApp appears in this signature,
+   * and nothing needs to: the conversation already knows its channel.
+   *
+   * Permission is `lead.update`, the same as attaching a conversation to a
+   * lead. Replying to a customer changes what the lead shows and is an action
+   * on the pipeline, so it is not a read; inventing a separate messaging
+   * permission would create a second thing to keep in step with lead access.
+   */
+  @Post(':id/messages')
+  @HttpCode(HttpStatus.CREATED)
+  @RequirePermissions(PERMISSIONS.LEAD_UPDATE)
+  @ApiOperation({ summary: 'Send a reply on this conversation' })
+  async sendMessage(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: SendMessageDto,
+    @CurrentUser() principal: TenantPrincipal,
+  ) {
+    return this.outbound.send(
+      id,
+      { content: dto.content, idempotencyKey: dto.idempotencyKey },
+      principal,
+    );
   }
 
   @Post(':id/link')

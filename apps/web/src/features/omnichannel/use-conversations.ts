@@ -60,6 +60,8 @@ export interface CandidateLead {
   lastActivityAt: string | null;
 }
 
+export type DeliveryStatus = 'PENDING' | 'SENT' | 'DELIVERED' | 'READ' | 'FAILED';
+
 export interface ConversationMessage {
   id: string;
   direction: 'INCOMING' | 'OUTGOING';
@@ -67,6 +69,9 @@ export interface ConversationMessage {
   messageType: string;
   content: string | null;
   attachments: unknown;
+  /** Set only for messages we sent. */
+  deliveryStatus?: DeliveryStatus | null;
+  failureReason?: string | null;
   sentAt: string | null;
   createdAt: string;
 }
@@ -93,8 +98,16 @@ export interface ConversationDetail {
   owner: { id: string; fullName: string } | null;
   lead: { id: string; leadNumber: string; status: string } | null;
   integration: { id: string; displayName: string | null; status: string } | null;
-  /** False in this phase everywhere. The UI must not offer what cannot send. */
+  /**
+   * Calculated by the API. The composer renders only when this is true — the
+   * client never decides for itself, because the rules depend on integration
+   * state and on WhatsApp's 24-hour window.
+   */
   canSend: boolean;
+  /** Why not. Safe to show verbatim. */
+  sendDisabledReason?: string | null;
+  /** When the free-form reply window closes, if one applies. */
+  windowExpiresAt?: string | null;
   candidateLeads: CandidateLead[];
   messages: ConversationMessage[];
 }
@@ -247,6 +260,27 @@ export function useSetIntegrationEnabled(): UseMutationResult<
     mutationFn: ({ id, enabled }) => apiPatch(`/channel-integrations/${id}`, { enabled }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['channel-integrations'] });
+    },
+  });
+}
+
+/**
+ * Send a reply.
+ *
+ * The idempotency key is generated once per composed message and reused if the
+ * request is retried, so a double click or a flaky connection cannot deliver a
+ * customer two copies. The server enforces it; this is the client half.
+ */
+export function useSendMessage(
+  conversationId: string,
+): UseMutationResult<ConversationMessage, Error, { content: string; idempotencyKey: string }> {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (input) =>
+      apiPost<ConversationMessage>(`/conversations/${conversationId}/messages`, input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['conversations'] });
     },
   });
 }

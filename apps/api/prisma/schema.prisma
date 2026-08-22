@@ -275,6 +275,7 @@ model User {
 
   connectedIntegrations ChannelIntegration[]
   ownedConversations    Conversation[]
+  sentMessages          Message[]          @relation("MessageSender")
   archivedConversations Conversation[]     @relation("ConversationArchiver")
 
   @@index([status])
@@ -1095,6 +1096,24 @@ enum MessageSenderType {
   @@map("message_sender_type")
 }
 
+/// How far an OUTBOUND message has got.
+///
+/// Inbound messages have no meaningful status — they arrived — so the column is
+/// nullable and only ever set for messages we sent.
+enum MessageDeliveryStatus {
+  /// Claimed locally, not yet accepted by the provider. A message in this
+  /// state must never be shown to a salesperson as delivered.
+  PENDING
+  /// The provider accepted it and returned an id.
+  SENT
+  DELIVERED
+  READ
+  /// The provider refused it, or a status webhook reported a failure.
+  FAILED
+
+  @@map("message_delivery_status")
+}
+
 enum MessageType {
   TEXT
   IMAGE
@@ -1117,10 +1136,29 @@ model Message {
   conversationId String      @map("conversation_id") @db.Uuid
   channel        ChannelType
 
-  externalMessageId String            @map("external_message_id") @db.VarChar(200)
+  /// The provider's id.
+  ///
+  /// Nullable as of the outbound work: a message we are sending is written
+  /// BEFORE the provider is called, so that a crash between the call and the
+  /// write cannot lose it. It has no provider id until Meta accepts it.
+  externalMessageId String?           @map("external_message_id") @db.VarChar(200)
   direction         MessageDirection
   senderType        MessageSenderType @map("sender_type")
   messageType       MessageType       @default(TEXT) @map("message_type")
+
+  /// Set only for outbound messages. NULL for anything a customer sent.
+  deliveryStatus MessageDeliveryStatus? @map("delivery_status")
+  /// A sanitised, user-facing reason. Never a raw provider body.
+  failureReason  String?                @map("failure_reason") @db.VarChar(300)
+  /// Who typed it. NULL for inbound, and for anything the system sent.
+  sentById       String?                @map("sent_by") @db.Uuid
+
+  /// Client-supplied key that makes a send request repeatable.
+  ///
+  /// The row is written with this key BEFORE the provider is called, so a
+  /// retried request finds the existing attempt instead of sending a second
+  /// message to a customer. Unique per organization.
+  idempotencyKey String? @map("idempotency_key") @db.VarChar(120)
 
   /// Unbounded because providers do not agree on a limit, and truncating a
   /// customer's requirement is worse than storing a long row.
@@ -1134,12 +1172,21 @@ model Message {
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sentBy       User?        @relation("MessageSender", fields: [sentById], references: [id], onDelete: SetNull)
 
   /// The webhook replay guard. Providers redeliver on any non-2xx, so the same
   /// message WILL arrive twice; this turns the second delivery into a no-op
   /// instead of a duplicate in the timeline.
+  ///
+  /// NULLs are distinct in Postgres, so the many outbound messages that have no
+  /// provider id yet do not collide with each other.
   @@unique([organizationId, channel, externalMessageId])
+  /// The send-once guarantee. A retried request collides here rather than
+  /// reaching Meta a second time.
+  @@unique([organizationId, idempotencyKey])
   @@index([organizationId, conversationId, createdAt(sort: Desc)])
+  /// Status webhooks arrive keyed on the provider id alone.
+  @@index([organizationId, externalMessageId])
   @@map("messages")
 }
 

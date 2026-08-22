@@ -121,13 +121,66 @@ describe('parseWebhook', () => {
   });
 
   describe('events that are not messages', () => {
-    it('ignores delivery and read receipts', () => {
+    /*
+     * CHANGED IN PHASE E2.
+     *
+     * These used to be counted as ignored, because nothing was sent and so
+     * nothing could be acknowledged. They are now parsed into `statuses` and
+     * applied to the outbound message they refer to — while still never
+     * becoming a message of their own.
+     */
+    it('reads delivery and read receipts as statuses, not as messages', () => {
       const result = parseWebhook(
-        webhook([], { statuses: [{ id: 'wamid.1', status: 'delivered' }] }),
+        webhook([], {
+          statuses: [{ id: 'wamid.1', status: 'delivered', timestamp: '1756000000' }],
+        }),
       );
 
       expect(result.messages).toHaveLength(0);
-      expect(result.ignored).toBe(1);
+      expect(result.statuses).toHaveLength(1);
+      expect(result.statuses[0]).toMatchObject({
+        providerMessageId: 'wamid.1',
+        status: 'delivered',
+      });
+    });
+
+    it('carries the error code on a failed receipt', () => {
+      const result = parseWebhook(
+        webhook([], {
+          statuses: [
+            {
+              id: 'wamid.2',
+              status: 'failed',
+              timestamp: '1756000000',
+              errors: [{ code: 131026 }],
+            },
+          ],
+        }),
+      );
+
+      expect(result.statuses[0]?.errorCode).toBe(131026);
+    });
+
+    it('drops a receipt with no id or no status', () => {
+      const result = parseWebhook(
+        webhook([], { statuses: [{ status: 'delivered' }, { id: 'wamid.3' }] }),
+      );
+
+      expect(result.statuses).toHaveLength(0);
+      expect(result.malformed).toBe(2);
+    });
+
+    it('reads statuses and messages from the same delivery', () => {
+      const result = parseWebhook(
+        webhook([textMessage()], {
+          statuses: [{ id: 'wamid.4', status: 'read', timestamp: '1756000000' }],
+        }),
+      );
+
+      // One request can carry both, and a receipt must never be confused with
+      // something a customer wrote.
+      expect(result.messages).toHaveLength(1);
+      expect(result.statuses).toHaveLength(1);
     });
 
     it('ignores non-message fields such as account updates', () => {

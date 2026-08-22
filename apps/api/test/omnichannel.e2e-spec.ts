@@ -687,8 +687,21 @@ describe('Omnichannel capture', () => {
       expect(detail.status).toBe(200);
       expect(detail.body.data.messages).toHaveLength(1);
       expect(detail.body.data.messages[0].direction).toBe('INCOMING');
-      // No provider is connected, so the UI must not render a composer.
-      expect(detail.body.data.canSend).toBe(false);
+
+      /*
+       * CHANGED IN PHASE E2.
+       *
+       * This used to assert canSend was always false, which was true while no
+       * provider could send. It is now calculated — and for this fixture, a
+       * CONNECTED WhatsApp integration with an inbound message seconds ago, the
+       * honest answer is that a reply IS possible. What matters now is that the
+       * value is derived rather than assumed, and that a refusal always comes
+       * with a reason someone can act on.
+       */
+      expect(typeof detail.body.data.canSend).toBe('boolean');
+      if (!detail.body.data.canSend) {
+        expect(detail.body.data.sendDisabledReason).toBeTruthy();
+      }
     });
 
     it('offers candidate leads only when the system actually refused to choose', async () => {

@@ -30,8 +30,27 @@ export interface WhatsAppInboundMessage {
   businessAccountId?: string | undefined;
 }
 
+/**
+ * A delivery receipt for a message WE sent.
+ *
+ * Deliberately a separate type from an inbound message. A status event carries
+ * no content and no sender, and treating the two alike is how a receipt ends up
+ * stored as a blank message on a customer's timeline.
+ */
+export interface WhatsAppStatusEvent {
+  /** The provider id of the outbound message this refers to. */
+  providerMessageId: string;
+  /** Meta's raw status string. Mapped by message-status.ts, not here. */
+  status: string;
+  timestamp: Date;
+  phoneNumberId: string;
+  /** Meta's numeric error code, when the status is a failure. */
+  errorCode?: number | undefined;
+}
+
 export interface ParsedWebhook {
   messages: WhatsAppInboundMessage[];
+  statuses: WhatsAppStatusEvent[];
   /** Events understood but not acted on — delivery receipts, reactions. */
   ignored: number;
   /** Events that could not be read at all. Counted, never guessed at. */
@@ -94,7 +113,7 @@ function parseTimestamp(value: unknown): Date {
  * element cannot discard the rest.
  */
 export function parseWebhook(body: unknown): ParsedWebhook {
-  const result: ParsedWebhook = { messages: [], ignored: 0, malformed: 0 };
+  const result: ParsedWebhook = { messages: [], statuses: [], ignored: 0, malformed: 0 };
 
   const root = asRecord(body);
   if (!root) {
@@ -153,14 +172,20 @@ export function parseWebhook(body: unknown): ParsedWebhook {
         if (waId && name) names.set(waId, name);
       }
 
-      const messages = asArray(value['messages']);
-
-      // Delivery and read receipts share this shape but carry `statuses`
-      // instead. Understood, and deliberately not acted on in this phase.
-      if (messages.length === 0) {
-        if (asArray(value['statuses']).length > 0) result.ignored += 1;
-        continue;
+      /*
+       * Delivery receipts for messages we sent.
+       *
+       * Read first, and independently of messages: one delivery can carry both,
+       * and a receipt must never be confused with something a customer wrote.
+       */
+      for (const statusValue of asArray(value['statuses'])) {
+        const parsed = parseStatus(statusValue, phoneNumberId);
+        if (parsed) result.statuses.push(parsed);
+        else result.malformed += 1;
       }
+
+      const messages = asArray(value['messages']);
+      if (messages.length === 0) continue;
 
       for (const messageValue of messages) {
         const parsed = parseMessage(messageValue, {
@@ -176,6 +201,29 @@ export function parseWebhook(body: unknown): ParsedWebhook {
   }
 
   return result;
+}
+
+function parseStatus(raw: unknown, phoneNumberId: string): WhatsAppStatusEvent | null {
+  const status = asRecord(raw);
+  if (!status) return null;
+
+  const providerMessageId = asString(status['id']);
+  const value = asString(status['status']);
+
+  // Without both, there is nothing to update and nothing to update it to.
+  if (!providerMessageId || !value) return null;
+
+  // Meta nests the failure reason in an errors array.
+  const firstError = asRecord(asArray(status['errors'])[0]);
+  const errorCode = typeof firstError?.['code'] === 'number' ? firstError['code'] : undefined;
+
+  return {
+    providerMessageId,
+    status: value,
+    timestamp: parseTimestamp(status['timestamp']),
+    phoneNumberId,
+    ...(errorCode !== undefined ? { errorCode } : {}),
+  };
 }
 
 function parseMessage(

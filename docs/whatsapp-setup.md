@@ -1,8 +1,9 @@
 # WhatsApp Cloud API — setup and operation
 
-Inbound only. LeadFlow receives WhatsApp messages, matches them to contacts and
-leads, and shows them in the inbox. Replying from LeadFlow is not implemented —
-`canSend` is `false` everywhere and no UI offers it.
+LeadFlow receives WhatsApp messages, matches them to contacts and leads, shows
+them in the inbox, and — within WhatsApp's 24-hour customer service window —
+sends text replies back. Templates, media and automated replies are not
+implemented; see section 9.
 
 Every value in this document is a placeholder. Do not commit real credentials,
 and do not paste an access token into a ticket, a chat message or a log.
@@ -180,3 +181,85 @@ message appears where it belongs in the conversation.
 Logs record the integration id, the organization id, the provider message id
 and an error category. They never record access tokens, the app secret, the
 verify token, authorization headers or message bodies.
+
+---
+
+## 9. Sending replies
+
+Added in Phase E2. Inbound and outbound share one conversation, one message
+table and one lead — there is no separate outbound store.
+
+### When a reply is possible
+
+The API calculates it; the UI renders a composer only when told to. All of it
+is answered from the database, so opening a conversation never waits on Meta:
+
+| Condition | Otherwise |
+|---|---|
+| Channel is WhatsApp | Instagram and Facebook stay read-only |
+| Caller holds `lead.update` and can see the conversation | "You do not have permission to reply" |
+| Integration exists, `CONNECTED`, enabled | Points at settings |
+| Customer wrote within the last 24 hours | Explains the template requirement |
+
+**The 24-hour customer service window** is WhatsApp's rule, not ours. Free-form
+replies are permitted only within 24 hours of the customer's most recent
+message; after that Meta requires an approved template, which LeadFlow cannot
+send yet. The window is computed from the last inbound message and the composer
+disappears when it closes.
+
+### Sending
+
+```
+POST /api/v1/conversations/:id/messages
+{ "content": "…", "idempotencyKey": "<uuid>" }
+```
+
+Text only. Maximum 4096 characters, matching Meta's limit.
+
+### Idempotency, and the tradeoff
+
+The message row is written **before** Meta is called, carrying the client's
+idempotency key under a unique index. A repeated request finds that row and
+returns it rather than sending again — which holds across application instances,
+because the guarantee lives in the database rather than in memory.
+
+This ordering is deliberate. If the process dies between Meta accepting a
+message and us recording it, the claim still exists and the retry stops. The
+cost is a row that may say `FAILED` for a message the customer actually
+received; the alternative cost is sending a second copy. **A duplicate reaches
+the customer. A stale status only reaches the salesperson**, who can see the
+conversation and check.
+
+The client generates one key per composed message and reuses it on retry,
+regenerating only after a success.
+
+### Statuses
+
+`PENDING → SENT → DELIVERED → READ`, with `FAILED` reachable from `PENDING` or
+`SENT`. Nothing ever moves backwards: Meta gives no ordering guarantee, and a
+late `delivered` after a `read` is ignored rather than applied. `FAILED` cannot
+overwrite `DELIVERED` or `READ` — the customer demonstrably received those.
+
+Status events arrive on the same webhook as inbound messages, get the same
+signature check and the same tenant resolution, and only ever update an existing
+outbound message. They never create a message, a conversation or a lead.
+
+### Failures
+
+Meta's error bodies echo request parameters and can contain the token, so none
+of them reach the user. Failures are translated into one sentence someone can
+act on, and the detail stays in the server log as a status and an error code.
+
+A failure the provider explicitly rejected is a `409`. An **uncertain** one — a
+timeout, or an acceptance with no message id — is a `502`, and the message row
+is kept on purpose: it is the only thing telling the salesperson to check the
+conversation before resending.
+
+Nothing retries automatically. An automatic retry after an uncertain failure is
+how a customer receives the same message twice.
+
+### Not in this phase
+
+Templates, media, interactive messages, reactions, typing indicators, read
+receipts sent by us, and any form of automated or AI reply. `canSend` is false
+for Instagram and Facebook.

@@ -109,6 +109,25 @@ export class SetIntegrationEnabledDto {
   enabled!: boolean;
 }
 
+export class SendMessageDto {
+  @ApiProperty({ description: 'The reply text.', maxLength: 4096 })
+  @IsString()
+  @MaxLength(4096)
+  content!: string;
+
+  /**
+   * Makes the request repeatable.
+   *
+   * The client generates one per composed message and reuses it on retry, so a
+   * double click, a browser retry or a network timeout cannot send a customer
+   * two copies of the same reply.
+   */
+  @ApiProperty({ description: 'Client-generated key, reused on retry.' })
+  @IsString()
+  @MaxLength(120)
+  idempotencyKey!: string;
+}
+
 export class ConnectWhatsAppDto {
   @ApiProperty({ description: "Meta's id for the business phone number." })
   @IsString()

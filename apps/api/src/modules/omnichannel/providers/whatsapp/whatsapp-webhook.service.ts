@@ -3,7 +3,13 @@ import { AppConfig } from '../../../../common/config/config.module';
 import { TenantContextService } from '../../../../common/tenancy/tenant-context.service';
 import { IngestionService } from '../../ingestion.service';
 import { WhatsAppIntegrationRepository } from './whatsapp-integration.repository';
-import { parseWebhook, type WhatsAppInboundMessage } from './whatsapp-normalizer';
+import { OmnichannelRepository } from '../../omnichannel.repository';
+import { nextDeliveryStatus, parseProviderStatus } from '../../message-status';
+import {
+  parseWebhook,
+  type WhatsAppInboundMessage,
+  type WhatsAppStatusEvent,
+} from './whatsapp-normalizer';
 import { verifySubscription, verifyWebhookSignature } from './whatsapp-signature';
 
 /**
@@ -36,6 +42,7 @@ export class WhatsAppWebhookService {
     private readonly repository: WhatsAppIntegrationRepository,
     private readonly ingestion: IngestionService,
     private readonly tenantContext: TenantContextService,
+    private readonly conversations: OmnichannelRepository,
   ) {}
 
   /** Meta's subscription handshake. Returns the challenge, or null to refuse. */
@@ -108,7 +115,75 @@ export class WhatsAppWebhookService {
       }
     }
 
+    /*
+     * Delivery receipts, after the messages.
+     *
+     * These only ever UPDATE an outbound message we already sent. They never
+     * create a message, never create a conversation, and never touch a lead —
+     * a receipt is not correspondence.
+     */
+    for (const status of parsed.statuses) {
+      try {
+        await this.applyStatus(status);
+      } catch (error) {
+        this.logger.error(
+          `Failed to apply WhatsApp status for ${status.providerMessageId}: ${
+            error instanceof Error ? error.message : 'unknown error'
+          }`,
+        );
+      }
+    }
+
     return { status: 'PROCESSED', ingested, skipped: skipped + parsed.ignored };
+  }
+
+  /**
+   * Apply one delivery receipt.
+   *
+   * Resolved to a tenant exactly as an inbound message is — by phone number id,
+   * through the global unique index — and then applied only to an OUTGOING
+   * message inside that tenant. A status event for a provider id we do not
+   * recognise is ignored rather than acted on.
+   */
+  private async applyStatus(event: WhatsAppStatusEvent): Promise<void> {
+    const incoming = parseProviderStatus(event.status);
+    // `accepted` and `deleted` mean neither progress nor failure.
+    if (!incoming) return;
+
+    const integration = await this.repository.findByPhoneNumberId(event.phoneNumberId);
+    if (!integration) return;
+
+    // Disabled tenants still get their receipts applied: the message was
+    // genuinely sent while the channel was on, and leaving it stuck at SENT
+    // would misreport what happened to the customer.
+    await this.tenantContext.runForOrganization(
+      integration.organizationId,
+      `whatsapp: apply delivery status ${event.status}`,
+      async () => {
+        const message = await this.conversations.findOutboundByProviderId(
+          event.providerMessageId,
+        );
+        if (!message) return;
+
+        const next = nextDeliveryStatus(message.deliveryStatus, incoming);
+        // Duplicate, or a late event that would move the status backwards.
+        if (!next) return;
+
+        await this.conversations.updateDeliveryStatus({
+          id: message.id,
+          status: next,
+          ...(next === 'FAILED'
+            ? {
+                failureReason:
+                  message.failureReason ??
+                  `WhatsApp could not deliver this message${
+                    event.errorCode ? ` (code ${event.errorCode})` : ''
+                  }.`,
+              }
+            : {}),
+        });
+      },
+    );
   }
 
   /**

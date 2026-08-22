@@ -1,21 +1,25 @@
-import { useEffect } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { ErrorNotice, SkeletonRows } from '../../components/ui';
+import { ApiError } from '../../lib/api-client';
 import { formatDateTime } from '../../lib/format';
 import {
   CHANNEL_PRESENTATION,
   LINK_STATE_PRESENTATION,
   useConversation,
+  useSendMessage,
+  type ConversationDetail,
+  type DeliveryStatus,
 } from './use-conversations';
 
 /**
- * A conversation, read-only.
+ * A conversation, with a composer where replying is actually possible.
  *
- * Read-only is a decision, not a gap. No provider is connected yet, so a reply
- * box would be a control that silently does nothing — and a salesperson who
- * believes they answered a customer is worse off than one who knows they have
- * not. The composer appears when `canSend` is true, which no channel reports
- * in this phase.
+ * `canSend` is calculated by the API and treated as authoritative here. The
+ * client never decides for itself: the rules depend on integration state and on
+ * WhatsApp's 24-hour window, and a composer over a conversation that cannot
+ * send lets a salesperson type a reply and watch it fail while a customer
+ * waits.
  */
 export function ConversationDrawer({
   conversationId,
@@ -145,9 +149,15 @@ export function ConversationDrawer({
                           {message.messageType.toLowerCase()} attachment
                         </p>
                       )}
-                      <p className="mt-1 text-[11px] opacity-60">
+                      <p className="mt-1 flex items-center gap-1.5 text-[11px] opacity-60">
                         {formatDateTime(message.sentAt ?? message.createdAt)}
+                        {!inbound && message.deliveryStatus && (
+                          <span>· {DELIVERY_LABELS[message.deliveryStatus]}</span>
+                        )}
                       </p>
+                      {!inbound && message.deliveryStatus === 'FAILED' && message.failureReason && (
+                        <p className="mt-1 text-[11px] text-red-200">{message.failureReason}</p>
+                      )}
                     </div>
                   </li>
                 );
@@ -156,17 +166,126 @@ export function ConversationDrawer({
           )}
         </div>
 
-        {/*
-          No composer. `canSend` is false for every channel in this phase, and
-          rendering a disabled input would still suggest replying is a thing
-          that happens here.
-        */}
-        {data && !data.canSend && (
-          <p className="border-t border-slate-100 px-5 py-3 text-xs text-slate-500">
-            Replying from LeadFlow is not available yet — this is the stored history.
-          </p>
-        )}
+        {data && (data.canSend ? <Composer conversation={data} /> : <ReplyBlocked conversation={data} />)}
       </aside>
     </div>
+  );
+}
+
+/**
+ * What each delivery state is called.
+ *
+ * "Sending" rather than "Sent" for PENDING, deliberately: a message that has
+ * not been accepted by WhatsApp has not reached anyone, and showing it as sent
+ * would have a salesperson believe the customer has it.
+ */
+const DELIVERY_LABELS: Record<DeliveryStatus, string> = {
+  PENDING: 'Sending…',
+  SENT: 'Sent',
+  DELIVERED: 'Delivered',
+  READ: 'Read',
+  FAILED: 'Not delivered',
+};
+
+/**
+ * The reply box.
+ *
+ * No optimistic bubble. The message appears once the server confirms WhatsApp
+ * accepted it — an optimistic one would show as sent for the moment before a
+ * failure came back, which is precisely the moment a salesperson decides they
+ * have answered and moves on.
+ */
+function Composer({ conversation }: { conversation: ConversationDetail }): React.JSX.Element {
+  const send = useSendMessage(conversation.id);
+  const [text, setText] = useState('');
+  const [failure, setFailure] = useState<string | null>(null);
+
+  /*
+   * One key per composed message.
+   *
+   * Regenerated only after a success, so every retry of the SAME message —
+   * a double click, a re-submit after a timeout — carries the key the server
+   * already knows and cannot produce a second delivery.
+   */
+  const idempotencyKey = useRef(crypto.randomUUID());
+
+  const submit = (event: FormEvent): void => {
+    event.preventDefault();
+    const content = text.trim();
+    if (!content || send.isPending) return;
+
+    setFailure(null);
+    send.mutate(
+      { content, idempotencyKey: idempotencyKey.current },
+      {
+        onSuccess: () => {
+          setText('');
+          idempotencyKey.current = crypto.randomUUID();
+        },
+        onError: (error) => {
+          setFailure(
+            error instanceof ApiError
+              ? error.message
+              : 'Could not send the message. Please try again.',
+          );
+        },
+      },
+    );
+  };
+
+  return (
+    <form onSubmit={submit} className="border-t border-slate-100 p-4">
+      {failure && (
+        <p role="alert" className="mb-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-800">
+          {failure}
+        </p>
+      )}
+
+      <div className="flex items-end gap-2">
+        <label className="sr-only" htmlFor="composer">
+          Reply
+        </label>
+        <textarea
+          id="composer"
+          rows={2}
+          value={text}
+          maxLength={4096}
+          disabled={send.isPending}
+          onChange={(event) => setText(event.target.value)}
+          onKeyDown={(event) => {
+            // Enter sends, Shift+Enter breaks the line — what people expect
+            // from a messaging box.
+            if (event.key === 'Enter' && !event.shiftKey) {
+              event.preventDefault();
+              submit(event);
+            }
+          }}
+          placeholder="Write a reply…"
+          className="min-h-[2.5rem] flex-1 resize-y rounded-lg border border-slate-200 px-3 py-2 text-sm"
+        />
+        <button
+          type="submit"
+          disabled={send.isPending || !text.trim()}
+          className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:opacity-50"
+        >
+          {send.isPending ? 'Sending…' : 'Send'}
+        </button>
+      </div>
+
+      {conversation.windowExpiresAt && (
+        <p className="mt-1.5 text-xs text-slate-500">
+          WhatsApp allows free replies until {formatDateTime(conversation.windowExpiresAt)}.
+        </p>
+      )}
+    </form>
+  );
+}
+
+/** Why there is no composer. The server's words, shown verbatim. */
+function ReplyBlocked({ conversation }: { conversation: ConversationDetail }): React.JSX.Element {
+  return (
+    <p className="border-t border-slate-100 px-5 py-3 text-xs text-pretty text-slate-500">
+      {conversation.sendDisabledReason ?? 'Replying is not available for this conversation.'}
+    </p>
   );
 }

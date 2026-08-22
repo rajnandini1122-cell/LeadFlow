@@ -1,11 +1,13 @@
 import { Injectable } from '@nestjs/common';
-import { ERROR_CODES } from '@leadflow/api-types';
+import { ERROR_CODES, PERMISSIONS } from '@leadflow/api-types';
+import type { ChannelType } from '../../generated/prisma/enums';
 import { AppException } from '../../common/errors/app.exception';
 import { AuditRepository } from '../../common/audit/audit.repository';
 import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
 import { resolveLeadVisibility } from '../leads/lead-visibility';
 import { OmnichannelRepository } from './omnichannel.repository';
 import { conversationScope, conversationScopeFilter } from './conversation-visibility';
+import { evaluateSendCapability } from './send-capability';
 import { selectLead } from './lead-selection';
 
 /**
@@ -178,11 +180,14 @@ export class ConversationReviewService {
         : null,
       integration: conversation.integration,
       /*
-       * No sending in this phase, and the UI must not offer it. Reported as a
-       * capability rather than assumed, so a "Reply" button can never appear
-       * over a channel that cannot actually deliver it.
+       * Calculated, never assumed.
+       *
+       * The UI renders a composer only when this is true, so a wrong answer
+       * lets a salesperson type a reply and watch it fail — losing the customer
+       * to the delay. The reason is written to be shown verbatim and names no
+       * token, secret or internal state.
        */
-      canSend: false,
+      ...(await this.sendCapability(conversation, principal)),
       candidateLeads: candidates,
       messages: conversation.messages.map((message) => ({
         id: message.id,
@@ -191,10 +196,43 @@ export class ConversationReviewService {
         messageType: message.messageType,
         content: message.content,
         attachments: message.attachments,
+        deliveryStatus: message.deliveryStatus,
+        failureReason: message.failureReason,
         sentAt: message.sentAt?.toISOString() ?? null,
         createdAt: message.createdAt.toISOString(),
       })),
     };
+  }
+
+  /**
+   * Whether this caller can reply, and if not, why.
+   *
+   * Database-driven throughout: the integration state is read from the row we
+   * already store and the 24-hour window from the last inbound message. Asking
+   * Meta would make opening a conversation depend on their availability, and
+   * would put a provider call behind a screen a salesperson opens constantly.
+   */
+  private async sendCapability(
+    conversation: { id: string; channel: ChannelType; ownerId: string | null; leadId: string | null },
+    principal: TenantPrincipal,
+  ) {
+    const [integration, lastInboundAt] = await Promise.all([
+      this.repository.findIntegrationForChannel(conversation.channel),
+      this.repository.lastInboundAt(conversation.id),
+    ]);
+
+    // Reading a conversation and replying to it are different permissions, so
+    // someone may legitimately see this screen with no composer on it.
+    const mayReply = principal.permissions.includes(PERMISSIONS.LEAD_UPDATE);
+
+    return evaluateSendCapability({
+      channel: conversation.channel,
+      integration: integration
+        ? { status: integration.status, enabled: integration.enabled }
+        : null,
+      lastInboundAt,
+      mayReply,
+    });
   }
 
   /**

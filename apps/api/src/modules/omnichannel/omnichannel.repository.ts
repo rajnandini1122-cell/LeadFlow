@@ -1,7 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService, type PrismaTransaction } from '../../common/prisma/prisma.service';
 import { TenantContextService } from '../../common/tenancy/tenant-context.service';
-import type { ChannelType, MessageType } from '../../generated/prisma/enums';
+import type {
+  ChannelType,
+  MessageDeliveryStatus,
+  MessageType,
+} from '../../generated/prisma/enums';
 import type { LeadCandidate } from './lead-selection';
 
 /**
@@ -648,6 +652,176 @@ export class OmnichannelRepository {
       select: { userId: true, user: { select: { id: true, fullName: true } } },
     });
     return membership?.user ?? null;
+  }
+
+  // --- outbound -------------------------------------------------------------
+
+  /** An earlier attempt with this key, if the caller has already sent it. */
+  async findMessageByIdempotencyKey(idempotencyKey: string) {
+    return this.prisma.client.message.findFirst({ where: { idempotencyKey } });
+  }
+
+  /** The fields the send path needs to authorize and address a reply. */
+  async findConversationForSend(id: string) {
+    return this.prisma.client.conversation.findFirst({
+      where: { id },
+      select: { id: true, channel: true, ownerId: true, leadId: true, contactId: true },
+    });
+  }
+
+  async findIntegrationForChannel(channel: ChannelType) {
+    return this.prisma.client.channelIntegration.findFirst({
+      where: { channel },
+      select: {
+        id: true,
+        status: true,
+        enabled: true,
+        providerAccountId: true,
+        // The one place this is loaded. It goes straight to the provider
+        // adapter, is decrypted there, and never travels further.
+        encryptedAccessToken: true,
+      },
+    });
+  }
+
+  /**
+   * When the customer last wrote.
+   *
+   * Drives WhatsApp's 24-hour free-form window. Read from stored messages
+   * rather than asked of Meta, so opening the inbox never depends on a
+   * provider call.
+   */
+  async lastInboundAt(conversationId: string): Promise<Date | null> {
+    const latest = await this.prisma.client.message.findFirst({
+      where: { conversationId, direction: 'INCOMING' },
+      orderBy: [{ sentAt: 'desc' as const }, { createdAt: 'desc' as const }],
+      select: { sentAt: true, createdAt: true },
+    });
+
+    if (!latest) return null;
+    return latest.sentAt ?? latest.createdAt;
+  }
+
+  /**
+   * The number to reply to.
+   *
+   * Taken from the channel identity we recorded when the customer wrote, and
+   * falling back to the contact's mobile. Never from the request: a recipient
+   * supplied by the client would let one customer's reply be addressed to
+   * another.
+   */
+  async recipientFor(conversationId: string): Promise<string | null> {
+    const conversation = await this.prisma.client.conversation.findFirst({
+      where: { id: conversationId },
+      select: { channel: true, contactId: true },
+    });
+    if (!conversation) return null;
+
+    const inbound = await this.prisma.client.message.findFirst({
+      where: { conversationId, direction: 'INCOMING' },
+      orderBy: { createdAt: 'desc' as const },
+      select: { conversation: { select: { externalConversationId: true } } },
+    });
+
+    // externalConversationId is "<phoneNumberId>:<wa_id>" for WhatsApp.
+    const external = inbound?.conversation.externalConversationId;
+    const waId = external?.includes(':') ? external.split(':')[1] : undefined;
+    if (waId) return waId;
+
+    if (!conversation.contactId) return null;
+    const contact = await this.prisma.client.contact.findFirst({
+      where: { id: conversation.contactId },
+      select: { mobile: true },
+    });
+
+    return contact?.mobile ?? null;
+  }
+
+  /**
+   * Reserves a row for a message about to be sent.
+   *
+   * Returns null when the idempotency key is already taken — two concurrent
+   * requests, where the unique index decides which one proceeds. That is the
+   * send-once guarantee, and it holds across application instances because it
+   * lives in the database rather than in memory.
+   */
+  async claimOutboundMessage(input: {
+    conversationId: string;
+    channel: ChannelType;
+    content: string;
+    idempotencyKey: string;
+    sentById: string;
+  }) {
+    try {
+      return await this.prisma.client.message.create({
+        data: {
+          organizationId: this.organizationId,
+          conversationId: input.conversationId,
+          channel: input.channel,
+          direction: 'OUTGOING',
+          senderType: 'AGENT',
+          messageType: 'TEXT',
+          content: input.content,
+          // Not SENT. Nothing has reached the customer yet.
+          deliveryStatus: 'PENDING',
+          idempotencyKey: input.idempotencyKey,
+          sentById: input.sentById,
+        },
+      });
+    } catch (error) {
+      // P2002: the unique index on (organization_id, idempotency_key) fired.
+      if ((error as { code?: string }).code === 'P2002') return null;
+      throw error;
+    }
+  }
+
+  async markMessageSent(id: string, providerMessageId: string) {
+    return this.prisma.client.message.update({
+      where: { id },
+      data: {
+        externalMessageId: providerMessageId,
+        deliveryStatus: 'SENT',
+        sentAt: new Date(),
+        failureReason: null,
+      },
+    });
+  }
+
+  async markMessageFailed(id: string, reason: string) {
+    await this.prisma.client.message.update({
+      where: { id },
+      data: { deliveryStatus: 'FAILED', failureReason: reason },
+    });
+  }
+
+  // --- status webhooks ------------------------------------------------------
+
+  /**
+   * The outbound message a status event refers to.
+   *
+   * Looked up inside the tenant the webhook already resolved, so a status
+   * event can never reach another organization's message even if a provider id
+   * were somehow guessed.
+   */
+  async findOutboundByProviderId(providerMessageId: string) {
+    return this.prisma.client.message.findFirst({
+      where: { externalMessageId: providerMessageId, direction: 'OUTGOING' },
+      select: { id: true, deliveryStatus: true, failureReason: true },
+    });
+  }
+
+  async updateDeliveryStatus(input: {
+    id: string;
+    status: MessageDeliveryStatus;
+    failureReason?: string | null;
+  }): Promise<void> {
+    await this.prisma.client.message.update({
+      where: { id: input.id },
+      data: {
+        deliveryStatus: input.status,
+        ...(input.failureReason !== undefined ? { failureReason: input.failureReason } : {}),
+      },
+    });
   }
 
   // --- settings -------------------------------------------------------------

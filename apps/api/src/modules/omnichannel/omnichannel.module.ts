@@ -7,6 +7,8 @@ import { IngestionService } from './ingestion.service';
 import { IntegrationsController } from './integrations.controller';
 import { IntegrationsService } from './integrations.service';
 import { OmnichannelRepository } from './omnichannel.repository';
+import { OutboundMessagingService } from './outbound-messaging.service';
+import { WhatsAppOutboundService } from './providers/whatsapp/whatsapp-outbound.service';
 import { WhatsAppIntegrationRepository } from './providers/whatsapp/whatsapp-integration.repository';
 import { WhatsAppSetupService } from './providers/whatsapp/whatsapp-setup.service';
 import { WhatsAppWebhookController } from './providers/whatsapp/whatsapp-webhook.controller';
@@ -33,6 +35,8 @@ import { WhatsAppWebhookService } from './providers/whatsapp/whatsapp-webhook.se
     WhatsAppIntegrationRepository,
     WhatsAppSetupService,
     WhatsAppWebhookService,
+    WhatsAppOutboundService,
+    OutboundMessagingService,
   ],
   exports: [
     IngestionService,
