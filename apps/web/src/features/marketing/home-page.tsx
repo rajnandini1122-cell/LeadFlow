@@ -4,6 +4,7 @@ import { SectionHeading } from './marketing-layout';
 import { PricingTable } from './pricing-table';
 import { SALES_EMAIL } from './contact-page';
 import { AndroidDownload } from './android-download';
+import { DemoVideo } from './demo-video';
 
 /**
  * The homepage.
@@ -25,6 +26,8 @@ export function HomePage(): React.JSX.Element {
       <Problems />
       <Benefits />
       <FeatureSummary />
+      {/* Below the features, as asked. Renders nothing until a video exists. */}
+      <DemoVideo />
       <HowItWorks />
       <Ownership />
       {/* Renders nothing unless an APK has actually been published. */}
