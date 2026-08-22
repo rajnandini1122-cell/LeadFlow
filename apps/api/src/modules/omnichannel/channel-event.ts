@@ -1,4 +1,5 @@
 import type { ChannelType, MessageType } from '../../generated/prisma/enums';
+import type { MessageAttachment } from './message-attachment';
 
 /**
  * The single shape every provider normalises into.
@@ -31,6 +32,14 @@ export interface NormalizedChannelEvent {
 
   content?: string | undefined;
   messageType?: MessageType | undefined;
+  /**
+   * Media the provider reported, if any.
+   *
+   * References only — an id or a URL. Nothing is downloaded during ingestion:
+   * a webhook must stay fast, and most customer media is never opened by
+   * anybody. See MediaService for retrieval.
+   */
+  attachments?: MessageAttachment[] | undefined;
   timestamp: Date;
 }
 

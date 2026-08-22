@@ -46,7 +46,7 @@ const BASE = {
       senderType: 'CONTACT' as const,
       messageType: 'TEXT',
       content: 'Do you have stock?',
-      attachments: null,
+      attachments: [],
       sentAt: new Date().toISOString(),
       createdAt: new Date().toISOString(),
     },
@@ -198,6 +198,169 @@ describe('Conversation composer', () => {
 
       renderDrawer();
       expect(await screen.findByText(/Facebook.*allows free replies until/i)).toBeInTheDocument();
+    });
+  });
+
+  describe('attachments', () => {
+    beforeEach(() => {
+      mockConversation({ canSend: true, maxTextLength: 4096 });
+    });
+
+    function pick(name = 'quote.jpg', type = 'image/jpeg'): File {
+      return new File([new Uint8Array([0xff, 0xd8, 0xff, 0x00])], name, { type });
+    }
+
+    it('shows the chosen file before it is sent', async () => {
+      const user = userEvent.setup();
+      renderDrawer();
+
+      await user.upload(await screen.findByLabelText(/attach a file/i), pick());
+
+      expect(screen.getByText('quote.jpg')).toBeInTheDocument();
+    });
+
+    it('lets the file be removed again', async () => {
+      const user = userEvent.setup();
+      renderDrawer();
+
+      await user.upload(await screen.findByLabelText(/attach a file/i), pick());
+      await user.click(screen.getByRole('button', { name: /remove quote\.jpg/i }));
+
+      expect(screen.queryByText('quote.jpg')).toBeNull();
+    });
+
+    it('enables Send for a file with no text', async () => {
+      const user = userEvent.setup();
+      renderDrawer();
+
+      // A photo on its own is a complete message.
+      expect(await screen.findByRole('button', { name: 'Send' })).toBeDisabled();
+      await user.upload(screen.getByLabelText(/attach a file/i), pick());
+      expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled();
+    });
+
+    it('sends the file as multipart, with the same idempotency key', async () => {
+      const user = userEvent.setup();
+      vi.spyOn(apiClient, 'apiPost').mockResolvedValue({ id: 'm-2' } as never);
+
+      renderDrawer();
+      await user.upload(await screen.findByLabelText(/attach a file/i), pick());
+      await user.type(screen.getByLabelText('Reply'), 'Here it is.');
+      await user.click(screen.getByRole('button', { name: 'Send' }));
+
+      await waitFor(() => {
+        expect(apiClient.apiPost).toHaveBeenCalledWith(
+          '/conversations/conv-1/messages',
+          expect.any(FormData),
+        );
+      });
+
+      const form = vi.mocked(apiClient.apiPost).mock.calls[0]?.[1] as FormData;
+      expect(form.get('idempotencyKey')).toBe('fixed-key');
+      expect(form.get('content')).toBe('Here it is.');
+      expect((form.get('file') as File).name).toBe('quote.jpg');
+    });
+
+    it('still sends plain JSON when there is no file', async () => {
+      const user = userEvent.setup();
+      vi.spyOn(apiClient, 'apiPost').mockResolvedValue({ id: 'm-2' } as never);
+
+      renderDrawer();
+      await user.type(await screen.findByLabelText('Reply'), 'Text only.');
+      await user.click(screen.getByRole('button', { name: 'Send' }));
+
+      await waitFor(() => {
+        // The existing path is byte-for-byte what it was before media existed.
+        expect(apiClient.apiPost).toHaveBeenCalledWith('/conversations/conv-1/messages', {
+          content: 'Text only.',
+          idempotencyKey: 'fixed-key',
+        });
+      });
+    });
+
+    it('reports a rejected file instead of pretending it was sent', async () => {
+      const user = userEvent.setup();
+      vi.spyOn(apiClient, 'apiPost').mockRejectedValue(
+        new apiClient.ApiError('VALIDATION_ERROR', 'That file type cannot be sent.', 400),
+      );
+
+      renderDrawer();
+      await user.upload(await screen.findByLabelText(/attach a file/i), pick('bad.exe'));
+      await user.click(screen.getByRole('button', { name: 'Send' }));
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(/cannot be sent/i);
+      // The file stays selected so it is not silently lost.
+      expect(screen.getByText('bad.exe')).toBeInTheDocument();
+    });
+  });
+
+  describe('rendering received attachments', () => {
+    function withAttachment(attachment: Record<string, unknown>): void {
+      mockConversation({
+        canSend: true,
+        messages: [
+          {
+            ...BASE.messages[0],
+            id: 'm-att',
+            content: null,
+            messageType: 'IMAGE',
+            attachments: [{ index: 0, mimeType: null, filename: null, sizeBytes: null, retrievable: true, ...attachment }],
+          },
+        ],
+      });
+    }
+
+    it('renders an image through our own authenticated endpoint', async () => {
+      withAttachment({ type: 'IMAGE', filename: 'photo.jpg' });
+      renderDrawer();
+
+      const image = await screen.findByAltText('photo.jpg');
+      // Never a provider link — those are capability URLs that also expire.
+      expect(image).toHaveAttribute(
+        'src',
+        '/api/v1/conversations/conv-1/messages/m-att/attachments/0',
+      );
+    });
+
+    it('offers a download for a document rather than a fake preview', async () => {
+      withAttachment({ type: 'DOCUMENT', filename: 'purchase-order.pdf' });
+      renderDrawer();
+
+      const link = await screen.findByRole('link', { name: /purchase-order\.pdf/i });
+      expect(link).toHaveAttribute(
+        'href',
+        '/api/v1/conversations/conv-1/messages/m-att/attachments/0',
+      );
+    });
+
+    it.each(['VIDEO', 'AUDIO', 'OTHER'])(
+      'offers a download for %s rather than a player it may not decode',
+      async (type) => {
+        withAttachment({ type });
+        renderDrawer();
+
+        // Named by its type, and scoped — the drawer header also has a link to
+        // the linked lead, so a bare role query would match that instead.
+        const link = await screen.findByRole('link', {
+          name: new RegExp(`${type.toLowerCase()} attachment`, 'i'),
+        });
+        expect(link).toHaveAttribute(
+          'href',
+          '/api/v1/conversations/conv-1/messages/m-att/attachments/0',
+        );
+      },
+    );
+
+    it('says so when an attachment can no longer be fetched', async () => {
+      withAttachment({ type: 'IMAGE', retrievable: false, filename: 'gone.jpg' });
+      renderDrawer();
+
+      // Honest about it rather than a broken image icon.
+      expect(await screen.findByText(/no longer available/i)).toBeInTheDocument();
+      // No link and no image FOR THE ATTACHMENT. The lead link in the header
+      // is a different thing entirely.
+      expect(screen.queryByRole('link', { name: /gone\.jpg/i })).toBeNull();
+      expect(screen.queryByRole('img')).toBeNull();
     });
   });
 

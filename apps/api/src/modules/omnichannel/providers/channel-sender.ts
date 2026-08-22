@@ -44,6 +44,34 @@ export interface SendTextInput {
   body: string;
 }
 
+/** One file, already validated and held in memory for the length of a request. */
+export interface SendMediaInput extends SendTextInput {
+  media: {
+    buffer: Buffer;
+    /** The DETECTED type, never the one the browser declared. */
+    mimeType: string;
+    filename: string;
+    /** Which of the provider's media kinds this is. */
+    kind: 'IMAGE' | 'VIDEO' | 'AUDIO' | 'DOCUMENT';
+  };
+  /**
+   * A caption, where the provider supports one alongside media.
+   *
+   * WhatsApp does for images, video and documents. Messenger and Instagram do
+   * not — a caption there has to be a separate message, which this phase does
+   * not send on the caller's behalf.
+   */
+  body: string;
+}
+
 export interface ChannelSender {
   sendText(input: SendTextInput): Promise<SendResult>;
+  /**
+   * Send a file.
+   *
+   * Bytes pass through in one request: browser to LeadFlow to Meta. Nothing is
+   * written to disk and nothing is stored, so there is no upload to expire, no
+   * abandoned file to clean up and no new storage to operate.
+   */
+  sendMedia(input: SendMediaInput): Promise<SendResult>;
 }

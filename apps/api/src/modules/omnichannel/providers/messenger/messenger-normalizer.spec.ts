@@ -48,6 +48,9 @@ describe('parseInstagramWebhook', () => {
         externalUserId: SENDER_ID,
         messageType: 'TEXT',
         content: 'Need pricing for 500kg onion powder.',
+        // A text message carries no media, and says so explicitly rather than
+        // leaving the field undefined for callers to guess at.
+        attachments: [],
         timestamp: new Date(1756000000000),
         accountId: ACCOUNT_ID,
       });
@@ -228,9 +231,22 @@ describe('parseInstagramWebhook', () => {
       expect(result.messages[0]?.messageType).toBe('OTHER');
     });
 
-    it('does not download anything for an attachment', () => {
-      // Nothing in the normalizer touches the network. The payload URL is read
-      // for its type and otherwise left alone.
+    /*
+     * UPDATED IN PHASE J.
+     *
+     * This used to assert the payload URL was absent from the normalized
+     * event, as a proxy for "no media is downloaded". The URL is now KEPT —
+     * it is the only handle Messenger gives, and the media endpoint needs it
+     * to fetch the bytes on demand.
+     *
+     * The original intent still holds and is what this now checks directly:
+     * the normalizer touches no network. Keeping the URL out of API responses
+     * is a separate guarantee, enforced by toAttachmentViews and covered in
+     * message-attachment.spec.ts and media.e2e-spec.ts.
+     */
+    it('records the attachment reference without fetching anything', () => {
+      const fetchSpy = jest.spyOn(globalThis, 'fetch');
+
       const result = parse(
         webhook([
           messagingEvent({
@@ -239,7 +255,13 @@ describe('parseInstagramWebhook', () => {
         ]),
       );
 
-      expect(JSON.stringify(result.messages[0])).not.toContain('https://x');
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(result.messages[0]?.attachments[0]).toMatchObject({
+        type: 'IMAGE',
+        providerUrl: 'https://x',
+      });
+
+      fetchSpy.mockRestore();
     });
   });
 

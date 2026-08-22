@@ -5,10 +5,16 @@ import {
   HttpCode,
   HttpStatus,
   Param,
+  ParseIntPipe,
   ParseUUIDPipe,
   Post,
   Query,
+  Res,
+  UploadedFile,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import type { Response } from 'express';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { PERMISSIONS } from '@leadflow/api-types';
 import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
@@ -17,6 +23,8 @@ import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { ConversationLinkingService } from './conversation-linking.service';
 import { ConversationReviewService } from './conversation-review.service';
 import { OutboundMessagingService } from './outbound-messaging.service';
+import { MediaService } from './media.service';
+import { MAX_UPLOAD_BYTES, type UploadedMedia } from './message-attachment';
 import {
   ArchiveConversationDto,
   AssignConversationDto,
@@ -52,6 +60,7 @@ export class ConversationsController {
     private readonly linking: ConversationLinkingService,
     private readonly review: ConversationReviewService,
     private readonly outbound: OutboundMessagingService,
+    private readonly media: MediaService,
   ) {}
 
   @Get()
@@ -133,17 +142,85 @@ export class ConversationsController {
   @Post(':id/messages')
   @HttpCode(HttpStatus.CREATED)
   @RequirePermissions(PERMISSIONS.LEAD_UPDATE)
-  @ApiOperation({ summary: 'Send a reply on this conversation' })
+  /*
+   * One endpoint for text and for media.
+   *
+   * `FileInterceptor` handles a multipart body and passes a JSON one straight
+   * through, so a text-only request is byte-for-byte what it was before media
+   * existed. A second endpoint would have meant a second set of authorization,
+   * visibility and idempotency checks to keep in step.
+   *
+   * The size limit is enforced HERE, by the parser, before the bytes are fully
+   * read. Checking afterwards would mean accepting an arbitrarily large upload
+   * into memory in order to reject it.
+   */
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 },
+    }),
+  )
+  @ApiOperation({ summary: 'Send a reply on this conversation, optionally with a file' })
   async sendMessage(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: SendMessageDto,
     @CurrentUser() principal: TenantPrincipal,
+    @UploadedFile() file?: UploadedMedia,
   ) {
     return this.outbound.send(
       id,
-      { content: dto.content, idempotencyKey: dto.idempotencyKey },
+      {
+        content: dto.content ?? '',
+        idempotencyKey: dto.idempotencyKey,
+        ...(file ? { file } : {}),
+      },
       principal,
     );
+  }
+
+  /**
+   * The bytes of one attachment.
+   *
+   * Both ids are in the path and both are verified: the conversation against
+   * this caller's visibility, and the message against that conversation. The
+   * attachment is addressed by its index within the message, which cannot be
+   * walked across tenants the way a global id could.
+   *
+   * Deliberately not a redirect to the provider. Meta's media links are
+   * unguessable capability URLs — handing one to a browser would give away
+   * access to a customer's file and hand over something that expires.
+   */
+  @Get(':id/messages/:messageId/attachments/:index')
+  @RequirePermissions(PERMISSIONS.LEAD_VIEW_OWN)
+  @ApiOperation({ summary: 'Download an attachment on this conversation' })
+  async downloadAttachment(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('messageId', ParseUUIDPipe) messageId: string,
+    @Param('index', ParseIntPipe) index: number,
+    @CurrentUser() principal: TenantPrincipal,
+    @Res() response: Response,
+  ): Promise<void> {
+    const media = await this.media.fetch(id, messageId, index, principal);
+
+    /*
+     * Served as an attachment, never inline.
+     *
+     * A customer-supplied file rendered inline in the application's own origin
+     * is a stored-XSS vector — an SVG or an HTML file would execute with the
+     * user's session. `Content-Disposition: attachment` plus nosniff means the
+     * browser downloads it instead of running it.
+     */
+    response.setHeader('Content-Type', media.contentType);
+    response.setHeader('X-Content-Type-Options', 'nosniff');
+    response.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+    response.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${sanitiseFilename(media.filename)}"`,
+    );
+    // Private: this is one tenant's customer data, not something a shared
+    // cache should ever hold.
+    response.setHeader('Cache-Control', 'private, no-store');
+
+    response.end(media.body);
   }
 
   @Post(':id/link')
@@ -209,4 +286,26 @@ export class ConversationsController {
   ) {
     return this.review.restore(id, principal);
   }
+}
+
+/**
+ * A filename safe to put in a Content-Disposition header.
+ *
+ * Path separators, quotes and control characters are stripped rather than
+ * escaped: the name comes from a provider, it is only a hint to the browser,
+ * and header injection through a quote or a newline is the failure worth
+ * preventing. Everything else falls back to a neutral name.
+ */
+function sanitiseFilename(filename: string | null): string {
+  if (!filename) return 'attachment';
+
+  const cleaned = filename
+    .replace(/[\r\n"\\]/g, '')
+    .replace(/[/\\]/g, '_')
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f\u007f]/g, '')
+    .trim()
+    .slice(0, 120);
+
+  return cleaned.length > 0 ? cleaned : 'attachment';
 }

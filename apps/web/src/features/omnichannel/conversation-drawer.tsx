@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { ErrorNotice, SkeletonRows } from '../../components/ui';
 import { ApiError } from '../../lib/api-client';
@@ -6,10 +6,12 @@ import { formatDateTime } from '../../lib/format';
 import {
   CHANNEL_PRESENTATION,
   LINK_STATE_PRESENTATION,
+  attachmentUrl,
   useConversation,
   useSendMessage,
   type ConversationDetail,
   type DeliveryStatus,
+  type MessageAttachmentView,
 } from './use-conversations';
 
 /**
@@ -140,14 +142,30 @@ export function ConversationDrawer({
                       <p className="text-xs opacity-70">
                         {inbound ? 'Customer' : message.senderType === 'SYSTEM' ? 'System' : 'Sales'}
                       </p>
+                      {message.attachments?.length > 0 && (
+                        <ul className="mt-1 space-y-1">
+                          {message.attachments.map((attachment) => (
+                            <li key={attachment.index}>
+                              <Attachment
+                                conversationId={data.id}
+                                messageId={message.id}
+                                attachment={attachment}
+                                inbound={inbound}
+                              />
+                            </li>
+                          ))}
+                        </ul>
+                      )}
                       {message.content ? (
                         <p className="mt-0.5 text-sm text-pretty whitespace-pre-wrap">
                           {message.content}
                         </p>
                       ) : (
-                        <p className="mt-0.5 text-sm italic opacity-70">
-                          {message.messageType.toLowerCase()} attachment
-                        </p>
+                        message.attachments?.length === 0 && (
+                          <p className="mt-0.5 text-sm italic opacity-70">
+                            {message.messageType.toLowerCase()} attachment
+                          </p>
+                        )
                       )}
                       <p className="mt-1 flex items-center gap-1.5 text-[11px] opacity-60">
                         {formatDateTime(message.sentAt ?? message.createdAt)}
@@ -212,7 +230,9 @@ const EXPLAINED: DeliveryStatus[] = ['FAILED', 'UNCONFIRMED'];
 function Composer({ conversation }: { conversation: ConversationDetail }): React.JSX.Element {
   const send = useSendMessage(conversation.id);
   const [text, setText] = useState('');
+  const [file, setFile] = useState<File | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
 
   const channel = CHANNEL_PRESENTATION[conversation.channel];
   // The server's number, not a constant here: Instagram accepts 1000
@@ -232,14 +252,17 @@ function Composer({ conversation }: { conversation: ConversationDetail }): React
   const submit = (event: FormEvent): void => {
     event.preventDefault();
     const content = text.trim();
-    if (!content || send.isPending) return;
+    // A file on its own is a complete message; text on its own always was.
+    if ((!content && !file) || send.isPending) return;
 
     setFailure(null);
     send.mutate(
-      { content, idempotencyKey: idempotencyKey.current },
+      { content, idempotencyKey: idempotencyKey.current, file },
       {
         onSuccess: () => {
           setText('');
+          setFile(null);
+          if (fileInput.current) fileInput.current.value = '';
           idempotencyKey.current = crypto.randomUUID();
         },
         onError: (error) => {
@@ -261,9 +284,51 @@ function Composer({ conversation }: { conversation: ConversationDetail }): React
         </p>
       )}
 
+      {file && (
+        <div className="mb-2 flex items-center gap-2 rounded-lg bg-slate-100 px-3 py-2 text-sm">
+          <span aria-hidden="true">📎</span>
+          <span className="min-w-0 flex-1 truncate">{file.name}</span>
+          <span className="shrink-0 text-xs text-slate-500">{formatBytes(file.size)}</span>
+          <button
+            type="button"
+            aria-label={`Remove ${file.name}`}
+            disabled={send.isPending}
+            onClick={() => {
+              setFile(null);
+              if (fileInput.current) fileInput.current.value = '';
+            }}
+            className="shrink-0 rounded px-1.5 text-slate-500 transition hover:bg-slate-200 disabled:opacity-50"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       <div className="flex items-end gap-2">
         <label className="sr-only" htmlFor="composer">
           Reply
+        </label>
+
+        <input
+          ref={fileInput}
+          id="attachment"
+          type="file"
+          className="sr-only"
+          disabled={send.isPending}
+          onChange={(event: ChangeEvent<HTMLInputElement>) => {
+            setFailure(null);
+            setFile(event.target.files?.[0] ?? null);
+          }}
+        />
+        <label
+          htmlFor="attachment"
+          aria-label="Attach a file"
+          title="Attach a file"
+          className={`cursor-pointer rounded-lg border border-slate-200 px-3 py-2 text-sm transition hover:bg-slate-50 ${
+            send.isPending ? 'pointer-events-none opacity-50' : ''
+          }`}
+        >
+          📎
         </label>
         <textarea
           id="composer"
@@ -285,7 +350,7 @@ function Composer({ conversation }: { conversation: ConversationDetail }): React
         />
         <button
           type="submit"
-          disabled={send.isPending || !text.trim()}
+          disabled={send.isPending || (!text.trim() && !file)}
           className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:opacity-50"
         >
           {send.isPending ? 'Sending…' : 'Send'}
@@ -316,5 +381,78 @@ function ReplyBlocked({ conversation }: { conversation: ConversationDetail }): R
     <p className="border-t border-slate-100 px-5 py-3 text-xs text-pretty text-slate-500">
       {conversation.sendDisabledReason ?? 'Replying is not available for this conversation.'}
     </p>
+  );
+}
+
+/** Human-readable size. Only used for something the browser already knows. */
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/**
+ * One attachment in the history.
+ *
+ * Images render inline through our own authenticated endpoint. Everything else
+ * gets a download link rather than a fake preview — a player for a format the
+ * browser may not decode, or a thumbnail we do not have, would be a worse lie
+ * than an honest link.
+ *
+ * The endpoint serves every file as `Content-Disposition: attachment` with
+ * nosniff, so a customer-supplied file cannot execute in our origin even when
+ * the browser fetches it for an <img>.
+ */
+function Attachment({
+  conversationId,
+  messageId,
+  attachment,
+  inbound,
+}: {
+  conversationId: string;
+  messageId: string;
+  attachment: MessageAttachmentView;
+  inbound: boolean;
+}): React.JSX.Element {
+  const label = attachment.filename ?? `${attachment.type.toLowerCase()} attachment`;
+
+  if (!attachment.retrievable) {
+    return (
+      <span className="text-xs italic opacity-70">
+        {label} — no longer available
+      </span>
+    );
+  }
+
+  const href = attachmentUrl(conversationId, messageId, attachment.index);
+
+  if (attachment.type === 'IMAGE') {
+    return (
+      <a href={href} target="_blank" rel="noreferrer" className="block">
+        <img
+          src={href}
+          alt={label}
+          loading="lazy"
+          className="max-h-48 rounded-lg border border-black/10 object-cover"
+        />
+      </a>
+    );
+  }
+
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className={`inline-flex items-center gap-1.5 text-sm underline ${
+        inbound ? 'text-slate-700' : 'text-white'
+      }`}
+    >
+      <span aria-hidden="true">📎</span>
+      <span className="truncate">{label}</span>
+      {attachment.sizeBytes && (
+        <span className="text-xs opacity-70">({formatBytes(attachment.sizeBytes)})</span>
+      )}
+    </a>
   );
 }

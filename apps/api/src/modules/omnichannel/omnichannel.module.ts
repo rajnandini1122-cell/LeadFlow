@@ -8,6 +8,7 @@ import { IntegrationsController } from './integrations.controller';
 import { IntegrationsService } from './integrations.service';
 import { OmnichannelRepository } from './omnichannel.repository';
 import { OutboundMessagingService } from './outbound-messaging.service';
+import { MediaService } from './media.service';
 import { OutboundRecoveryService } from './outbound-recovery.service';
 import { WhatsAppOutboundService } from './providers/whatsapp/whatsapp-outbound.service';
 import { MessengerOutboundService } from './providers/messenger/messenger-outbound.service';
@@ -56,6 +57,7 @@ import {
     MessengerSetupService,
     MessengerWebhookService,
     OutboundMessagingService,
+    MediaService,
     OutboundRecoveryService,
   ],
   exports: [

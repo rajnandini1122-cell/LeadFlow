@@ -1,7 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { AppConfig } from '../../../../common/config/config.module';
 import { openSecret, parseEncryptionKey } from '../../../../common/crypto/secret-box';
-import type { ChannelSender, SendResult, SendTextInput } from '../channel-sender';
+import type {
+  ChannelSender,
+  SendMediaInput,
+  SendResult,
+  SendTextInput,
+} from '../channel-sender';
 
 /**
  * Sending on Instagram Direct and Facebook Messenger.
@@ -112,6 +117,112 @@ export class MessengerOutboundService implements ChannelSender {
           : 'Could not reach Meta. Please try again.',
         // A timeout means the request may have been processed. Both cases are
         // treated as uncertain rather than being wrong about which is which.
+        uncertain: true,
+      };
+    }
+  }
+
+  /**
+   * Send a file.
+   *
+   * Messenger and Instagram take ONE call: the file and the message go up
+   * together as multipart, with the recipient and a typed attachment
+   * descriptor alongside. Unlike WhatsApp there is no separate upload step,
+   * which means there is no half-finished state to reason about — it either
+   * reached the customer or it did not.
+   *
+   * No caption. Neither channel accepts text alongside an attachment in one
+   * message, and sending a second message on the caller's behalf would be
+   * inventing traffic they did not ask for.
+   */
+  async sendMedia(input: SendMediaInput): Promise<SendResult> {
+    if (!input.encryptedAccessToken) {
+      return {
+        ok: false,
+        message: 'This channel is not fully configured. Reconnect it in settings.',
+        uncertain: false,
+      };
+    }
+
+    let accessToken: string;
+    try {
+      const key = parseEncryptionKey(this.config.get('CREDENTIAL_ENCRYPTION_KEY'));
+      accessToken = openSecret(input.encryptedAccessToken, key);
+    } catch {
+      this.logger.error('Stored Messenger credential could not be decrypted.');
+      return {
+        ok: false,
+        message: 'Credentials could not be read. Reconnect the channel in settings.',
+        uncertain: false,
+      };
+    }
+
+    const version = this.config.get('WHATSAPP_API_VERSION');
+    const url = `https://graph.facebook.com/${version}/${encodeURIComponent(input.accountId)}/messages`;
+
+    const form = new FormData();
+    form.append('messaging_type', 'RESPONSE');
+    form.append('recipient', JSON.stringify({ id: input.recipient }));
+    form.append(
+      'message',
+      JSON.stringify({
+        attachment: {
+          type: input.media.kind.toLowerCase(),
+          payload: { is_reusable: false },
+        },
+      }),
+    );
+    form.append(
+      'filedata',
+      new Blob([new Uint8Array(input.media.buffer)], { type: input.media.mimeType }),
+      input.media.filename,
+    );
+
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}` },
+        body: form,
+        signal: AbortSignal.timeout(60_000),
+      });
+
+      if (!response.ok) {
+        return this.translateFailure(response.status, await this.safeErrorCode(response));
+      }
+
+      const payload = (await response.json()) as { message_id?: string };
+      const providerMessageId = payload.message_id;
+
+      if (!providerMessageId) {
+        this.logger.error('Meta accepted a Messenger attachment but returned no message id.');
+        return {
+          ok: false,
+          message:
+            'The file may have been sent, but Meta did not confirm it. Check before resending.',
+          uncertain: true,
+        };
+      }
+
+      return { ok: true, providerMessageId };
+    } catch (error) {
+      const timedOut = error instanceof Error && error.name === 'TimeoutError';
+      this.logger.warn(
+        `Messenger media send failed: ${error instanceof Error ? error.name : 'unknown error'}`,
+      );
+
+      return {
+        ok: false,
+        message: timedOut
+          ? 'Meta did not respond in time. Check the conversation before resending.'
+          : 'Could not reach Meta. Please try again.',
+        /*
+         * Uncertain, and that matters more for media than for text.
+         *
+         * The file and the send are one call here, so a timeout genuinely may
+         * have delivered it. A duplicate photo is more jarring to a customer
+         * than a duplicate sentence, which is exactly why nothing retries on
+         * its own.
+         */
         uncertain: true,
       };
     }

@@ -9,6 +9,13 @@ import { evaluateSendCapability, maxTextLengthFor, MAX_TEXT_LENGTH } from './sen
 import { WhatsAppOutboundService } from './providers/whatsapp/whatsapp-outbound.service';
 import { MessengerOutboundService } from './providers/messenger/messenger-outbound.service';
 import type { ChannelSender } from './providers/channel-sender';
+import {
+  detectMimeType,
+  toAttachmentViews,
+  validateMedia,
+  type MessageAttachment,
+  type UploadedMedia,
+} from './message-attachment';
 import type { ChannelType } from '../../generated/prisma/enums';
 
 /**
@@ -62,12 +69,18 @@ export class OutboundMessagingService {
 
   async send(
     conversationId: string,
-    input: { content: string; idempotencyKey: string },
+    input: { content: string; idempotencyKey: string; file?: UploadedMedia },
     principal: TenantPrincipal,
   ) {
     const body = input.content.trim();
 
-    if (!body) {
+    /*
+     * A message needs to say something OR carry something.
+     *
+     * A photo on its own is a complete message, so text is no longer required
+     * once a file is attached — but neither is still nothing to send.
+     */
+    if (!body && !input.file) {
       throw new AppException(
         ERROR_CODES.VALIDATION_ERROR,
         'A message cannot be empty.',
@@ -158,12 +171,55 @@ export class OutboundMessagingService {
       );
     }
 
+    /*
+     * --- the file, if there is one ------------------------------------------
+     *
+     * Validated from its BYTES, before anything is claimed or sent. The
+     * browser's Content-Type and the filename extension are both attacker
+     * controlled and are the usual way an upload filter gets bypassed, so
+     * neither decides what this file is.
+     */
+    let media: NonNullable<Parameters<ChannelSender['sendMedia']>[0]>['media'] | null = null;
+
+    if (input.file) {
+      const detected = detectMimeType(input.file.buffer);
+      const check = validateMedia(conversation.channel, detected, input.file.size);
+
+      if (!check.ok) {
+        throw new AppException(ERROR_CODES.VALIDATION_ERROR, check.message, 400);
+      }
+
+      media = {
+        buffer: input.file.buffer,
+        // The detected type, not the declared one.
+        mimeType: detected as string,
+        filename: safeFilename(input.file.originalname),
+        kind: check.type as 'IMAGE' | 'VIDEO' | 'AUDIO' | 'DOCUMENT',
+      };
+    }
+
     // --- claim --------------------------------------------------------------
     // Written first, on purpose. See the class comment.
+    const attachments: MessageAttachment[] = media
+      ? [
+          {
+            // Ours, not the provider's — the id Meta issues during upload is
+            // not a durable handle and is not worth storing.
+            providerMediaId: null,
+            providerUrl: null,
+            type: media.kind,
+            mimeType: media.mimeType,
+            filename: media.filename,
+            sizeBytes: input.file?.size ?? null,
+          },
+        ]
+      : [];
+
     const claimed = await this.repository.claimOutboundMessage({
       conversationId,
       channel: conversation.channel,
       content: body,
+      ...(media ? { messageType: media.kind, attachments } : {}),
       idempotencyKey: input.idempotencyKey,
       sentById: principal.userId,
     });
@@ -196,7 +252,7 @@ export class OutboundMessagingService {
       );
     }
 
-    const result = await sender.sendText({
+    const request = {
       accountId: integration!.providerAccountId,
       encryptedAccessToken: integration!.encryptedAccessToken,
       // Passed as stored. Any provider-specific formatting is the adapter's
@@ -204,7 +260,11 @@ export class OutboundMessagingService {
       // Messenger id must not be touched at all.
       recipient: recipient!,
       body,
-    });
+    };
+
+    const result = media
+      ? await sender.sendMedia({ ...request, media })
+      : await sender.sendText(request);
 
     if (!result.ok) {
       await this.repository.markMessageFailed(claimed.id, result.message);
@@ -235,6 +295,8 @@ export class OutboundMessagingService {
         channel: conversation.channel,
         // Length, not content: a customer's correspondence is not audit fodder.
         length: body.length,
+        // The fact of a file and its kind. Never its name or its bytes.
+        attachment: media ? media.kind : null,
       },
     });
 
@@ -270,6 +332,24 @@ export class OutboundMessagingService {
   }
 }
 
+/**
+ * A filename safe to hand to a provider.
+ *
+ * Path separators are the point: the name reaches a multipart part header, and
+ * a value like `../../etc/passwd` has no business being echoed anywhere. It is
+ * a display hint, so falling back to a neutral name costs nothing.
+ */
+function safeFilename(name: string | undefined): string {
+  const cleaned = (name ?? '')
+    .replace(/[/\\]/g, '_')
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f\u007f"]/g, '')
+    .trim()
+    .slice(0, 120);
+
+  return cleaned.length > 0 ? cleaned : 'attachment';
+}
+
 function toMessageView(message: {
   id: string;
   direction: string;
@@ -278,6 +358,7 @@ function toMessageView(message: {
   content: string | null;
   deliveryStatus: string | null;
   failureReason: string | null;
+  attachments?: unknown;
   sentAt: Date | null;
   createdAt: Date;
 }) {
@@ -289,6 +370,7 @@ function toMessageView(message: {
     content: message.content,
     deliveryStatus: message.deliveryStatus,
     failureReason: message.failureReason,
+    attachments: toAttachmentViews(message.attachments),
     sentAt: message.sentAt?.toISOString() ?? null,
     createdAt: message.createdAt.toISOString(),
   };

@@ -254,6 +254,7 @@ export class WhatsAppWebhookService {
       senderPhone: message.senderPhone,
       content: message.content ?? undefined,
       messageType: message.messageType,
+      ...(message.attachments.length > 0 ? { attachments: message.attachments } : {}),
       timestamp: message.timestamp,
     });
 

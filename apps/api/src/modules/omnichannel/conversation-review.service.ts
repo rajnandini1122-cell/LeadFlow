@@ -8,6 +8,7 @@ import { resolveLeadVisibility } from '../leads/lead-visibility';
 import { OmnichannelRepository } from './omnichannel.repository';
 import { conversationScope, conversationScopeFilter } from './conversation-visibility';
 import { evaluateSendCapability } from './send-capability';
+import { toAttachmentViews } from './message-attachment';
 import { selectLead } from './lead-selection';
 
 /**
@@ -195,7 +196,14 @@ export class ConversationReviewService {
         senderType: message.senderType,
         messageType: message.messageType,
         content: message.content,
-        attachments: message.attachments,
+        /*
+         * The SAFE view, never the stored row.
+         *
+         * The stored attachment holds a provider media id or a signed URL,
+         * both of which are credentials in effect. The client gets a type, a
+         * name and an index, and asks the API for the bytes.
+         */
+        attachments: toAttachmentViews(message.attachments),
         deliveryStatus: message.deliveryStatus,
         failureReason: message.failureReason,
         sentAt: message.sentAt?.toISOString() ?? null,

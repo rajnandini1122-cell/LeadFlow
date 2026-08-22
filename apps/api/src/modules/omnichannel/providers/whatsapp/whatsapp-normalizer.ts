@@ -1,4 +1,5 @@
 import type { MessageType } from '../../../../generated/prisma/enums';
+import type { MessageAttachment } from '../../message-attachment';
 
 /**
  * WhatsApp Cloud API payloads, turned into events the platform already knows.
@@ -22,8 +23,10 @@ export interface WhatsAppInboundMessage {
   senderPhone: string;
   senderName?: string | undefined;
   messageType: MessageType;
-  /** Present for text; null for types this phase does not read. */
+  /** The text body, or a media caption where the customer wrote one. */
   content: string | null;
+  /** Media references, if the message carried any. */
+  attachments: MessageAttachment[];
   timestamp: Date;
   /** The business number that received it — resolves the tenant. */
   phoneNumberId: string;
@@ -248,12 +251,39 @@ function parseMessage(
   const rawType = asString(message['type']) ?? 'unknown';
   const messageType = MESSAGE_TYPES[rawType] ?? 'OTHER';
 
-  // Only text is read in this phase. Everything else is recorded with its type
-  // and no content — the conversation shows that something arrived, without
-  // pretending to know what it said.
   let content: string | null = null;
+  const attachments: MessageAttachment[] = [];
+
   if (rawType === 'text') {
     content = asString(asRecord(message['text'])?.['body']) ?? null;
+  } else {
+    /*
+     * Media.
+     *
+     * WhatsApp nests the details under a key named after the type, and gives a
+     * media ID rather than a URL — the URL has to be fetched separately and
+     * expires within minutes, so there is nothing here worth storing as a link.
+     *
+     * The caption, where the customer wrote one, IS the message text. Dropping
+     * it would lose the part they actually typed: "is this the one you meant?"
+     * next to a photo is the whole enquiry.
+     */
+    const media = asRecord(message[rawType]);
+
+    if (media) {
+      content = asString(media['caption']) ?? null;
+
+      attachments.push({
+        providerMediaId: asString(media['id']) ?? null,
+        // WhatsApp never sends one, and inventing a field is worse than a null.
+        providerUrl: null,
+        type: messageType,
+        mimeType: asString(media['mime_type']) ?? null,
+        // Documents carry a filename; nothing else does.
+        filename: asString(media['filename']) ?? null,
+        sizeBytes: null,
+      });
+    }
   }
 
   const senderName = context.names.get(from);
@@ -267,6 +297,7 @@ function parseMessage(
     ...(senderName ? { senderName } : {}),
     messageType,
     content,
+    attachments,
     timestamp: parseTimestamp(message['timestamp']),
     phoneNumberId: context.phoneNumberId,
     ...(context.businessAccountId ? { businessAccountId: context.businessAccountId } : {}),

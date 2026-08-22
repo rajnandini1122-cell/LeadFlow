@@ -6,6 +6,7 @@ import type {
   MessageDeliveryStatus,
   MessageType,
 } from '../../generated/prisma/enums';
+import type { MessageAttachment } from './message-attachment';
 import type { LeadCandidate } from './lead-selection';
 
 /**
@@ -142,6 +143,7 @@ export class OmnichannelRepository {
     externalMessageId: string;
     content: string | null;
     messageType: MessageType;
+    attachments?: MessageAttachment[] | undefined;
     sentAt: Date;
   }) {
     return this.prisma.client.message.create({
@@ -154,6 +156,9 @@ export class OmnichannelRepository {
         senderType: 'CONTACT',
         messageType: input.messageType,
         content: input.content,
+        ...(input.attachments && input.attachments.length > 0
+          ? { attachments: input.attachments as never }
+          : {}),
         sentAt: input.sentAt,
         receivedAt: new Date(),
       },
@@ -760,6 +765,8 @@ export class OmnichannelRepository {
     conversationId: string;
     channel: ChannelType;
     content: string;
+    messageType?: MessageType | undefined;
+    attachments?: MessageAttachment[] | undefined;
     idempotencyKey: string;
     sentById: string;
   }) {
@@ -771,8 +778,11 @@ export class OmnichannelRepository {
           channel: input.channel,
           direction: 'OUTGOING',
           senderType: 'AGENT',
-          messageType: 'TEXT',
+          messageType: input.messageType ?? 'TEXT',
           content: input.content,
+          ...(input.attachments && input.attachments.length > 0
+            ? { attachments: input.attachments as never }
+            : {}),
           // Not SENT. Nothing has reached the customer yet.
           deliveryStatus: 'PENDING',
           idempotencyKey: input.idempotencyKey,
@@ -830,6 +840,20 @@ export class OmnichannelRepository {
     });
 
     return result.count;
+  }
+
+  /**
+   * One message, but only if it belongs to the named conversation.
+   *
+   * Both ids come from a URL, so the pairing has to be verified rather than
+   * assumed. Without this a caller who can open one conversation could pair
+   * its id with any message id in the tenant.
+   */
+  async findMessageInConversation(conversationId: string, messageId: string) {
+    return this.prisma.client.message.findFirst({
+      where: { id: messageId, conversationId },
+      select: { id: true, attachments: true, direction: true },
+    });
   }
 
   // --- status webhooks ------------------------------------------------------

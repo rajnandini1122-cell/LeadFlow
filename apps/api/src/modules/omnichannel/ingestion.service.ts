@@ -110,6 +110,7 @@ export class IngestionService {
       externalMessageId: event.externalMessageId,
       content: event.content ?? null,
       messageType: event.messageType ?? 'TEXT',
+      attachments: event.attachments ?? [],
       sentAt: event.timestamp,
     });
 

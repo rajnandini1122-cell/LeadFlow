@@ -183,6 +183,49 @@ secrets and their own payload shapes — see
 
 ---
 
+## 9a. Testing media locally
+
+Media needs no extra setup — no object storage, no S3, no new environment
+variable. Nothing is ever downloaded at ingestion time.
+
+**Inbound.** Add a media message to the payload from §9 instead of a text one:
+
+```json
+"messages":[{"from":"447700900123","id":"wamid.local2",
+  "timestamp":"1756000000","type":"image",
+  "image":{"id":"media-abc","mime_type":"image/jpeg","caption":"Is this the one?"}}]
+```
+
+Sign and post it exactly as before. The conversation shows an image
+attachment, and the caption becomes the message text. **Opening it will fail
+locally** — the download calls Meta with a media id that does not exist — and
+that is correct: LeadFlow stores a reference, not a copy.
+
+**Outbound.** Attach a file in the composer and send. The upload is validated
+from its bytes before anything is sent, so you can watch the rejections work
+without any Meta credentials at all:
+
+- rename a `.exe` to `.jpg` → rejected, because content detection reads the
+  real bytes rather than the browser's Content-Type
+- attach a 6MB image on WhatsApp → rejected, the per-kind limit is 5MB
+- attach a PDF on Instagram → rejected, that channel does not carry documents
+
+The send itself will then fail at Meta, visibly. Nothing pretends otherwise.
+
+**Limits, as implemented:**
+
+| Channel | Image | Video | Audio | Document |
+|---|---|---|---|---|
+| WhatsApp | 5MB | 16MB | 16MB | 16MB |
+| Messenger | 16MB | 16MB | 16MB | 16MB |
+| Instagram | 8MB | 16MB | 16MB | not supported |
+
+Accepted formats are JPEG, PNG, MP4, 3GP, AAC/M4A/MP3/OGG and PDF. Office
+formats are **not** accepted: a `.docx` is a ZIP, and recognising "this is a
+ZIP" would let anything zipped through.
+
+---
+
 ## 10. Testing with a real WhatsApp number
 
 You need a Meta app, a WhatsApp Business number and a public HTTPS URL. Full

@@ -69,13 +69,29 @@ export type DeliveryStatus =
   /** The send was never resolved. It may or may not have reached the customer. */
   | 'UNCONFIRMED';
 
+/**
+ * What the API says about one attachment.
+ *
+ * Deliberately no URL and no provider id — those are credentials, and the
+ * server keeps them. The bytes are fetched from our own authenticated endpoint
+ * using the index.
+ */
+export interface MessageAttachmentView {
+  index: number;
+  type: 'IMAGE' | 'VIDEO' | 'AUDIO' | 'DOCUMENT' | 'OTHER' | string;
+  mimeType: string | null;
+  filename: string | null;
+  sizeBytes: number | null;
+  retrievable: boolean;
+}
+
 export interface ConversationMessage {
   id: string;
   direction: 'INCOMING' | 'OUTGOING';
   senderType: 'CONTACT' | 'AGENT' | 'SYSTEM';
   messageType: string;
   content: string | null;
-  attachments: unknown;
+  attachments: MessageAttachmentView[];
   /** Set only for messages we sent. */
   deliveryStatus?: DeliveryStatus | null;
   failureReason?: string | null;
@@ -326,16 +342,57 @@ export function useSetIntegrationEnabled(): UseMutationResult<
  */
 export function useSendMessage(
   conversationId: string,
-): UseMutationResult<ConversationMessage, Error, { content: string; idempotencyKey: string }> {
+): UseMutationResult<
+  ConversationMessage,
+  Error,
+  { content: string; idempotencyKey: string; file?: File | null }
+> {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (input) =>
-      apiPost<ConversationMessage>(`/conversations/${conversationId}/messages`, input),
+    mutationFn: (input) => {
+      /*
+       * Multipart only when there is a file.
+       *
+       * A text-only send stays exactly the JSON request it has always been,
+       * so nothing about the existing path changes shape to accommodate media.
+       */
+      if (!input.file) {
+        return apiPost<ConversationMessage>(`/conversations/${conversationId}/messages`, {
+          content: input.content,
+          idempotencyKey: input.idempotencyKey,
+        });
+      }
+
+      const form = new FormData();
+      form.append('idempotencyKey', input.idempotencyKey);
+      if (input.content) form.append('content', input.content);
+      form.append('file', input.file);
+
+      return apiPost<ConversationMessage>(
+        `/conversations/${conversationId}/messages`,
+        form,
+      );
+    },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['conversations'] });
     },
   });
+}
+
+/**
+ * Where to fetch an attachment's bytes.
+ *
+ * Our own authenticated endpoint, never the provider. The browser is never
+ * given a provider link, because those are unguessable capability URLs that
+ * also expire.
+ */
+export function attachmentUrl(
+  conversationId: string,
+  messageId: string,
+  index: number,
+): string {
+  return `/api/v1/conversations/${conversationId}/messages/${messageId}/attachments/${index}`;
 }
 
 export function useAssignConversation(): UseMutationResult<

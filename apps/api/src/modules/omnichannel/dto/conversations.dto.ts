@@ -110,10 +110,18 @@ export class SetIntegrationEnabledDto {
 }
 
 export class SendMessageDto {
-  @ApiProperty({ description: 'The reply text.', maxLength: 4096 })
+  /**
+   * The reply text, or a caption when a file is attached.
+   *
+   * Optional as of media support: a photo on its own is a complete message,
+   * and requiring text would make the user type something to send one. Text-only
+   * requests are unchanged — the service still refuses a message with neither.
+   */
+  @ApiPropertyOptional({ description: 'The reply text, or a caption for an attachment.' })
+  @IsOptional()
   @IsString()
   @MaxLength(4096)
-  content!: string;
+  content?: string;
 
   /**
    * Makes the request repeatable.

@@ -1,4 +1,5 @@
 import type { MessageType } from '../../../../generated/prisma/enums';
+import type { MessageAttachment } from '../../message-attachment';
 
 /**
  * Meta Messenger payloads, turned into events the platform knows.
@@ -29,8 +30,10 @@ export interface MessengerInboundMessage {
   /** The sender's provider-scoped id. Stable for this app and this user. */
   externalUserId: string;
   messageType: MessageType;
-  /** Present for text; null for anything this phase does not read. */
+  /** The text body. Messenger sends media without a caption field. */
   content: string | null;
+  /** Media references, if the message carried any. */
+  attachments: MessageAttachment[];
   timestamp: Date;
   /**
    * The business account that received it — resolves the tenant.
@@ -225,6 +228,7 @@ function parseMessagingEvent(
       externalUserId,
       messageType: 'TEXT',
       content: text,
+      attachments: [],
       timestamp: parseTimestamp(event['timestamp']),
       accountId,
     };
@@ -233,19 +237,43 @@ function parseMessagingEvent(
   /*
    * Not text: an attachment, a story reply, a shared post.
    *
-   * Recorded with its real type and NO content. The conversation shows that
-   * something arrived and when, without pretending to know what it said —
-   * and without downloading media, which is out of scope for this phase.
+   * Messenger CAN send several attachments in one message, so all of them are
+   * captured rather than only the first. The message type takes the first
+   * one's — a single type cannot describe a mixed set, and the attachments
+   * themselves carry the truth.
+   *
+   * The URL is stored but never handed to a browser: Meta's attachment links
+   * are unguessable capability URLs that expire, so passing one to a client
+   * would both give away access and hand over something that stops working.
    */
-  const attachments = asArray(message['attachments']);
-  const first = asRecord(attachments[0]);
-  const attachmentType = asString(first?.['type']);
+  const rawAttachments = asArray(message['attachments']);
+  const attachments: MessageAttachment[] = [];
+
+  for (const entry of rawAttachments) {
+    const attachment = asRecord(entry);
+    if (!attachment) continue;
+
+    const attachmentType = asString(attachment['type']);
+    const payload = asRecord(attachment['payload']);
+
+    attachments.push({
+      // Messenger issues no reusable media id; the URL is the only handle.
+      providerMediaId: null,
+      providerUrl: asString(payload?.['url']) ?? null,
+      type: (attachmentType ? ATTACHMENT_TYPES[attachmentType] : undefined) ?? 'OTHER',
+      // Neither is ever supplied on an inbound Messenger attachment.
+      mimeType: null,
+      filename: null,
+      sizeBytes: null,
+    });
+  }
 
   return {
     externalMessageId,
     externalUserId,
-    messageType: (attachmentType ? ATTACHMENT_TYPES[attachmentType] : undefined) ?? 'OTHER',
+    messageType: attachments[0]?.type ?? 'OTHER',
     content: null,
+    attachments,
     timestamp: parseTimestamp(event['timestamp']),
     accountId,
   };
