@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConversationLinkingService } from './conversation-linking.service';
+import { ConversationReviewService } from './conversation-review.service';
 import { ConversationsController } from './conversations.controller';
 import { IdentityResolutionService } from './identity-resolution.service';
 import { IngestionService } from './ingestion.service';
@@ -21,7 +22,8 @@ import { OmnichannelRepository } from './omnichannel.repository';
     IdentityResolutionService,
     IngestionService,
     ConversationLinkingService,
+    ConversationReviewService,
   ],
-  exports: [IngestionService, ConversationLinkingService],
+  exports: [IngestionService, ConversationLinkingService, ConversationReviewService],
 })
 export class OmnichannelModule {}

@@ -576,6 +576,425 @@ describe('Omnichannel capture', () => {
     });
   });
 
+
+  // ===========================================================================
+  // PHASE C — the review queue
+  // ===========================================================================
+
+  describe('the review queue', () => {
+    it('shows an unknown sender as needing review, and stores the message', async () => {
+      const result = await ingestion.ingest(
+        event(ctx.orgA, { senderPhone: '4155558801', content: 'Need pricing for 500kg' }),
+      );
+
+      const queue = await ctx
+        .http()
+        .get('/api/v1/conversations/review')
+        .set(auth(ctx.orgA.owner.accessToken));
+
+      expect(queue.status).toBe(200);
+      const row = queue.body.data.items.find(
+        (item: { id: string }) => item.id === result.conversationId,
+      );
+      expect(row).toBeDefined();
+      expect(row.linkState).toBe('UNLINKED');
+      expect(row.contact).toBeNull();
+    });
+
+    it('flags a buying enquiry as a potential lead, with the words that triggered it', async () => {
+      const result = await ingestion.ingest(
+        event(ctx.orgA, {
+          senderPhone: '4155558802',
+          content: 'What is your MOQ for bulk garlic powder?',
+        }),
+      );
+
+      const queue = await ctx
+        .http()
+        .get('/api/v1/conversations/review')
+        .query({ category: 'POTENTIAL_LEAD' })
+        .set(auth(ctx.orgA.owner.accessToken));
+
+      const row = queue.body.data.items.find(
+        (item: { id: string }) => item.id === result.conversationId,
+      );
+      expect(row).toBeDefined();
+      expect(row.potentialLead).toBe(true);
+      expect(row.potentialLeadSignals).toEqual(expect.arrayContaining(['moq', 'bulk']));
+    });
+
+    it('does not flag a greeting as a potential lead', async () => {
+      const result = await ingestion.ingest(
+        event(ctx.orgA, { senderPhone: '4155558803', content: 'Hi' }),
+      );
+
+      const queue = await ctx
+        .http()
+        .get('/api/v1/conversations/review')
+        .query({ category: 'POTENTIAL_LEAD' })
+        .set(auth(ctx.orgA.owner.accessToken));
+
+      const ids = queue.body.data.items.map((item: { id: string }) => item.id);
+      expect(ids).not.toContain(result.conversationId);
+    });
+
+    it('leaves linked conversations out of the queue', async () => {
+      const mobile = '4155558804';
+      await createLead(ctx.orgA, ctx.orgA.owner.accessToken, {
+        mobile,
+        assignedToId: ctx.orgA.rep.id,
+      });
+
+      const result = await ingestion.ingest(event(ctx.orgA, { senderPhone: mobile }));
+      expect(result.linkState).toBe('LINKED');
+
+      const queue = await ctx
+        .http()
+        .get('/api/v1/conversations/review')
+        .set(auth(ctx.orgA.owner.accessToken));
+
+      // Already dealt with. Leaving it in would bury the ones that are not.
+      const ids = queue.body.data.items.map((item: { id: string }) => item.id);
+      expect(ids).not.toContain(result.conversationId);
+    });
+
+    it('counts what is waiting', async () => {
+      const count = await ctx
+        .http()
+        .get('/api/v1/conversations/review/count')
+        .set(auth(ctx.orgA.owner.accessToken));
+
+      expect(count.status).toBe(200);
+      expect(typeof count.body.data.count).toBe('number');
+    });
+  });
+
+  // ===========================================================================
+  // PHASE C — conversation detail
+  // ===========================================================================
+
+  describe('conversation detail', () => {
+    it('returns the message history and never offers to send', async () => {
+      const result = await ingestion.ingest(
+        event(ctx.orgA, { senderPhone: '4155558810', content: 'Please share your rates' }),
+      );
+
+      const detail = await ctx
+        .http()
+        .get(`/api/v1/conversations/${result.conversationId}`)
+        .set(auth(ctx.orgA.owner.accessToken));
+
+      expect(detail.status).toBe(200);
+      expect(detail.body.data.messages).toHaveLength(1);
+      expect(detail.body.data.messages[0].direction).toBe('INCOMING');
+      // No provider is connected, so the UI must not render a composer.
+      expect(detail.body.data.canSend).toBe(false);
+    });
+
+    it('offers candidate leads only when the system actually refused to choose', async () => {
+      const mobile = '4155558811';
+      await createLead(ctx.orgA, ctx.orgA.owner.accessToken, {
+        mobile,
+        assignedToId: ctx.orgA.rep.id,
+      });
+
+      const result = await ingestion.ingest(event(ctx.orgA, { senderPhone: mobile }));
+
+      const detail = await ctx
+        .http()
+        .get(`/api/v1/conversations/${result.conversationId}`)
+        .set(auth(ctx.orgA.owner.accessToken));
+
+      // Exactly one match was linked automatically; there is nothing to choose.
+      expect(detail.body.data.candidateLeads).toEqual([]);
+    });
+
+    it('refuses a conversation belonging to another organization', async () => {
+      const result = await ingestion.ingest(
+        event(ctx.orgA, { senderPhone: '4155558812', content: 'quote please' }),
+      );
+
+      const peek = await ctx
+        .http()
+        .get(`/api/v1/conversations/${result.conversationId}`)
+        .set(auth(ctx.orgB.owner.accessToken));
+
+      expect(peek.status).toBe(404);
+    });
+  });
+
+  // ===========================================================================
+  // PHASE C — dismiss and restore
+  // ===========================================================================
+
+  describe('dismissing a conversation that is not a lead', () => {
+    it('takes it out of the queue without deleting anything', async () => {
+      const result = await ingestion.ingest(
+        event(ctx.orgA, { senderPhone: '4155558820', content: 'wrong number sorry' }),
+      );
+
+      const archived = await ctx
+        .http()
+        .post(`/api/v1/conversations/${result.conversationId}/archive`)
+        .set(auth(ctx.orgA.owner.accessToken))
+        .send({ reason: 'Wrong number' });
+
+      expect(archived.status).toBe(200);
+
+      const queue = await ctx
+        .http()
+        .get('/api/v1/conversations/review')
+        .set(auth(ctx.orgA.owner.accessToken));
+      expect(queue.body.data.items.map((i: { id: string }) => i.id)).not.toContain(
+        result.conversationId,
+      );
+
+      // Still stored, with its messages and the reason it was dismissed.
+      const detail = await ctx
+        .http()
+        .get(`/api/v1/conversations/${result.conversationId}`)
+        .set(auth(ctx.orgA.owner.accessToken));
+
+      expect(detail.status).toBe(200);
+      expect(detail.body.data.archivedAt).not.toBeNull();
+      expect(detail.body.data.archivedReason).toBe('Wrong number');
+      expect(detail.body.data.messages).toHaveLength(1);
+    });
+
+    it('lists dismissed conversations when asked for them', async () => {
+      const result = await ingestion.ingest(
+        event(ctx.orgA, { senderPhone: '4155558821', content: 'spam' }),
+      );
+      await ctx
+        .http()
+        .post(`/api/v1/conversations/${result.conversationId}/archive`)
+        .set(auth(ctx.orgA.owner.accessToken))
+        .send({});
+
+      const dismissed = await ctx
+        .http()
+        .get('/api/v1/conversations/review')
+        .query({ archived: true })
+        .set(auth(ctx.orgA.owner.accessToken));
+
+      expect(dismissed.body.data.items.map((i: { id: string }) => i.id)).toContain(
+        result.conversationId,
+      );
+    });
+
+    it('puts it back', async () => {
+      const result = await ingestion.ingest(
+        event(ctx.orgA, { senderPhone: '4155558822', content: 'hello' }),
+      );
+
+      await ctx
+        .http()
+        .post(`/api/v1/conversations/${result.conversationId}/archive`)
+        .set(auth(ctx.orgA.owner.accessToken))
+        .send({});
+
+      const restored = await ctx
+        .http()
+        .post(`/api/v1/conversations/${result.conversationId}/restore`)
+        .set(auth(ctx.orgA.owner.accessToken));
+
+      expect(restored.status).toBe(200);
+
+      const queue = await ctx
+        .http()
+        .get('/api/v1/conversations/review')
+        .set(auth(ctx.orgA.owner.accessToken));
+      expect(queue.body.data.items.map((i: { id: string }) => i.id)).toContain(
+        result.conversationId,
+      );
+    });
+
+    it('refuses to dismiss the same conversation twice', async () => {
+      const result = await ingestion.ingest(
+        event(ctx.orgA, { senderPhone: '4155558823', content: 'ok' }),
+      );
+
+      await ctx
+        .http()
+        .post(`/api/v1/conversations/${result.conversationId}/archive`)
+        .set(auth(ctx.orgA.owner.accessToken))
+        .send({});
+
+      const again = await ctx
+        .http()
+        .post(`/api/v1/conversations/${result.conversationId}/archive`)
+        .set(auth(ctx.orgA.owner.accessToken))
+        .send({});
+
+      expect(again.status).toBe(409);
+    });
+
+    it('does not let another organization dismiss it', async () => {
+      const result = await ingestion.ingest(
+        event(ctx.orgA, { senderPhone: '4155558824', content: 'hi' }),
+      );
+
+      const attack = await ctx
+        .http()
+        .post(`/api/v1/conversations/${result.conversationId}/archive`)
+        .set(auth(ctx.orgB.owner.accessToken))
+        .send({});
+
+      expect(attack.status).toBe(404);
+    });
+  });
+
+  // ===========================================================================
+  // PHASE C — creating a lead from a conversation
+  // ===========================================================================
+
+  describe('creating a lead from a conversation', () => {
+    it('uses the ordinary lead endpoint, then links the conversation', async () => {
+      const mobile = '4155558830';
+      const result = await ingestion.ingest(
+        event(ctx.orgA, { senderPhone: mobile, content: 'Need a quotation for 200kg' }),
+      );
+
+      expect(result.contact.outcome).toBe('UNRESOLVED');
+      expect(result.leadId).toBeNull();
+
+      // Exactly what the UI does: POST /leads, then POST /conversations/:id/link.
+      const created = await ctx
+        .http()
+        .post('/api/v1/leads')
+        .set(auth(ctx.orgA.owner.accessToken))
+        .send({
+          firstName: 'Rahul',
+          mobile,
+          companyName: 'XYZ Foods',
+          source: 'WhatsApp',
+          nextFollowUpAt: new Date(Date.now() + 86_400_000).toISOString(),
+          assignedToId: ctx.orgA.rep.id,
+        });
+
+      expect(created.status).toBe(201);
+
+      const linked = await ctx
+        .http()
+        .post(`/api/v1/conversations/${result.conversationId}/link`)
+        .set(auth(ctx.orgA.owner.accessToken))
+        .send({ leadId: created.body.data.id });
+
+      expect(linked.status).toBe(200);
+
+      // The new lead behaves like any other: same shape, same activities.
+      const lead = await ctx
+        .http()
+        .get(`/api/v1/leads/${created.body.data.id}`)
+        .set(auth(ctx.orgA.owner.accessToken));
+
+      expect(lead.status).toBe(200);
+      expect(lead.body.data.leadNumber).toMatch(/^LD-/);
+      // Owner is whoever the lead flow assigned — not the conversation.
+      expect(lead.body.data.assignedTo?.id ?? lead.body.data.assignedToId).toBe(ctx.orgA.rep.id);
+
+      const conversations = await ctx
+        .http()
+        .get('/api/v1/conversations')
+        .query({ leadId: created.body.data.id })
+        .set(auth(ctx.orgA.owner.accessToken));
+
+      expect(conversations.body.data).toHaveLength(1);
+      expect(conversations.body.data[0].id).toBe(result.conversationId);
+    });
+
+    it('leaves the conversation out of the queue once linked', async () => {
+      const mobile = '4155558831';
+      const result = await ingestion.ingest(
+        event(ctx.orgA, { senderPhone: mobile, content: 'bulk order enquiry' }),
+      );
+
+      const created = await ctx
+        .http()
+        .post('/api/v1/leads')
+        .set(auth(ctx.orgA.owner.accessToken))
+        .send({
+          firstName: 'Meera',
+          mobile,
+          nextFollowUpAt: new Date(Date.now() + 86_400_000).toISOString(),
+          assignedToId: ctx.orgA.rep.id,
+        });
+
+      await ctx
+        .http()
+        .post(`/api/v1/conversations/${result.conversationId}/link`)
+        .set(auth(ctx.orgA.owner.accessToken))
+        .send({ leadId: created.body.data.id });
+
+      const queue = await ctx
+        .http()
+        .get('/api/v1/conversations/review')
+        .set(auth(ctx.orgA.owner.accessToken));
+
+      expect(queue.body.data.items.map((i: { id: string }) => i.id)).not.toContain(
+        result.conversationId,
+      );
+    });
+  });
+
+  // ===========================================================================
+  // PHASE C — visibility in the queue
+  // ===========================================================================
+
+  describe('review queue visibility', () => {
+    it('does not show a rep a conversation owned by a colleague', async () => {
+      const mobile = '4155558840';
+      // Assigned to the OWNER, so the conversation's owner becomes the owner.
+      await createLead(ctx.orgA, ctx.orgA.owner.accessToken, {
+        mobile,
+        assignedToId: ctx.orgA.owner.id,
+      });
+
+      const result = await ingestion.ingest(event(ctx.orgA, { senderPhone: mobile }));
+
+      const asRep = await ctx
+        .http()
+        .get(`/api/v1/conversations/${result.conversationId}`)
+        .set(auth(ctx.orgA.rep.accessToken));
+
+      // The review queue must not become a side door into a colleague's leads.
+      expect(asRep.status).toBe(404);
+    });
+
+    it('still shows unassigned conversations to everyone', async () => {
+      const result = await ingestion.ingest(
+        event(ctx.orgA, { senderPhone: '4155558841', content: 'need price list' }),
+      );
+
+      const asRep = await ctx
+        .http()
+        .get('/api/v1/conversations/review')
+        .set(auth(ctx.orgA.rep.accessToken));
+
+      expect(asRep.status).toBe(200);
+      // An enquiry nobody owns is exactly what must not sit unnoticed.
+      expect(asRep.body.data.items.map((i: { id: string }) => i.id)).toContain(
+        result.conversationId,
+      );
+    });
+
+    it('does not leak another organization’s queue', async () => {
+      const result = await ingestion.ingest(
+        event(ctx.orgA, { senderPhone: '4155558842', content: 'quotation' }),
+      );
+
+      const queueB = await ctx
+        .http()
+        .get('/api/v1/conversations/review')
+        .set(auth(ctx.orgB.owner.accessToken));
+
+      expect(queueB.status).toBe(200);
+      expect(queueB.body.data.items.map((i: { id: string }) => i.id)).not.toContain(
+        result.conversationId,
+      );
+    });
+  });
+
   // ===========================================================================
   // Linking permissions
   // ===========================================================================

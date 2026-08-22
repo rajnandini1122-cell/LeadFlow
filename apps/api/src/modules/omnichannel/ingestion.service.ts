@@ -4,6 +4,7 @@ import { TenantContextService } from '../../common/tenancy/tenant-context.servic
 import { IdentityResolutionService } from './identity-resolution.service';
 import { OmnichannelRepository } from './omnichannel.repository';
 import { selectLead } from './lead-selection';
+import { detectBuyingSignals } from './lead-signals';
 import type { IngestionResult, NormalizedChannelEvent } from './channel-event';
 
 /**
@@ -111,6 +112,19 @@ export class IngestionService {
       messageType: event.messageType ?? 'TEXT',
       sentAt: event.timestamp,
     });
+
+    /*
+     * Does this read like someone trying to buy something?
+     *
+     * Only ever changes which pile the conversation lands in for review. No
+     * lead is created from a keyword — a queue that manufactures leads from
+     * the word "price" fills the pipeline with noise, and the person reviewing
+     * it is the one who can tell "what is your price" from "great price!".
+     */
+    const signals = detectBuyingSignals(event.content);
+    if (signals.isPotentialLead) {
+      await this.repository.markPotentialLead(conversation.id, signals.signals);
+    }
 
     await this.repository.touchConversation({
       conversationId: conversation.id,

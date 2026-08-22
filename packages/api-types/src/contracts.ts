@@ -146,6 +146,15 @@ export interface OrganizationSettings {
   workingHoursEnd: string;
   /** Tenant-defined lead sources; empty means use the neutral built-in list. */
   leadSources: string[];
+  /**
+   * Whether omnichannel capture is switched on for this tenant.
+   *
+   * Read-only from the client's side: it is exposed so the app can hide a
+   * feature the organization has not enabled, and NOT included in
+   * UpdateOrganizationRequest, because turning capture on is a decision that
+   * belongs with connecting a channel rather than with editing settings.
+   */
+  omnichannelEnabled: boolean;
 }
 
 export interface UpdateOrganizationRequest {

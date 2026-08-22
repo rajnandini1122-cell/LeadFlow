@@ -15,6 +15,7 @@ import { AboutPage } from './features/marketing/about-page';
 import { ContactPage } from './features/marketing/contact-page';
 import { DashboardPage } from './features/dashboard/dashboard-page';
 import { LeadsPage } from './features/leads/leads-page';
+import { ChannelReviewPage } from './features/omnichannel/channel-review-page';
 import { LeadDetailPage } from './features/leads/lead-detail-page';
 import { ImportLeadsPage } from './features/leads/import-leads-page';
 import { ContactsPage } from './features/contacts/contacts-page';
@@ -110,6 +111,7 @@ export function App(): React.JSX.Element {
                 <Route path="dashboard" element={<DashboardPage />} />
                 <Route path="leads" element={<LeadsPage />} />
                 {/* Before :id, or the router matches "import" as a lead id. */}
+                <Route path="leads/review" element={<ChannelReviewPage />} />
                 <Route path="leads/import" element={<ImportLeadsPage />} />
                 <Route path="leads/:id" element={<LeadDetailPage />} />
                 <Route path="contacts" element={<ContactsPage />} />

@@ -3,6 +3,8 @@ import { NavLink, Outlet } from 'react-router-dom';
 import { PERMISSIONS, type Permission } from '@leadflow/api-types';
 import { useAuth } from '../features/auth/auth-context';
 import { useFollowUps } from '../features/leads/use-lead-mutations';
+import { useOmnichannelEnabled } from '../features/omnichannel/use-omnichannel-enabled';
+import { useReviewCount } from '../features/omnichannel/use-conversations';
 import { Avatar } from './ui';
 import { Copyright, LogoMark } from './brand';
 import { OrganizationSwitcher } from './organization-switcher';
@@ -14,7 +16,13 @@ interface NavItem {
   /** Hidden without this permission. Visibility is convenience — the API guards. */
   permission?: Permission;
   /** Shows a live count; red when it represents something overdue. */
-  badge?: 'overdue';
+  badge?: 'overdue' | 'review';
+  /**
+   * Hidden unless the organization has switched omnichannel capture on.
+   * A tenant that has connected no channel never sees an empty queue for a
+   * feature it does not use.
+   */
+  requiresOmnichannel?: boolean;
   /**
    * Exact-match only. Needed for /reports, which would otherwise stay
    * highlighted while /reports/daily is open. Left off for /leads so the tab
@@ -27,6 +35,13 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { to: '/dashboard', label: 'Dashboard', icon: '◆' },
   { to: '/leads', label: 'Leads', icon: '☰' },
+  {
+    to: '/leads/review',
+    label: 'Channel review',
+    icon: '⌸',
+    badge: 'review',
+    requiresOmnichannel: true,
+  },
   { to: '/contacts', label: 'Contacts', icon: '⚈', permission: PERMISSIONS.CONTACT_VIEW },
   { to: '/follow-ups', label: 'Follow-ups', icon: '◷', badge: 'overdue' },
   { to: '/team', label: 'Team', icon: '⚇', permission: PERMISSIONS.USER_VIEW },
@@ -51,7 +66,18 @@ export function AppShell(): React.JSX.Element {
   const overdue = useFollowUps('overdue');
   const overdueCount = overdue.data?.length ?? 0;
 
-  const visible = NAV_ITEMS.filter((item) => !item.permission || can(item.permission));
+  // Omnichannel is opt-in per tenant. The count is only fetched once the
+  // feature is on, so an organization that never enabled it makes no request
+  // for a queue it does not have.
+  const omnichannel = useOmnichannelEnabled();
+  const review = useReviewCount(omnichannel);
+  const reviewCount = review.data?.count ?? 0;
+
+  const visible = NAV_ITEMS.filter(
+    (item) =>
+      (!item.permission || can(item.permission)) &&
+      (!item.requiresOmnichannel || omnichannel),
+  );
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -93,6 +119,16 @@ export function AppShell(): React.JSX.Element {
                   {item.badge === 'overdue' && overdueCount > 0 && (
                     <span className="rounded-full bg-red-500 px-1.5 py-0.5 text-[10px] font-semibold text-white tabular-nums">
                       {overdueCount}
+                    </span>
+                  )}
+                  {/*
+                    Amber, not red: a conversation waiting on a decision is
+                    work to do, whereas an overdue follow-up is a promise
+                    already broken. Colouring them alike would flatten that.
+                  */}
+                  {item.badge === 'review' && reviewCount > 0 && (
+                    <span className="rounded-full bg-amber-500 px-1.5 py-0.5 text-[10px] font-semibold text-white tabular-nums">
+                      {reviewCount}
                     </span>
                   )}
                 </>

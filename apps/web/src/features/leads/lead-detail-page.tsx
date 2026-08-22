@@ -22,6 +22,7 @@ import {
   StatusBadge,
 } from '../../components/ui';
 import { useAuth } from '../auth/auth-context';
+import { LeadConversationsCard } from '../omnichannel/lead-conversations-card';
 import { useLead, type LeadActivity } from './use-leads';
 import {
   useAddNote,
@@ -195,6 +196,12 @@ export function LeadDetailPage(): React.JSX.Element {
               </>
             )}
           </Card>
+
+          {/*
+            Renders nothing when this lead has no conversations, so every lead
+            that predates omnichannel looks exactly as it did before.
+          */}
+          <LeadConversationsCard leadId={data.id} />
         </div>
 
         <div className="space-y-6">

@@ -292,6 +292,184 @@ export class OmnichannelRepository {
     });
   }
 
+  /**
+   * Records that this thread looks like a buying enquiry.
+   *
+   * Signals accumulate across messages rather than being replaced: a customer
+   * who opens with "hi" and follows with "what is your MOQ" should end up
+   * flagged, and the reviewer should see every word that contributed.
+   */
+  async markPotentialLead(conversationId: string, signals: string[]): Promise<void> {
+    const existing = await this.prisma.client.conversation.findFirst({
+      where: { id: conversationId },
+      select: { potentialLeadSignals: true },
+    });
+
+    const merged = [...new Set([...(existing?.potentialLeadSignals ?? []), ...signals])];
+
+    await this.prisma.client.conversation.update({
+      where: { id: conversationId },
+      data: { potentialLead: true, potentialLeadSignals: merged },
+    });
+  }
+
+  // --- review queue ---------------------------------------------------------
+
+  /**
+   * Conversations waiting on a human decision.
+   *
+   * `ownerScope` is the caller's lead visibility expressed as an owner filter.
+   * A rep restricted to their own leads sees their own conversations and the
+   * unassigned queue — never a colleague's. Unassigned threads are visible to
+   * everyone on purpose: an enquiry nobody owns is exactly what must not sit
+   * unnoticed, which is the whole premise of the product.
+   */
+  async listForReview(options: {
+    ownerScope: string | undefined;
+    channel?: 'WHATSAPP' | 'FACEBOOK' | 'INSTAGRAM' | undefined;
+    category?: string | undefined;
+    archived: boolean;
+    limit: number;
+  }) {
+    const where: Record<string, unknown> = {
+      archivedAt: options.archived ? { not: null } : null,
+    };
+
+    if (options.channel) where['channel'] = options.channel;
+
+    if (options.ownerScope) {
+      where['OR'] = [{ ownerId: options.ownerScope }, { ownerId: null }];
+    }
+
+    switch (options.category) {
+      case 'UNRESOLVED':
+        // Nobody could be identified. The hardest pile, and the one that goes
+        // stale most quietly.
+        where['contactId'] = null;
+        where['linkState'] = 'UNLINKED';
+        break;
+      case 'UNLINKED':
+        where['contactId'] = { not: null };
+        where['linkState'] = 'UNLINKED';
+        break;
+      case 'REVIEW_REQUIRED':
+        where['linkState'] = 'REVIEW_REQUIRED';
+        break;
+      case 'POTENTIAL_LEAD':
+        where['potentialLead'] = true;
+        where['linkState'] = { not: 'LINKED' };
+        break;
+      case 'LINKED':
+        where['linkState'] = 'LINKED';
+        break;
+      default:
+        // "All" still means all that NEED something. A linked conversation has
+        // already been dealt with and would only bury the ones that have not.
+        where['linkState'] = { not: 'LINKED' };
+    }
+
+    return this.prisma.client.conversation.findMany({
+      where,
+      orderBy: { lastMessageAt: 'desc' },
+      take: options.limit,
+      include: {
+        contact: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            mobile: true,
+            email: true,
+            companyName: true,
+          },
+        },
+        owner: { select: { id: true, fullName: true } },
+        lead: { select: { id: true, leadNumber: true, status: true } },
+        messages: { orderBy: { createdAt: 'desc' }, take: 1 },
+      },
+    });
+  }
+
+  async countForReview(ownerScope: string | undefined): Promise<number> {
+    const where: Record<string, unknown> = {
+      archivedAt: null,
+      linkState: { not: 'LINKED' },
+    };
+    if (ownerScope) where['OR'] = [{ ownerId: ownerScope }, { ownerId: null }];
+
+    return this.prisma.client.conversation.count({ where });
+  }
+
+  /** One conversation with its full message history, for the detail view. */
+  async findConversationDetail(id: string) {
+    return this.prisma.client.conversation.findFirst({
+      where: { id },
+      include: {
+        contact: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            mobile: true,
+            email: true,
+            companyName: true,
+          },
+        },
+        owner: { select: { id: true, fullName: true } },
+        lead: {
+          select: { id: true, leadNumber: true, status: true, assignedToId: true },
+        },
+        integration: { select: { id: true, displayName: true, status: true } },
+        messages: { orderBy: { createdAt: 'asc' }, take: 200 },
+      },
+    });
+  }
+
+  async setArchived(input: {
+    conversationId: string;
+    archivedAt: Date | null;
+    actorId: string | null;
+    reason: string | null;
+  }): Promise<void> {
+    await this.prisma.client.conversation.update({
+      where: { id: input.conversationId },
+      data: {
+        archivedAt: input.archivedAt,
+        archivedById: input.archivedAt ? input.actorId : null,
+        archivedReason: input.archivedAt ? input.reason : null,
+      },
+    });
+  }
+
+  /**
+   * Candidate leads for a contact, narrowed to what this caller may see.
+   *
+   * The visibility filter is applied HERE rather than after fetching, so a
+   * candidate list can never become a way to learn that a colleague's lead
+   * exists.
+   */
+  async findVisibleLeadsForContact(contactId: string, assignedToId: string | undefined) {
+    return this.prisma.client.lead.findMany({
+      where: {
+        contactId,
+        deletedAt: null,
+        ...(assignedToId ? { assignedToId } : {}),
+      },
+      select: {
+        id: true,
+        leadNumber: true,
+        status: true,
+        companyName: true,
+        productInterest: true,
+        createdAt: true,
+        lastActivityAt: true,
+        assignedTo: { select: { id: true, fullName: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 20,
+    });
+  }
+
   // --- activity -------------------------------------------------------------
 
   async recordLeadActivity(input: {

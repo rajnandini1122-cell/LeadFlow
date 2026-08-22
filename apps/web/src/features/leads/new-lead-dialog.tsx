@@ -44,12 +44,40 @@ function defaultFollowUp(): string {
   return new Date(date.getTime() - offset).toISOString().slice(0, 16);
 }
 
+/**
+ * Values a caller can seed the form with.
+ *
+ * Added for "Create lead" in the channel review queue, which knows the
+ * customer's name, number and what they asked for. It is a PREFILL and nothing
+ * more: the form still renders, the user still edits and submits it, and the
+ * ordinary POST /leads still applies every validation and duplicate check. A
+ * conversation must not be able to conjure a lead the user never saw.
+ */
+export interface NewLeadPrefill {
+  firstName?: string | undefined;
+  lastName?: string | undefined;
+  mobile?: string | undefined;
+  email?: string | undefined;
+  companyName?: string | undefined;
+  source?: string | undefined;
+  productInterest?: string | undefined;
+}
+
 export function NewLeadDialog({
   open,
   onClose,
+  prefill,
+  onCreated,
 }: {
   open: boolean;
   onClose: () => void;
+  prefill?: NewLeadPrefill | undefined;
+  /**
+   * Called with the created lead so a caller can act on it — the review queue
+   * uses this to link the originating conversation. Runs after the lead exists,
+   * never instead of creating it.
+   */
+  onCreated?: ((lead: LeadSummary) => void) | undefined;
 }): React.JSX.Element | null {
   const queryClient = useQueryClient();
 
@@ -102,6 +130,25 @@ export function NewLeadDialog({
     setDuplicate(null);
   };
 
+  /*
+   * Seed the fields when the dialog opens with a prefill.
+   *
+   * Keyed on `open` so reopening restores the suggestion after the user has
+   * edited it, and so a prefill never overwrites what someone is currently
+   * typing.
+   */
+  useEffect(() => {
+    if (!open || !prefill) return;
+    if (prefill.firstName !== undefined) setFirstName(prefill.firstName);
+    if (prefill.lastName !== undefined) setLastName(prefill.lastName);
+    if (prefill.mobile !== undefined) setMobile(prefill.mobile);
+    if (prefill.email !== undefined) setEmail(prefill.email);
+    if (prefill.companyName !== undefined) setCompanyName(prefill.companyName);
+    if (prefill.source !== undefined) setSource(prefill.source);
+    if (prefill.productInterest !== undefined) setProductInterest(prefill.productInterest);
+    // Depends on `open` alone, deliberately: see the comment above.
+  }, [open]);
+
   // Escape closes, matching every other dialog people use.
   useEffect(() => {
     if (!open) return;
@@ -134,8 +181,9 @@ export function NewLeadDialog({
         ...(terminal ? {} : { nextFollowUpAt: new Date(nextFollowUpAt).toISOString() }),
         ...(allowDuplicate ? { allowDuplicate: true } : {}),
       }),
-    onSuccess: () => {
+    onSuccess: (lead) => {
       void queryClient.invalidateQueries({ queryKey: ['leads'] });
+      onCreated?.(lead);
       reset();
       onClose();
     },

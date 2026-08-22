@@ -266,6 +266,7 @@ model User {
 
   connectedIntegrations ChannelIntegration[]
   ownedConversations    Conversation[]
+  archivedConversations Conversation[]     @relation("ConversationArchiver")
 
   @@index([status])
   @@map("users")
@@ -996,6 +997,28 @@ model Conversation {
   linkState     ConversationLinkState @default(UNLINKED) @map("link_state")
   lastMessageAt DateTime?             @map("last_message_at") @db.Timestamptz(6)
 
+  /// Dismissed from the review queue: spam, a greeting, a support question.
+  ///
+  /// A timestamp rather than a link state, because being dismissed is
+  /// orthogonal to whether a lead was ever matched — an ambiguous conversation
+  /// can be dismissed too. Nothing is deleted: the thread and every message
+  /// stay exactly where they were, and clearing this returns it to the queue.
+  archivedAt   DateTime? @map("archived_at") @db.Timestamptz(6)
+  archivedById String?   @map("archived_by") @db.Uuid
+  /// Why it was dismissed, for whoever wonders later.
+  archivedReason String? @map("archived_reason") @db.VarChar(200)
+
+  /// Whether anything in this thread reads like a buying enquiry.
+  ///
+  /// Set by transparent keyword rules at ingestion (see lead-signals.ts) and
+  /// stored rather than recomputed, so the review queue can filter on it
+  /// without reading every message of every conversation. It ONLY affects
+  /// which pile a conversation lands in — a lead is never created from it.
+  potentialLead        Boolean  @default(false) @map("potential_lead")
+  /// The words that triggered it. Shown in review so the suggestion can be
+  /// judged rather than trusted.
+  potentialLeadSignals String[] @default([]) @map("potential_lead_signals")
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -1004,12 +1027,15 @@ model Conversation {
   contact      Contact?           @relation(fields: [contactId], references: [id], onDelete: SetNull)
   lead         Lead?              @relation(fields: [leadId], references: [id], onDelete: SetNull)
   owner        User?              @relation(fields: [ownerId], references: [id], onDelete: SetNull)
+  archivedBy   User?              @relation("ConversationArchiver", fields: [archivedById], references: [id], onDelete: SetNull)
   messages     Message[]
 
   /// Webhook idempotency: a redelivered thread must find its existing row.
   @@unique([organizationId, channel, externalConversationId])
   @@index([organizationId, status, lastMessageAt(sort: Desc)])
   @@index([organizationId, linkState, lastMessageAt(sort: Desc)])
+  /// The review queue: unarchived threads, newest first.
+  @@index([organizationId, archivedAt, lastMessageAt(sort: Desc)])
   @@index([organizationId, ownerId, status])
   @@index([organizationId, leadId])
   @@index([organizationId, contactId])
