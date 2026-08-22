@@ -185,8 +185,31 @@ export async function apiGet<T>(url: string, params?: Record<string, unknown>): 
 }
 
 export async function apiPost<T>(url: string, body?: unknown): Promise<T> {
-  const response = await api.post<ApiResponse<T>>(url, body ?? {});
+  const response = await api.post<ApiResponse<T>>(url, body ?? {}, formDataConfig(body));
   return unwrap(response.data);
+}
+
+/**
+ * Lets a file upload set its own Content-Type.
+ *
+ * The client defaults to `application/json`, which is right for every request
+ * that carries a body of JSON — and silently wrong for the ones that carry a
+ * file. A multipart body has to be announced with a BOUNDARY that only the
+ * runtime can generate, so the default has to be cleared for the browser to
+ * fill it in. Left in place, the server receives a multipart payload labelled
+ * as JSON, parses no fields at all, and reports that no file was attached —
+ * which reads like a bug in the upload rather than in the header.
+ *
+ * Applied here rather than at each call site, because every caller that posts
+ * a file would otherwise have to remember it: profile pictures and message
+ * attachments both go through this function.
+ */
+function formDataConfig(body: unknown) {
+  const isFormData = typeof FormData !== 'undefined' && body instanceof FormData;
+  // `null` removes the header; axios and the browser then agree on
+  // multipart/form-data with a generated boundary. (`undefined` also works at
+  // runtime but is rejected under exactOptionalPropertyTypes.)
+  return isFormData ? { headers: { 'Content-Type': null } } : undefined;
 }
 
 export async function apiPatch<T>(url: string, body?: unknown): Promise<T> {
