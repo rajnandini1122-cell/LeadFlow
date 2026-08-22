@@ -264,6 +264,7 @@ model User {
   createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
 
+  avatar            UserAvatar?
   memberships       OrganizationUser[] @relation("MembershipUser")
   invitedMembers    OrganizationUser[] @relation("MembershipInviter")
   sessions          Session[]
@@ -1324,4 +1325,41 @@ model WhatsAppTemplate {
   @@unique([organizationId, name, language])
   @@index([organizationId, status, supported])
   @@map("whatsapp_templates")
+}
+
+/// A user's profile picture, stored as bytes.
+///
+/// A SEPARATE TABLE, not a column on User, and that is the whole point.
+/// Prisma selects every scalar by default, so a `bytea` on `users` would mean
+/// any query that forgot an explicit `select` — the membership list, the
+/// assignee dropdown, the audit join — silently loaded a blob per row. Here
+/// the bytes are only ever read by the one endpoint that serves them.
+///
+/// Stored in the database rather than object storage because no object storage
+/// is configured, and standing one up to hold a few hundred kilobytes of
+/// avatars would be more moving parts than the feature is worth. Images are
+/// resized client-side and capped server-side, so the rows stay small. If
+/// storage is added later, only this table and the serving endpoint change.
+///
+/// NOT tenant-scoped: a User is global — one person can belong to several
+/// organizations and has one face in all of them. Access is controlled at the
+/// endpoint, which requires the caller to share an organization with the owner
+/// of the picture.
+model UserAvatar {
+  /// One picture per person, so the user id IS the key.
+  userId String @id @map("user_id") @db.Uuid
+
+  /// The image itself. Capped by the upload endpoint, not by the column.
+  data Bytes
+
+  /// The DETECTED type, never the one the browser declared.
+  mimeType  String @map("mime_type") @db.VarChar(60)
+  sizeBytes Int    @map("size_bytes")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_avatars")
 }

@@ -5,7 +5,7 @@ import { useAuth } from '../features/auth/auth-context';
 import { useFollowUps } from '../features/leads/use-lead-mutations';
 import { useOmnichannelEnabled } from '../features/omnichannel/use-omnichannel-enabled';
 import { useInboxCounts, useReviewCount } from '../features/omnichannel/use-conversations';
-import { Avatar } from './ui';
+import { UserAvatar } from './user-avatar';
 import { Copyright, LogoMark } from './brand';
 import { OrganizationSwitcher } from './organization-switcher';
 import { NotificationsMenu, type AttentionItem } from './notifications-menu';
@@ -252,7 +252,7 @@ export function AppShell(): React.JSX.Element {
           <div className="shrink-0 border-t border-slate-100 p-3">
             <OrganizationSwitcher />
             <div className="flex items-center gap-2.5 rounded-lg px-2 py-2">
-              <Avatar name={user.fullName} size="sm" />
+              <UserAvatar name={user.fullName} avatarUrl={user.avatarUrl} size="sm" />
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm font-medium text-slate-900">{user.fullName}</p>
                 <p className="truncate text-[11px] text-slate-500">{user.organization.name}</p>

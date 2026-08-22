@@ -9,6 +9,7 @@ import type {
 } from '@leadflow/api-types';
 import type { TokenPair } from '@leadflow/api-types';
 import {
+  apiGet,
   apiPost,
   mayHaveSession,
   setAccessToken,
@@ -49,6 +50,15 @@ interface AuthState {
   /** Switches tenant without re-entering credentials. Server validates membership. */
   switchOrganization: (organizationId: string) => Promise<void>;
   logout: () => Promise<void>;
+  /**
+   * Re-reads the signed-in user from the server.
+   *
+   * The session carries the profile — including the avatar URL — so changing
+   * a picture has to refresh it or the new one is invisible until the next
+   * sign-in. Deliberately re-fetches rather than patching state locally: the
+   * server is the authority on what the profile now says.
+   */
+  refreshUser: () => Promise<void>;
   /**
    * Whether this anonymous state came from the user deliberately signing out.
    *
@@ -185,6 +195,18 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
     setUser(result.user);
   }, []);
 
+  const refreshUser = useCallback(async (): Promise<void> => {
+    try {
+      const fresh = await apiGet<AuthenticatedUser>('/auth/me');
+      applyOrganizationFormatting(fresh);
+      setUser(fresh);
+    } catch {
+      // Swallowed: the caller's own action already succeeded, and a failure to
+      // re-read the profile is not something to interrupt them with. The next
+      // navigation picks it up.
+    }
+  }, []);
+
   const logout = useCallback(async (): Promise<void> => {
     try {
       await apiPost('/auth/logout');
@@ -234,10 +256,22 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
       register,
       switchOrganization,
       logout,
+      refreshUser,
       signedOut,
       can,
     }),
-    [user, status, pendingOrganizations, login, register, switchOrganization, logout, signedOut, can],
+    [
+      user,
+      status,
+      pendingOrganizations,
+      login,
+      register,
+      switchOrganization,
+      logout,
+      refreshUser,
+      signedOut,
+      can,
+    ],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

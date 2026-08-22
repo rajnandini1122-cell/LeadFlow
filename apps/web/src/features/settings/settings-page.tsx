@@ -12,6 +12,7 @@ interface LocaleOptions {
 }
 import { useAuth } from '../auth/auth-context';
 import { AndroidDownloadCard } from './android-download-card';
+import { ProfilePictureCard } from './profile-picture-card';
 
 /**
  * Organization settings — a real, working editor, not a placeholder.
@@ -379,6 +380,9 @@ export function SettingsPage(): React.JSX.Element {
         </div>
 
         <div className="space-y-6">
+          {/* Your own profile, above the read-only access summary. */}
+          <ProfilePictureCard />
+
           <Card>
             <CardHeader title="Your access" />
             <div className="p-5">

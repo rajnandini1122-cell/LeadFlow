@@ -193,3 +193,13 @@ export async function apiPatch<T>(url: string, body?: unknown): Promise<T> {
   const response = await api.patch<ApiResponse<T>>(url, body ?? {});
   return unwrap(response.data);
 }
+
+/**
+ * DELETE, for endpoints that answer 204.
+ *
+ * Returns void rather than unwrapping: a 204 has no body, so there is no
+ * envelope to read and pretending otherwise would throw on success.
+ */
+export async function apiDelete(url: string): Promise<void> {
+  await api.delete(url);
+}

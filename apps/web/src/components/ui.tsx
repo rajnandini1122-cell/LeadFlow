@@ -162,7 +162,23 @@ export function RoleBadge({ role }: { role: string }): React.JSX.Element {
 
 // -----------------------------------------------------------------------------
 
-export function Avatar({ name, size = 'md' }: { name: string; size?: 'sm' | 'md' }): React.JSX.Element {
+export function Avatar({
+  name,
+  size = 'md',
+  src,
+}: {
+  name: string;
+  size?: 'sm' | 'md';
+  /**
+   * A profile picture, already fetched through the authenticated client.
+   *
+   * Optional, and absent for most callers: leads and contacts are people
+   * outside the organization who have no account and therefore no photograph.
+   * Initials remain the default rather than a placeholder for something
+   * missing.
+   */
+  src?: string | null;
+}): React.JSX.Element {
   const dimensions = size === 'sm' ? 'h-7 w-7 text-[11px]' : 'h-9 w-9 text-xs';
 
   // Deterministic tint from the name, so a person keeps the same colour
@@ -176,6 +192,19 @@ export function Avatar({ name, size = 'md' }: { name: string; size?: 'sm' | 'md'
     'bg-violet-100 text-violet-700',
   ];
   const hash = [...name].reduce((sum, char) => sum + char.charCodeAt(0), 0);
+
+  if (src) {
+    return (
+      <img
+        src={src}
+        alt={name}
+        title={name}
+        // object-cover, so a non-square photograph is cropped rather than
+        // squashed into an oval.
+        className={`inline-block shrink-0 rounded-full object-cover ${dimensions}`}
+      />
+    );
+  }
 
   return (
     <span
