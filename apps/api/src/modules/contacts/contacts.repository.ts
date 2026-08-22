@@ -89,7 +89,8 @@ export class ContactsRepository {
   async create(input: {
     firstName?: string | undefined;
     lastName?: string | undefined;
-    mobile?: string | undefined;
+    /** Null for a contact with no phone number — an Instagram or Messenger lead. */
+    mobile?: string | null | undefined;
     email?: string | undefined;
     companyName?: string | undefined;
     city?: string | undefined;
@@ -122,9 +123,16 @@ export class ContactsRepository {
     return result.count;
   }
 
-  /** Finds or creates the contact for a person, keyed on E.164 mobile. */
+  /**
+   * Finds or creates the contact for a person, keyed on E.164 mobile.
+   *
+   * A null mobile ALWAYS creates a new contact. There is nothing to match on,
+   * and treating "no number" as a shared key would collapse every numberless
+   * enquiry — every Instagram and Messenger lead — into a single contact
+   * holding several unrelated customers' history.
+   */
   async findOrCreateByMobile(input: {
-    mobile: string;
+    mobile: string | null;
     firstName?: string | undefined;
     lastName?: string | undefined;
     email?: string | undefined;
@@ -132,11 +140,14 @@ export class ContactsRepository {
     city?: string | undefined;
     actorId: string;
   }) {
-    const existing = await this.prisma.client.contact.findFirst({
-      where: { mobile: input.mobile, ...this.live },
-    });
+    if (input.mobile !== null) {
+      const existing = await this.prisma.client.contact.findFirst({
+        where: { mobile: input.mobile, ...this.live },
+      });
 
-    if (existing) return existing;
+      if (existing) return existing;
+    }
+
     return this.create({ ...input, email: input.email?.toLowerCase() });
   }
 

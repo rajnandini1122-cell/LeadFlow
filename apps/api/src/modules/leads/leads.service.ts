@@ -108,14 +108,23 @@ export class LeadsService {
     await this.assertAssignableTo(dto.assignedToId);
 
     // Canonicalise BEFORE the duplicate check, so "+91 98200 11001" and
-    // "09820011001" are recognised as the same customer.
+    // "09820011001" are recognised as the same customer. Null when the lead
+    // has no phone number, which a social conversation genuinely may not.
     const mobile = await this.normaliseMobile(dto.mobile);
 
-    // --- duplicate detection (spec §23) -------------------------------------
-    // The rule is explicitly "do not silently create another lead". We return
-    // the existing one so the client can offer to open it; creating anyway
-    // requires the caller to opt in.
-    if (!dto.allowDuplicate) {
+    /*
+     * --- duplicate detection (spec §23) -------------------------------------
+     *
+     * The rule is explicitly "do not silently create another lead". We return
+     * the existing one so the client can offer to open it; creating anyway
+     * requires the caller to opt in.
+     *
+     * Skipped entirely without a mobile, because the mobile IS the duplicate
+     * key. Matching on name or company instead would be far worse than missing
+     * a duplicate: "John Smith at Acme" collides constantly, and wrongly
+     * refusing to create a lead loses a real enquiry.
+     */
+    if (mobile !== null && !dto.allowDuplicate) {
       const existing = await this.repository.findActiveByMobile(mobile);
       if (existing) {
         const name = [existing.firstName, existing.lastName].filter(Boolean).join(" ").trim();
@@ -139,6 +148,11 @@ export class LeadsService {
     // Every lead belongs to a person. Reusing the existing contact for this
     // mobile is what lets a returning customer's history survive a closed deal:
     // the second enquiry is a new lead, not a new person.
+    //
+    // With no mobile there is nothing to match on, so a fresh contact is
+    // created. Guessing that two nameless, numberless enquiries are the same
+    // person would silently merge unrelated customers, which is precisely what
+    // the manual merge workflow exists to avoid.
     const contact = await this.contacts.findOrCreateByMobile({
       mobile,
       firstName: dto.firstName,
@@ -183,7 +197,10 @@ export class LeadsService {
    * Indian one interpret the same digits differently, and getting this wrong
    * silently breaks duplicate detection.
    */
-  private async normaliseMobile(input: string): Promise<string> {
+  private async normaliseMobile(input: string | undefined): Promise<string | null> {
+    // No number is a valid state, not a validation failure — see CreateLeadDto.
+    if (input === undefined || input.trim() === '') return null;
+
     const country = await this.repository.organizationCountry();
 
     try {
@@ -257,7 +274,7 @@ export class LeadsService {
     status: LeadStatus,
     nextFollowUpAt: Date | null,
     principal: TenantPrincipal,
-    mobile: string,
+    mobile: string | null,
     contactId: string,
     attempt = 1,
   ): Promise<string> {
@@ -302,7 +319,12 @@ export class LeadsService {
          * A re-query cannot go stale the way a parsed error shape can, and it
          * only runs on the rare collision path.
          */
-        const collidingLead = await this.repository.findActiveByMobile(mobile);
+        /*
+         * Only a mobile can collide on the duplicate index. Without one, a
+         * P2002 must be the lead-number race, which the retry below handles.
+         */
+        const collidingLead =
+          mobile === null ? null : await this.repository.findActiveByMobile(mobile);
 
         /*
          * An acknowledged duplicate is excluded from the index, so a P2002

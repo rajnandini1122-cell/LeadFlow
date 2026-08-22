@@ -166,7 +166,10 @@ export function NewLeadDialog({
       apiPost<LeadSummary>('/leads', {
         firstName,
         ...(lastName ? { lastName } : {}),
-        mobile,
+        // Omitted when empty rather than sent as "": the server treats a
+        // missing mobile as "this lead has no phone number", which is a real
+        // state for an Instagram or Messenger enquiry.
+        ...(mobile.trim() ? { mobile: mobile.trim() } : {}),
         ...(email ? { email } : {}),
         ...(companyName ? { companyName } : {}),
         ...(city ? { city } : {}),
@@ -286,16 +289,24 @@ export function NewLeadDialog({
           <div className="grid gap-4 sm:grid-cols-2">
             <Field
               label="Mobile"
-              required
-              hint="Local or international format. Stored as E.164 and used to detect duplicates."
+              hint="Local or international format. Stored as E.164 and used to detect duplicates — without it, this lead cannot be matched against an existing customer."
               error={fieldError('mobile')}
             >
+              {/*
+                * Not required.
+                *
+                * A lead created from an Instagram or Messenger conversation has
+                * no phone number to give: those platforms hand over an opaque
+                * account id and nothing else. Demanding one forced the person
+                * triaging the review queue to invent a number, which is worse
+                * than recording that there isn't one — the conversation itself
+                * is the way back to that customer.
+                */}
               <input
                 value={mobile}
                 onChange={(event) => setMobile(event.target.value)}
-                required
                 inputMode="tel"
-                placeholder="Phone number"
+                placeholder="Phone number (optional)"
                 className={inputClass}
               />
             </Field>

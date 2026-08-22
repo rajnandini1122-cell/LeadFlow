@@ -5,6 +5,7 @@ import { apiGet, apiPatch } from '../../lib/api-client';
 import { Card, CardHeader, ErrorNotice, PageHeader, SkeletonRows } from '../../components/ui';
 import { formatDateTime } from '../../lib/format';
 import { useAuth } from '../auth/auth-context';
+import { ChannelSetupGuide } from './channel-setup-guide';
 import { useState, type FormEvent } from 'react';
 import {
   CHANNEL_PRESENTATION,
@@ -585,6 +586,13 @@ function ProviderSetup({ integration }: { integration: IntegrationView }): React
 
   return (
     <form onSubmit={submit} className="space-y-3 rounded-lg border border-slate-200 p-4">
+      {/*
+        * Above the fields, because it explains what they are asking for.
+        * Collapsed by default so it is help on the first run rather than a
+        * wall of text in the way on every visit afterwards.
+        */}
+      <ChannelSetupGuide channel={integration.channel} />
+
       <p className="text-sm text-pretty text-slate-600">{fields.hint}</p>
 
       <Field

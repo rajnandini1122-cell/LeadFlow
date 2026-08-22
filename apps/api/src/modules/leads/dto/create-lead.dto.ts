@@ -49,11 +49,35 @@ export class CreateLeadDto {
    * a hardcoded region — the same national number means different people in
    * different countries. Validation is intentionally loose here and strict
    * there, because only the service knows the tenant.
+   *
+   * OPTIONAL, which it has to be. A lead created from an Instagram or
+   * Messenger conversation has no phone number to offer: those platforms give
+   * an opaque, provider-scoped account id and nothing else, and the customer
+   * has not necessarily typed a number anywhere. Requiring one made "create a
+   * lead" impossible from exactly the conversations the review queue exists to
+   * triage — the person would have to invent a number, which is worse than
+   * having none.
+   *
+   * The database has always permitted this: `leads.mobile` is nullable and the
+   * duplicate index is `WHERE mobile IS NOT NULL`. Only this DTO stood in the
+   * way.
    */
+  @IsOptional()
   @IsString()
   @MaxLength(32)
   @Matches(/[0-9]/, { message: 'must contain digits' })
-  mobile!: string;
+  /*
+   * An empty string becomes undefined BEFORE validation.
+   *
+   * `@IsOptional()` only skips `undefined` and `null`, so a form that submits
+   * "" for an untouched field would otherwise fail the digits rule — the user
+   * would be told their blank optional field "must contain digits", which is
+   * both wrong and impossible to act on.
+   */
+  @Transform(({ value }) =>
+    typeof value === 'string' && value.trim() === '' ? undefined : value,
+  )
+  mobile?: string;
 
   @IsOptional()
   @IsEmail({}, { message: 'must be a valid email address' })

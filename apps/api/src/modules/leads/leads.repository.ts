@@ -183,7 +183,14 @@ export class LeadsRepository {
     leadNumber: string;
     firstName: string;
     lastName?: string | undefined;
-    mobile: string;
+    /**
+     * Null where the lead has no phone number.
+     *
+     * The column has always been nullable and the duplicate index is
+     * `WHERE mobile IS NOT NULL`, so this is the state the schema was designed
+     * for rather than a relaxation of it.
+     */
+    mobile: string | null;
     email?: string | undefined;
     companyName?: string | undefined;
     city?: string | undefined;
