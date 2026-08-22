@@ -15,6 +15,7 @@ import {
   type DemoLead,
   type DemoOrganization,
 } from './demo-data';
+import { seedOmnichannel, OMNICHANNEL_SUMMARY } from './seed-omnichannel';
 import {
   DEFAULT_PLAN_CODE,
   PLAN_CATALOGUE,
@@ -151,6 +152,15 @@ async function seedOrganization(
 
   // --- members ---------------------------------------------------------------
   const userIds = new Map<string, string>();
+  /*
+   * email -> id, alongside the role-keyed map above.
+   *
+   * A separate map rather than a change to `userIds`: that one is keyed by role
+   * for two SALES_REPs and by email for the rest, and the omnichannel fixtures
+   * need to name a specific person. Reworking the existing keying would touch
+   * lead assignment, which works.
+   */
+  const memberIds = new Map<string, string>();
 
   for (const member of demo.members) {
     const user = await prisma.user.upsert({
@@ -182,6 +192,7 @@ async function seedOrganization(
     });
 
     userIds.set(member.role === 'SALES_REP' ? member.email : member.role, user.id);
+    memberIds.set(member.email, user.id);
   }
 
   const reps = demo.members.filter((m) => m.role === 'SALES_REP');
@@ -194,6 +205,13 @@ async function seedOrganization(
 
   // --- leads -----------------------------------------------------------------
   let created = 0;
+  /*
+   * Company name -> lead id, for the omnichannel fixtures.
+   *
+   * Filled from BOTH newly created and already-present leads, so a re-run of
+   * the seed can still attach conversations to leads an earlier run made.
+   */
+  const leadsByCompany = new Map<string, string>();
 
   for (const [index, lead] of demo.leads.entries()) {
     const leadNumber = `LD-${String(index + 1).padStart(5, '0')}`;
@@ -201,7 +219,10 @@ async function seedOrganization(
       where: { organizationId: organization.id, leadNumber },
       select: { id: true },
     });
-    if (existing) continue;
+    if (existing) {
+      leadsByCompany.set(lead.companyName, existing.id);
+      continue;
+    }
 
     const isTerminal = lead.status === 'WON' || lead.status === 'LOST';
     const createdAt = daysAgo(lead.createdDaysAgo);
@@ -305,12 +326,33 @@ async function seedOrganization(
       });
     }
 
+    leadsByCompany.set(lead.companyName, row.id);
     created += 1;
   }
 
   console.log(
     `  ${demo.name} (${demo.slug}) — ${demo.members.length} members, ${created} leads created`,
   );
+
+  /*
+   * Conversations, for the first organization only.
+   *
+   * One tenant with omnichannel data and one without is deliberate: it makes an
+   * empty inbox in Meridian obviously correct rather than obviously broken, and
+   * it means the cross-tenant checks have a tenant with nothing to leak.
+   */
+  if (demo.slug === DEMO_ORGANIZATIONS[0]?.slug) {
+    await seedOmnichannel({
+      prisma,
+      organizationId: organization.id,
+      userIds: memberIds,
+      leadsByCompany,
+    });
+    console.log(
+      `  ${demo.name} — ${OMNICHANNEL_SUMMARY.conversations} conversations, ` +
+        `${OMNICHANNEL_SUMMARY.messages} messages, ${OMNICHANNEL_SUMMARY.templates} templates`,
+    );
+  }
 
   return organization.id;
 }

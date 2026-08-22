@@ -8,12 +8,29 @@ import type {
   Permission,
 } from '@leadflow/api-types';
 import type { TokenPair } from '@leadflow/api-types';
-import { apiPost, setAccessToken, setSessionExpiredHandler } from '../../lib/api-client';
+import {
+  apiPost,
+  mayHaveSession,
+  setAccessToken,
+  setSessionExpiredHandler,
+} from '../../lib/api-client';
 import { setFormattingContext } from '../../lib/format';
+import { clientPlatform, storeRefreshToken } from '../../lib/platform';
 
 interface RefreshResult {
   tokens: TokenPair;
   user: AuthenticatedUser;
+}
+
+/**
+ * Keeps the refresh token when this client is the one holding it.
+ *
+ * Android only. On the web `tokens.refreshToken` is absent — the server put it
+ * in an httpOnly cookie instead — and `storeRefreshToken` ignores non-native
+ * platforms anyway, so this is a no-op in a browser.
+ */
+function keepRefreshToken(tokens: TokenPair): void {
+  if (tokens.refreshToken) storeRefreshToken(tokens.refreshToken);
 }
 
 interface AuthState {
@@ -57,10 +74,18 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
     let cancelled = false;
 
     const restore = async (): Promise<void> => {
+      if (!mayHaveSession()) {
+        // App, first launch, nothing stored. Saves a request guaranteed to
+        // 401 and the brief "loading" flash that comes with it.
+        setStatus('anonymous');
+        return;
+      }
+
       try {
         const result = await apiPost<RefreshResult>('/auth/refresh');
 
         if (cancelled) return;
+        keepRefreshToken(result.tokens);
         setAccessToken(result.tokens.accessToken);
         applyOrganizationFormatting(result.user);
         setUser(result.user);
@@ -80,6 +105,7 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
 
   useEffect(() => {
     setSessionExpiredHandler(() => {
+      storeRefreshToken(null);
       setUser(null);
       setStatus('anonymous');
     });
@@ -90,7 +116,7 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
       const result = await apiPost<LoginResponse>('/auth/login', {
         email,
         password,
-        platform: 'WEB',
+        platform: clientPlatform(),
         ...(organizationId ? { organizationId } : {}),
       });
 
@@ -100,6 +126,7 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
       }
 
       setPendingOrganizations(null);
+      keepRefreshToken(result.tokens);
       setAccessToken(result.tokens.accessToken);
       applyOrganizationFormatting(result.user);
         setUser(result.user);
@@ -119,9 +146,10 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
     }): Promise<void> => {
       const result = await apiPost<RefreshResult>('/auth/register', {
         ...input,
-        platform: 'WEB',
+        platform: clientPlatform(),
       });
 
+      keepRefreshToken(result.tokens);
       setAccessToken(result.tokens.accessToken);
       applyOrganizationFormatting(result.user);
       setUser(result.user);
@@ -135,9 +163,10 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
     // session is issued, so this is a selector rather than a claim.
     const result = await apiPost<RefreshResult>('/auth/switch-organization', {
       targetOrganizationId: organizationId,
-      platform: 'WEB',
+      platform: clientPlatform(),
     });
 
+    keepRefreshToken(result.tokens);
     setAccessToken(result.tokens.accessToken);
     applyOrganizationFormatting(result.user);
     setUser(result.user);
@@ -155,6 +184,7 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
     } finally {
       // Clear local state even if the call failed — the user asked to leave,
       // and the refresh cookie is cleared server-side on the next attempt.
+      storeRefreshToken(null);
       setAccessToken(null);
       setUser(null);
       setStatus('anonymous');

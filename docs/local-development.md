@@ -85,16 +85,50 @@ Every seeded account uses the same password:
 Password: ChangeMe!2026
 ```
 
+**Northwind Supply** — the main demo organization, with conversations:
+
+| Email | Role | Sees |
+|---|---|---|
+| `owner@northwind.example` | OWNER | everything in Northwind |
+| `admin@northwind.example` | ADMIN | everything in Northwind |
+| `manager@northwind.example` | MANAGER | the team's leads and conversations |
+| `sofia@northwind.example` | SALES_REP | only her own |
+| `tomas@northwind.example` | SALES_REP | only his own |
+
+**Meridian Foods** — a second tenant, in another country and currency. It has leads
+but deliberately **no** conversations, so an empty inbox there is obviously correct
+rather than obviously broken:
+
 | Email | Role |
 |---|---|
-| `owner@northwind.example` | OWNER |
-| `admin@northwind.example` | ADMIN |
-| `manager@northwind.example` | MANAGER |
-| `tomas@northwind.example` | SALES_REP |
-| `owner@meridian.example` | OWNER of a second organization |
+| `owner@meridian.example` | OWNER |
+| `manager@meridian.example` | MANAGER |
+| `rohan@meridian.example` | SALES_REP |
+| `sana@meridian.example` | SALES_REP |
 
-Sign in as the Northwind owner and open **Inbox**. It is empty until a channel
-delivers something — §9 shows how to make that happen without Meta.
+### What the seed creates
+
+| | |
+|---|---|
+| Leads | 26 across all eight statuses, with overdue / due-today / upcoming follow-ups |
+| Contacts | one per lead, plus 7 from conversations |
+| Conversations | 7 — 3 WhatsApp, 2 Instagram, 2 Facebook Messenger |
+| Messages | 16, covering SENT, DELIVERED, READ, FAILED and UNCONFIRMED |
+| Attachments | a PDF on an outbound message, an image on an inbound one |
+| Templates | 4 WhatsApp templates: 2 sendable, 1 pending, 1 approved-but-unsupported |
+| Link states | 4 linked, 2 unlinked, 1 review-required |
+
+Sign in as the Northwind owner and open **Inbox** — it has data immediately. Then sign
+in as `sofia@northwind.example` and look again: a sales rep sees a genuinely smaller
+set, because the visibility policy is real and the demo data runs through it.
+
+### The seeded channels are NOT connected
+
+Every seeded integration is `DISCONNECTED` with no stored credential, on purpose.
+Marking one CONNECTED would tell an owner their WhatsApp number is live when no
+provider integration exists — and somebody who believes that stops checking their
+phone. So the conversations are fully browsable and **nothing can actually be sent**.
+§9 shows how to exercise the real ingestion path without Meta.
 
 ---
 
@@ -299,6 +333,20 @@ Register `https://<tunnel>/api/v1/webhooks/whatsapp` in the Meta app with your
 verify token, subscribe to `messages`, then connect the number through
 **Settings → Channels**. Verification will now succeed and the status becomes
 `CONNECTED` on its own.
+
+---
+
+## 10b. Android
+
+The Android app is this same web application packaged with Capacitor. Build it with:
+
+```bash
+npm run android:build      # builds the web bundle, syncs, then assembles a debug APK
+npm run android:publish    # copies it to the home page download card
+```
+
+Full setup, the API-address requirement and troubleshooting are in
+[android.md](./android.md).
 
 ---
 

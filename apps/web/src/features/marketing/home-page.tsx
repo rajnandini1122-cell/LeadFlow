@@ -3,6 +3,7 @@ import { usePageMeta } from '../../lib/use-page-meta';
 import { SectionHeading } from './marketing-layout';
 import { PricingTable } from './pricing-table';
 import { SALES_EMAIL } from './contact-page';
+import { AndroidDownload } from './android-download';
 
 /**
  * The homepage.
@@ -26,6 +27,8 @@ export function HomePage(): React.JSX.Element {
       <FeatureSummary />
       <HowItWorks />
       <Ownership />
+      {/* Renders nothing unless an APK has actually been published. */}
+      <AndroidDownload />
       <PricingPreview />
       <ContactCta />
       <ClosingCta />
