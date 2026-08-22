@@ -64,6 +64,22 @@ export interface SendMediaInput extends SendTextInput {
   body: string;
 }
 
+/**
+ * A template send, already validated against the STORED template definition.
+ *
+ * No `body`: the text a template produces is fixed by the approved definition,
+ * so there is nothing free-form to carry. What the customer will see is
+ * rendered separately for the timeline rather than sent.
+ */
+export interface SendTemplateInput extends Omit<SendTextInput, 'body'> {
+  template: {
+    name: string;
+    language: string;
+    /** The parameter payload built by buildTemplateComponents. */
+    components: unknown[];
+  };
+}
+
 export interface ChannelSender {
   sendText(input: SendTextInput): Promise<SendResult>;
   /**
@@ -74,4 +90,13 @@ export interface ChannelSender {
    * abandoned file to clean up and no new storage to operate.
    */
   sendMedia(input: SendMediaInput): Promise<SendResult>;
+  /**
+   * Send an approved template.
+   *
+   * OPTIONAL, and that is how Instagram and Messenger stay out of it: neither
+   * has a template concept in its messaging API, so their adapter simply does
+   * not implement this and the orchestration reports templates as unavailable
+   * without needing a channel check of its own.
+   */
+  sendTemplate?(input: SendTemplateInput): Promise<SendResult>;
 }

@@ -14,6 +14,8 @@ import { WhatsAppOutboundService } from './providers/whatsapp/whatsapp-outbound.
 import { MessengerOutboundService } from './providers/messenger/messenger-outbound.service';
 import { WhatsAppIntegrationRepository } from './providers/whatsapp/whatsapp-integration.repository';
 import { WhatsAppSetupService } from './providers/whatsapp/whatsapp-setup.service';
+import { WhatsAppTemplateRepository } from './providers/whatsapp/whatsapp-template.repository';
+import { WhatsAppTemplateService } from './providers/whatsapp/whatsapp-template.service';
 import { WhatsAppWebhookController } from './providers/whatsapp/whatsapp-webhook.controller';
 import { WhatsAppWebhookService } from './providers/whatsapp/whatsapp-webhook.service';
 import { MessengerIntegrationRepository } from './providers/messenger/messenger-integration.repository';
@@ -50,6 +52,8 @@ import {
     IntegrationsService,
     WhatsAppIntegrationRepository,
     WhatsAppSetupService,
+    WhatsAppTemplateRepository,
+    WhatsAppTemplateService,
     WhatsAppWebhookService,
     WhatsAppOutboundService,
     MessengerOutboundService,

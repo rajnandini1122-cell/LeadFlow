@@ -33,6 +33,7 @@ import {
   ListConversationsDto,
   ReviewQueueDto,
   SendMessageDto,
+  SendTemplateDto,
 } from './dto/conversations.dto';
 
 /**
@@ -172,6 +173,40 @@ export class ConversationsController {
         content: dto.content ?? '',
         idempotencyKey: dto.idempotencyKey,
         ...(file ? { file } : {}),
+      },
+      principal,
+    );
+  }
+
+  /**
+   * Send an approved WhatsApp template.
+   *
+   * A SEPARATE endpoint from `POST :id/messages`, on purpose. Sending a
+   * template is a different act with a different cost — it can reach a customer
+   * whose 24-hour window has closed, and on most plans it is billed — so it is
+   * something a person chooses, never something the ordinary send route falls
+   * back to when the window check refuses. Folding it into the message endpoint
+   * would make that fallback one `if` away.
+   */
+  @Post(':id/template-messages')
+  @HttpCode(HttpStatus.CREATED)
+  @RequirePermissions(PERMISSIONS.LEAD_UPDATE)
+  @ApiOperation({ summary: 'Send an approved WhatsApp template on this conversation' })
+  async sendTemplateMessage(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: SendTemplateDto,
+    @CurrentUser() principal: TenantPrincipal,
+  ) {
+    return this.outbound.sendTemplate(
+      id,
+      {
+        templateName: dto.templateName,
+        language: dto.language,
+        parameters: {
+          header: dto.headerParameters ?? [],
+          body: dto.bodyParameters ?? [],
+        },
+        idempotencyKey: dto.idempotencyKey,
       },
       principal,
     );

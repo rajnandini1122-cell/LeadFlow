@@ -12,6 +12,8 @@ import {
   useConnectWhatsApp,
   useDisconnectMessenger,
   useDisconnectWhatsApp,
+  useSyncWhatsAppTemplates,
+  useWhatsAppTemplates,
   useIntegrations,
   useSetIntegrationEnabled,
   type IntegrationView,
@@ -271,6 +273,10 @@ function IntegrationCard({
           ) : null}
         </div>
 
+        {integration.channel === 'WHATSAPP' && (
+          <WhatsAppTemplates integration={integration} canManage={canManage} />
+        )}
+
         {connected && (
           <p className="text-xs text-slate-500">
             Disabling stops new messages being acted on. Existing conversations, messages and
@@ -281,6 +287,152 @@ function IntegrationCard({
         )}
       </div>
     </Card>
+  );
+}
+
+/**
+ * The WhatsApp templates this organization can send.
+ *
+ * LeadFlow DISCOVERS templates; it cannot create one and cannot approve one.
+ * Both happen in Meta, and this panel says so rather than offering a button
+ * that would imply otherwise. Everything shown is what Meta last reported,
+ * including the statuses that mean "not sendable" — hiding those would leave
+ * an owner wondering where the template they created went.
+ */
+function WhatsAppTemplates({
+  integration,
+  canManage,
+}: {
+  integration: IntegrationView;
+  canManage: boolean;
+}): React.JSX.Element {
+  const connected = integration.status === 'CONNECTED';
+  // No point asking for a list that cannot exist yet.
+  const templates = useWhatsAppTemplates(connected);
+  const sync = useSyncWhatsAppTemplates();
+
+  const [result, setResult] = useState<string | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+
+  if (!connected) {
+    return (
+      <div className="border-t border-slate-100 pt-4">
+        <h3 className="text-sm font-semibold text-slate-800">Message templates</h3>
+        <p className="mt-1 text-xs text-pretty text-slate-500">
+          Connect WhatsApp before loading templates. Templates are created and approved in
+          Meta, then loaded here.
+        </p>
+      </div>
+    );
+  }
+
+  const items = templates.data?.items ?? [];
+
+  const refresh = (): void => {
+    setResult(null);
+    setFailure(null);
+    sync.mutate(undefined, {
+      onSuccess: (summary) => {
+        setResult(
+          `Loaded ${summary.total} template${summary.total === 1 ? '' : 's'}, ` +
+            `${summary.approved} ready to send.`,
+        );
+      },
+      onError: (error) => {
+        // The API's words. They name the fix and carry no provider body.
+        setFailure(
+          error instanceof Error
+            ? error.message
+            : 'Could not load templates from Meta. Please try again.',
+        );
+      },
+    });
+  };
+
+  return (
+    <div className="border-t border-slate-100 pt-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold text-slate-800">Message templates</h3>
+        {canManage && (
+          <button
+            type="button"
+            disabled={sync.isPending}
+            onClick={refresh}
+            className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
+          >
+            {sync.isPending ? 'Refreshing…' : 'Refresh templates'}
+          </button>
+        )}
+      </div>
+
+      <p className="mt-1 text-xs text-pretty text-slate-500">
+        Templates are created and approved in Meta. LeadFlow loads them and can send an
+        approved one when the 24-hour reply window has closed.
+      </p>
+
+      {result && (
+        <p role="status" className="mt-2 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+          {result}
+        </p>
+      )}
+
+      {failure && (
+        <p role="alert" className="mt-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-800">
+          {failure}
+        </p>
+      )}
+
+      {templates.isPending && <SkeletonRows rows={2} />}
+
+      {templates.isError && <ErrorNotice message="Could not load the template list." />}
+
+      {templates.isSuccess && items.length === 0 && (
+        <p className="mt-3 text-xs text-slate-500">
+          No templates loaded yet. Create and get them approved in Meta, then choose
+          Refresh templates.
+        </p>
+      )}
+
+      {items.length > 0 && (
+        <ul className="mt-3 divide-y divide-slate-100 border-t border-slate-100">
+          {items.map((template) => {
+            const sendable = template.status === 'APPROVED' && template.supported;
+
+            return (
+              <li key={`${template.name}:${template.language}`} className="py-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-sm font-medium text-slate-800">{template.name}</span>
+                  <span className="text-xs text-slate-500">{template.language}</span>
+                  {template.category && (
+                    <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600">
+                      {template.category}
+                    </span>
+                  )}
+                  {/* Meta's status, shown as Meta reported it. */}
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                      sendable ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'
+                    }`}
+                  >
+                    {template.status}
+                  </span>
+                </div>
+
+                {template.bodyText && (
+                  <p className="mt-1 text-xs text-pretty whitespace-pre-wrap text-slate-600">
+                    {template.bodyText}
+                  </p>
+                )}
+
+                {!template.supported && template.unsupportedReason && (
+                  <p className="mt-1 text-[11px] text-amber-700">{template.unsupportedReason}</p>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
   );
 }
 

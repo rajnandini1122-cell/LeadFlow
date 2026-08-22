@@ -52,6 +52,10 @@ export const TENANT_SCOPED_MODELS: Record<string, string> = {
   Conversation: 'organizationId',
   Message: 'organizationId',
   ContactChannelIdentity: 'organizationId',
+  // A template NAME is what the send API takes, so an unscoped read here would
+  // be enough to send as another tenant if any single check above it were ever
+  // missed. Scoped for the same reason conversations are.
+  WhatsAppTemplate: 'organizationId',
   // Plan is deliberately ABSENT: it is a global catalogue offered to every
   // tenant, and the public pricing page reads it with no tenant context at all.
 };

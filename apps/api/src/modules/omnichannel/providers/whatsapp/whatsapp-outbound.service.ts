@@ -5,6 +5,7 @@ import type {
   ChannelSender,
   SendMediaInput,
   SendResult,
+  SendTemplateInput,
   SendTextInput,
 } from '../channel-sender';
 
@@ -219,6 +220,45 @@ export class WhatsAppOutboundService implements ChannelSender {
     );
   }
 
+  /**
+   * Send an approved template.
+   *
+   * The only outbound path that works outside the 24-hour window, and it is
+   * reached only when a person deliberately chose a template. Nothing falls
+   * back to it from a refused free-form send: a customer receiving a templated
+   * message they did not expect is worse than a refusal the salesperson can
+   * see and act on.
+   *
+   * The components are built and validated upstream against the stored
+   * definition, so no arbitrary structure from a request body reaches Meta.
+   */
+  async sendTemplate(input: SendTemplateInput): Promise<SendResult> {
+    const credentials = await this.credentials(input.encryptedAccessToken);
+    if (!credentials.ok) return credentials.failure;
+
+    const { accessToken, version } = credentials;
+
+    return this.post(
+      `https://graph.facebook.com/${version}/${encodeURIComponent(input.accountId)}/messages`,
+      accessToken,
+      {
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to: input.recipient.replace(/^\+/, ''),
+        type: 'template',
+        template: {
+          name: input.template.name,
+          language: { code: input.template.language },
+          // Omitted entirely when the template takes no parameters: Meta
+          // rejects an empty components array.
+          ...(input.template.components.length > 0
+            ? { components: input.template.components }
+            : {}),
+        },
+      },
+    );
+  }
+
   /** Decrypts once, for either send path. */
   private async credentials(
     encryptedAccessToken: string | null,
@@ -338,6 +378,23 @@ export class WhatsAppOutboundService implements ChannelSender {
       return {
         ok: false,
         message: 'WhatsApp is rate limiting messages right now. Try again shortly.',
+        uncertain: false,
+      };
+    }
+
+    /*
+     * 132xxx is Meta's template family: not found, not approved, paused, or
+     * the wrong parameter count. They all mean one thing to the person looking
+     * at the screen — this template cannot be used right now — and that is
+     * worth separating from a generic refusal, because the fix is to refresh
+     * the list rather than to retry.
+     */
+    if (code !== null && code >= 132000 && code < 133000) {
+      return {
+        ok: false,
+        message:
+          'WhatsApp refused this template. It may no longer be approved — refresh the ' +
+          'template list in settings and try again.',
         uncertain: false,
       };
     }

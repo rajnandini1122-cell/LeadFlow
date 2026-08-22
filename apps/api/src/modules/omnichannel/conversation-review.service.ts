@@ -7,6 +7,7 @@ import type { TenantPrincipal } from '../../common/tenancy/tenant-context.servic
 import { resolveLeadVisibility } from '../leads/lead-visibility';
 import { OmnichannelRepository } from './omnichannel.repository';
 import { conversationScope, conversationScopeFilter } from './conversation-visibility';
+import { WhatsAppTemplateRepository } from './providers/whatsapp/whatsapp-template.repository';
 import { evaluateSendCapability } from './send-capability';
 import { toAttachmentViews } from './message-attachment';
 import { selectLead } from './lead-selection';
@@ -25,6 +26,7 @@ export class ConversationReviewService {
   constructor(
     private readonly repository: OmnichannelRepository,
     private readonly audit: AuditRepository,
+    private readonly templates: WhatsAppTemplateRepository,
   ) {}
 
   /**
@@ -224,10 +226,21 @@ export class ConversationReviewService {
     conversation: { id: string; channel: ChannelType; ownerId: string | null; leadId: string | null },
     principal: TenantPrincipal,
   ) {
-    const [integration, lastInboundAt, recipient] = await Promise.all([
+    const [integration, lastInboundAt, recipient, hasSendableTemplate] = await Promise.all([
       this.repository.findIntegrationForChannel(conversation.channel),
       this.repository.lastInboundAt(conversation.id),
       this.repository.recipientFor(conversation.id),
+      /*
+       * Whether a template is even an option, asked only for WhatsApp.
+       *
+       * The other channels have no template concept, so reading the cache for
+       * them would be a query whose answer cannot change anything. Cached
+       * rows, so this stays a local read — opening a conversation still never
+       * waits on Meta.
+       */
+      conversation.channel === 'WHATSAPP'
+        ? this.templates.hasSendable()
+        : Promise.resolve(false),
     ]);
 
     // Reading a conversation and replying to it are different permissions, so
@@ -246,6 +259,7 @@ export class ConversationReviewService {
       lastInboundAt,
       mayReply,
       hasRecipient: recipient !== null,
+      hasSendableTemplate,
     });
   }
 

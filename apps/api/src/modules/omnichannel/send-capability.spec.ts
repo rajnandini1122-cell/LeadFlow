@@ -200,6 +200,100 @@ describe('evaluateSendCapability', () => {
     });
   });
 
+  /*
+   * Templates.
+   *
+   * The whole point of these is that `canSendTemplate` is a SEPARATE answer
+   * from `canSend`. If the two ever collapse into one, either the 24-hour rule
+   * has been weakened or the way out of a closed window has been lost, and both
+   * are things a passing test suite should refuse to let happen quietly.
+   */
+  describe('templates', () => {
+    const CLOSED = new Date(NOW.getTime() - CUSTOMER_SERVICE_WINDOW_MS - 1000);
+
+    it('allows a template once the window has CLOSED', () => {
+      const result = capability({ lastInboundAt: CLOSED, hasSendableTemplate: true });
+
+      // Both halves matter: free-form is still refused, and a template is not.
+      expect(result.canSend).toBe(false);
+      expect(result.canSendTemplate).toBe(true);
+    });
+
+    it('does not weaken the free-form rule to make templates work', () => {
+      // A regression guard with a specific failure in mind: making
+      // canSendTemplate true by relaxing the window check would let a
+      // salesperson send a free-form message Meta will refuse.
+      const result = capability({ lastInboundAt: CLOSED, hasSendableTemplate: true });
+
+      expect(result.canSend).toBe(false);
+      expect(result.sendDisabledReason).toMatch(/24 hours/i);
+    });
+
+    it('allows both inside the window, with free-form still the default', () => {
+      const result = capability({ hasSendableTemplate: true });
+
+      expect(result.canSend).toBe(true);
+      expect(result.canSendTemplate).toBe(true);
+    });
+
+    it('allows a template when the customer has never written', () => {
+      // The one refusal that does not also refuse templates \u2014 a template is
+      // exactly how WhatsApp permits opening a conversation.
+      const result = capability({ lastInboundAt: null, hasSendableTemplate: true });
+
+      expect(result.canSend).toBe(false);
+      expect(result.canSendTemplate).toBe(true);
+    });
+
+    it('refuses when the organization has no approved template', () => {
+      const result = capability({ lastInboundAt: CLOSED, hasSendableTemplate: false });
+
+      expect(result.canSendTemplate).toBe(false);
+      expect(result.templateDisabledReason).toMatch(/approved in Meta/i);
+    });
+
+    it.each(['INSTAGRAM', 'FACEBOOK'] as const)('refuses on %s, which has no templates', (channel) => {
+      const result = capability({ channel, lastInboundAt: CLOSED, hasSendableTemplate: true });
+
+      expect(result.canSendTemplate).toBe(false);
+      expect(result.templateDisabledReason).toMatch(/only available on WhatsApp/i);
+    });
+
+    describe('everything that refuses a reply also refuses a template', () => {
+      /*
+       * Except the window, which is the entire feature. A template is a way
+       * past a closed window \u2014 it is not a way past a missing permission, a
+       * disconnected channel, an absent credential or an unknown recipient,
+       * and treating it as one would turn the escape hatch into a hole.
+       */
+      it.each([
+        ['no permission', { mayReply: false }],
+        ['no integration', { integration: null }],
+        ['channel switched off', { integration: { status: 'CONNECTED', enabled: false } }],
+        ['not connected', { integration: { status: 'CONNECTING', enabled: true } }],
+        ['connection in error', { integration: { status: 'ERROR', enabled: true } }],
+        [
+          'no stored credential',
+          { integration: { status: 'CONNECTED', enabled: true, hasCredential: false } },
+        ],
+        ['no recipient', { hasRecipient: false }],
+      ])('%s', (_label, overrides) => {
+        const result = capability({ ...overrides, hasSendableTemplate: true });
+
+        expect(result.canSend).toBe(false);
+        expect(result.canSendTemplate).toBe(false);
+        expect(result.templateDisabledReason).toBeTruthy();
+      });
+    });
+
+    it('says nothing about tokens or secrets when it refuses', () => {
+      const reason =
+        capability({ integration: null, hasSendableTemplate: true }).templateDisabledReason ?? '';
+
+      expect(reason.toLowerCase()).not.toMatch(/token|secret|bearer|credential/);
+    });
+  });
+
   describe('what the reasons must never contain', () => {
     it.each([
       [{ integration: null }],

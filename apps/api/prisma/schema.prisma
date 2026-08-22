@@ -189,6 +189,7 @@ model Organization {
   subscription Subscription?
 
   channelIntegrations ChannelIntegration[]
+  whatsappTemplates   WhatsAppTemplate[]
   conversations       Conversation[]
   messages            Message[]
   channelIdentities   ContactChannelIdentity[]
@@ -970,6 +971,9 @@ model ChannelIntegration {
   connectedAt    DateTime? @map("connected_at") @db.Timestamptz(6)
   disconnectedAt DateTime? @map("disconnected_at") @db.Timestamptz(6)
 
+  /// When templates were last read back from Meta. WhatsApp only.
+  templatesSyncedAt DateTime? @map("templates_synced_at") @db.Timestamptz(6)
+
   /// Last provider error, surfaced in settings so ERROR is actionable.
   lastErrorAt      DateTime? @map("last_error_at") @db.Timestamptz(6)
   lastErrorMessage String?   @map("last_error_message") @db.VarChar(500)
@@ -977,9 +981,10 @@ model ChannelIntegration {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  organization  Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  connectedBy   User?          @relation(fields: [connectedById], references: [id], onDelete: SetNull)
+  organization  Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  connectedBy   User?              @relation(fields: [connectedById], references: [id], onDelete: SetNull)
   conversations Conversation[]
+  templates     WhatsAppTemplate[]
 
   /// GLOBAL, not per tenant, and deliberately so.
   ///
@@ -1252,4 +1257,71 @@ model ContactChannelIdentity {
   @@index([organizationId, contactId])
   @@index([organizationId, channel, phoneNumber])
   @@map("contact_channel_identities")
+}
+
+/// What Meta says about a template. LeadFlow never sets this itself.
+enum WhatsAppTemplateStatus {
+  APPROVED
+  PENDING
+  REJECTED
+  PAUSED
+  DISABLED
+
+  @@map("whatsapp_template_status")
+}
+
+/// A WhatsApp message template, as Meta last reported it.
+///
+/// A CACHE, not a source of truth. LeadFlow cannot create a template and cannot
+/// approve one — Meta decides both — so every row here is a copy of something
+/// that exists in a Meta account, refreshed by an explicit sync.
+///
+/// Cached rather than fetched live for two reasons: the conversation drawer
+/// would otherwise call Meta every time somebody opened a thread, and a
+/// provider outage would take the feature down rather than serving a slightly
+/// stale list. `status` is re-checked at send time against this row, and Meta
+/// refuses anything that has since been revoked — so a stale cache costs a
+/// failed send, never an unauthorised one.
+model WhatsAppTemplate {
+  id             String @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String @map("organization_id") @db.Uuid
+  integrationId  String @map("integration_id") @db.Uuid
+
+  /// Meta's template name, which is what the send API takes.
+  name     String  @db.VarChar(200)
+  /// e.g. en_US. The same name exists once per language.
+  language String  @db.VarChar(20)
+  category String? @db.VarChar(40)
+  status   WhatsAppTemplateStatus
+
+  /// Meta's own id, for diagnostics. The name and language are what send uses.
+  providerTemplateId String? @map("provider_template_id") @db.VarChar(120)
+
+  /// The component definition exactly as Meta returned it.
+  ///
+  /// Kept whole so the preview and the parameter rules read from what Meta
+  /// actually said, rather than from a summary that could drift from it.
+  components Json
+
+  /// Whether LeadFlow can send this one. Derived at sync time.
+  supported         Boolean @default(false)
+  /// Why not, in words shown to the user.
+  unsupportedReason String? @map("unsupported_reason") @db.VarChar(300)
+
+  /// How many values the send form must collect.
+  headerParameterCount Int @default(0) @map("header_parameter_count")
+  bodyParameterCount   Int @default(0) @map("body_parameter_count")
+
+  syncedAt  DateTime @default(now()) @map("synced_at") @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  integration  ChannelIntegration @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+
+  /// One row per template per language, per tenant. A re-sync updates rather
+  /// than accumulating duplicates.
+  @@unique([organizationId, name, language])
+  @@index([organizationId, status, supported])
+  @@map("whatsapp_templates")
 }

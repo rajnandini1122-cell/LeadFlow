@@ -767,6 +767,14 @@ export class OmnichannelRepository {
     content: string;
     messageType?: MessageType | undefined;
     attachments?: MessageAttachment[] | undefined;
+    /**
+     * What produced this message, when that is not obvious from its content.
+     *
+     * Currently the template a send was built from. Stored so the timeline can
+     * say a template was used, and so a support question about a message a
+     * customer received has an answer that does not depend on Meta.
+     */
+    metadata?: Record<string, unknown> | undefined;
     idempotencyKey: string;
     sentById: string;
   }) {
@@ -783,6 +791,7 @@ export class OmnichannelRepository {
           ...(input.attachments && input.attachments.length > 0
             ? { attachments: input.attachments as never }
             : {}),
+          ...(input.metadata ? { metadata: input.metadata as never } : {}),
           // Not SENT. Nothing has reached the customer yet.
           deliveryStatus: 'PENDING',
           idempotencyKey: input.idempotencyKey,

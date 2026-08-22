@@ -226,6 +226,66 @@ ZIP" would let anything zipped through.
 
 ---
 
+## 9b. Testing WhatsApp templates
+
+Templates are the only message WhatsApp will deliver once the 24-hour window has
+closed, so testing them means closing it. Locally that is one SQL statement.
+
+**Step 1 — load some templates.** Sync calls Meta, so there are two options:
+
+- *With Meta credentials:* connect WhatsApp with a **WhatsApp Business Account
+  ID** and a token carrying `whatsapp_business_management`, then use
+  **Settings → Channel integrations → WhatsApp → Refresh templates**.
+- *Without them:* insert a row directly. This is a cache, so a hand-written row
+  behaves exactly like a synced one.
+
+```sql
+INSERT INTO whatsapp_templates
+  (organization_id, integration_id, name, language, category, status,
+   components, supported, header_parameter_count, body_parameter_count)
+SELECT o.id, ci.id, 'order_ready', 'en_US', 'UTILITY', 'APPROVED',
+       '{"header":null,
+         "body":{"text":"Hi {{1}}, your order {{2}} is ready.",
+                 "parameterCount":2},
+         "footer":"Reply STOP to opt out","buttons":[]}'::jsonb,
+       true, 0, 2
+FROM organizations o
+JOIN channel_integrations ci
+  ON ci.organization_id = o.id AND ci.channel = 'WHATSAPP'
+WHERE o.slug = 'northwind';
+```
+
+**Step 2 — close the window.** Age the customer's last inbound message past 24
+hours:
+
+```sql
+UPDATE messages
+SET sent_at = now() - interval '25 hours',
+    created_at = now() - interval '25 hours'
+WHERE direction = 'INCOMING'
+  AND conversation_id = '<conversation-uuid>';
+```
+
+**Step 3 — look at the conversation.** The composer is gone and the reason says
+the 24-hour window has closed. A **Send a template** button is there instead.
+Both facts matter: free-form is genuinely refused, and there is still a way out.
+
+Worth trying while you are here:
+
+- type a reply through the API directly — `POST /conversations/:id/messages`
+  returns **409** and nothing reaches Meta. There is no automatic fallback to a
+  template, by design
+- choose the template and leave a value blank → refused before sending
+- fill both values → the preview substitutes them, `{{1}}` and `{{2}}` disappear
+- set the row's `status` to `PAUSED` and reload → it is no longer offered
+- set `supported` to `false` → same, with the reason shown in settings
+
+Without real credentials the send itself fails at Meta, visibly, and the message
+is marked `FAILED` with the reason. Nothing pretends otherwise, and nothing
+retries on its own.
+
+---
+
 ## 10. Testing with a real WhatsApp number
 
 You need a Meta app, a WhatsApp Business number and a public HTTPS URL. Full

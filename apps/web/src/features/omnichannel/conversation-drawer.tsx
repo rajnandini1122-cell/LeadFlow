@@ -13,6 +13,7 @@ import {
   type DeliveryStatus,
   type MessageAttachmentView,
 } from './use-conversations';
+import { TemplatePicker } from './template-picker';
 
 /**
  * A conversation, with a composer where replying is actually possible.
@@ -22,6 +23,12 @@ import {
  * WhatsApp's 24-hour window, and a composer over a conversation that cannot
  * send lets a salesperson type a reply and watch it fail while a customer
  * waits.
+ *
+ * Templates are a SECOND, separate action rather than a fallback. Where the
+ * 24-hour window has closed, `canSend` stays false and the composer stays
+ * hidden — but `canSendTemplate` may be true, and the user is offered a
+ * template they must deliberately choose. Nothing converts typed text into a
+ * template.
  */
 export function ConversationDrawer({
   conversationId,
@@ -139,8 +146,26 @@ export function ConversationDrawer({
                         inbound ? 'bg-slate-100 text-slate-900' : 'bg-slate-900 text-white'
                       }`}
                     >
-                      <p className="text-xs opacity-70">
-                        {inbound ? 'Customer' : message.senderType === 'SYSTEM' ? 'System' : 'Sales'}
+                      <p className="flex items-center gap-1.5 text-xs opacity-70">
+                        <span>
+                          {inbound
+                            ? 'Customer'
+                            : message.senderType === 'SYSTEM'
+                              ? 'System'
+                              : 'Sales'}
+                        </span>
+                        {/*
+                          * Marked, because a template is a different kind of
+                          * message: it can be sent outside the window and it is
+                          * usually billed, and somebody reading the history back
+                          * needs to know which it was. The template NAME is not
+                          * shown — what the customer received is the text below.
+                          */}
+                        {message.messageType === 'TEMPLATE' && (
+                          <span className="rounded-full bg-white/20 px-1.5 py-0.5 text-[10px] font-medium">
+                            Template
+                          </span>
+                        )}
                       </p>
                       {message.attachments?.length > 0 && (
                         <ul className="mt-1 space-y-1">
@@ -187,7 +212,7 @@ export function ConversationDrawer({
           )}
         </div>
 
-        {data && (data.canSend ? <Composer conversation={data} /> : <ReplyBlocked conversation={data} />)}
+        {data && <ConversationFooter conversation={data} />}
       </aside>
     </div>
   );
@@ -227,6 +252,59 @@ const EXPLAINED: DeliveryStatus[] = ['FAILED', 'UNCONFIRMED'];
  * failure came back, which is precisely the moment a salesperson decides they
  * have answered and moves on.
  */
+/**
+ * What sits under the timeline.
+ *
+ * Two independent questions, deliberately kept apart. `canSend` decides whether
+ * a free-form composer appears; `canSendTemplate` decides whether a template is
+ * offered. Both can be true, either can be true alone, and the free-form
+ * composer never becomes a template picker on failure.
+ */
+function ConversationFooter({
+  conversation,
+}: {
+  conversation: ConversationDetail;
+}): React.JSX.Element {
+  const [pickingTemplate, setPickingTemplate] = useState(false);
+
+  if (pickingTemplate) {
+    return (
+      <TemplatePicker
+        conversation={conversation}
+        onClose={() => setPickingTemplate(false)}
+      />
+    );
+  }
+
+  return (
+    <>
+      {conversation.canSend ? (
+        <Composer conversation={conversation} />
+      ) : (
+        <ReplyBlocked conversation={conversation} />
+      )}
+
+      {conversation.canSendTemplate === true && (
+        <div className="border-t border-slate-100 px-5 py-3">
+          <button
+            type="button"
+            onClick={() => setPickingTemplate(true)}
+            className="w-full rounded-lg border border-emerald-600 px-4 py-2 text-sm font-medium text-emerald-700 transition hover:bg-emerald-50"
+          >
+            Send a template
+          </button>
+          {!conversation.canSend && (
+            <p className="mt-2 text-[11px] text-pretty text-slate-500">
+              An approved WhatsApp template is the only message that can be sent once the
+              24-hour window has closed.
+            </p>
+          )}
+        </div>
+      )}
+    </>
+  );
+}
+
 function Composer({ conversation }: { conversation: ConversationDetail }): React.JSX.Element {
   const send = useSendMessage(conversation.id);
   const [text, setText] = useState('');

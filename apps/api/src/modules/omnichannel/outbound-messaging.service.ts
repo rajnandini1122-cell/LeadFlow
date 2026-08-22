@@ -7,6 +7,13 @@ import { OmnichannelRepository } from './omnichannel.repository';
 import { conversationScope } from './conversation-visibility';
 import { evaluateSendCapability, maxTextLengthFor, MAX_TEXT_LENGTH } from './send-capability';
 import { WhatsAppOutboundService } from './providers/whatsapp/whatsapp-outbound.service';
+import { WhatsAppTemplateRepository } from './providers/whatsapp/whatsapp-template.repository';
+import {
+  buildTemplateComponents,
+  readStoredComponents,
+  renderTemplateText,
+  type TemplateParameters,
+} from './providers/whatsapp/whatsapp-template';
 import { MessengerOutboundService } from './providers/messenger/messenger-outbound.service';
 import type { ChannelSender } from './providers/channel-sender';
 import {
@@ -43,6 +50,7 @@ export class OutboundMessagingService {
   constructor(
     private readonly repository: OmnichannelRepository,
     private readonly whatsapp: WhatsAppOutboundService,
+    private readonly templates: WhatsAppTemplateRepository,
     private readonly messenger: MessengerOutboundService,
     private readonly audit: AuditRepository,
   ) {}
@@ -297,6 +305,249 @@ export class OutboundMessagingService {
         length: body.length,
         // The fact of a file and its kind. Never its name or its bytes.
         attachment: media ? media.kind : null,
+      },
+    });
+
+    return toMessageView(sent ?? claimed);
+  }
+
+  /**
+   * Send an approved WhatsApp template.
+   *
+   * A SIBLING of `send`, not a fallback for it. Everything that made the
+   * free-form path safe is reused deliberately — the same authorization, the
+   * same visibility rule, the same claim-before-send ordering, the same message
+   * table, the same conversation timeline — and exactly two things differ:
+   *
+   *   - the window check asks `canSendTemplate` instead of `canSend`, which is
+   *     the entire point, since a template is what WhatsApp allows once the
+   *     24-hour window has closed;
+   *   - the content is built from the STORED definition rather than typed.
+   *
+   * Nothing routes here automatically. A free-form send refused for a closed
+   * window throws and stops; it does not quietly become a template. Sending a
+   * customer a templated message they did not expect, because a colleague
+   * mistimed a reply, is a worse outcome than a refusal somebody can see.
+   */
+  async sendTemplate(
+    conversationId: string,
+    input: {
+      templateName: string;
+      language: string;
+      parameters: TemplateParameters;
+      idempotencyKey: string;
+    },
+    principal: TenantPrincipal,
+  ) {
+    // Idempotency first, exactly as the free-form path does it.
+    const existing = await this.repository.findMessageByIdempotencyKey(input.idempotencyKey);
+    if (existing) {
+      this.logger.debug(
+        `Idempotent replay of template send ${input.idempotencyKey}; returning the original.`,
+      );
+      return toMessageView(existing);
+    }
+
+    // --- authorize ----------------------------------------------------------
+    const conversation = await this.repository.findConversationForSend(conversationId);
+    if (!conversation) throw this.notFound();
+
+    if (!(await this.mayReply(conversation, principal))) throw this.notFound();
+
+    if (conversation.channel !== 'WHATSAPP') {
+      throw new AppException(
+        ERROR_CODES.CONFLICT,
+        'Templates are only available on WhatsApp.',
+        409,
+      );
+    }
+
+    /*
+     * --- the template, as Meta last reported it -----------------------------
+     *
+     * Read from our cache, and read by NAME AND LANGUAGE through the
+     * tenant-scoped client, so a template belonging to another organization is
+     * not merely hidden but unreachable. The request supplies a name; it does
+     * not supply a definition.
+     */
+    const row = await this.templates.findByNameAndLanguage(input.templateName, input.language);
+
+    if (!row) {
+      throw AppException.notFound(
+        ERROR_CODES.NOT_FOUND,
+        'That template is not available. Refresh the template list in settings.',
+      );
+    }
+
+    /*
+     * Approval is Meta's answer, never ours.
+     *
+     * We store what Meta said and re-check it here. A template that has since
+     * been paused or rejected will also be refused by Meta itself, so this
+     * check does not create the guarantee — it just means the salesperson is
+     * told before the send rather than after.
+     */
+    if (row.status !== 'APPROVED') {
+      throw new AppException(
+        ERROR_CODES.CONFLICT,
+        `That template is ${row.status.toLowerCase()} in Meta and cannot be sent. ` +
+          'Templates are approved in Meta, not in LeadFlow.',
+        409,
+      );
+    }
+
+    if (!row.supported) {
+      throw new AppException(
+        ERROR_CODES.CONFLICT,
+        row.unsupportedReason ?? 'LeadFlow cannot send this template.',
+        409,
+      );
+    }
+
+    // --- capability ---------------------------------------------------------
+    const [integration, lastInboundAt, recipient] = await Promise.all([
+      this.repository.findIntegrationForChannel(conversation.channel),
+      this.repository.lastInboundAt(conversationId),
+      this.repository.recipientFor(conversationId),
+    ]);
+
+    const capability = evaluateSendCapability({
+      channel: conversation.channel,
+      integration: integration
+        ? {
+            status: integration.status,
+            enabled: integration.enabled,
+            hasCredential: integration.encryptedAccessToken !== null,
+          }
+        : null,
+      lastInboundAt,
+      mayReply: true,
+      hasRecipient: recipient !== null,
+      // Known to be true: an approved, supported row was just loaded.
+      hasSendableTemplate: true,
+    });
+
+    /*
+     * `canSendTemplate`, NOT `canSend`.
+     *
+     * This is the one place the two answers deliberately diverge. Everything
+     * else the capability checked — permission, the integration, the
+     * credential, a recipient — still has to hold; only the window does not.
+     */
+    if (!capability.canSendTemplate) {
+      throw new AppException(
+        ERROR_CODES.CONFLICT,
+        capability.templateDisabledReason ??
+          'This conversation cannot be sent a template right now.',
+        409,
+      );
+    }
+
+    // --- build, against the stored definition -------------------------------
+    const sections = readStoredComponents(row.components);
+    const built = buildTemplateComponents(
+      {
+        ...sections,
+        supported: row.supported,
+        unsupportedReason: row.unsupportedReason,
+      },
+      input.parameters,
+    );
+
+    if (!built.ok) {
+      // 400, not 409: the values submitted are wrong, and re-submitting the
+      // same ones will fail again.
+      throw new AppException(ERROR_CODES.VALIDATION_ERROR, built.message, 400);
+    }
+
+    /*
+     * What the customer will actually see, stored as the message content.
+     *
+     * The timeline shows the rendered text rather than the template name,
+     * because "order_ready" is not what arrived on the customer's phone and a
+     * salesperson reading the history back needs the words.
+     */
+    const rendered = renderTemplateText(sections, input.parameters);
+
+    // --- claim --------------------------------------------------------------
+    const claimed = await this.repository.claimOutboundMessage({
+      conversationId,
+      channel: conversation.channel,
+      content: rendered,
+      messageType: 'TEMPLATE',
+      metadata: {
+        template: {
+          name: row.name,
+          language: row.language,
+          // The values that were submitted. They are already in the rendered
+          // content; keeping them separately is what makes it possible to say
+          // later which placeholder held what.
+          parameters: input.parameters,
+        },
+      },
+      idempotencyKey: input.idempotencyKey,
+      sentById: principal.userId,
+    });
+
+    if (!claimed) {
+      const raced = await this.repository.findMessageByIdempotencyKey(input.idempotencyKey);
+      if (raced) return toMessageView(raced);
+
+      throw new AppException(ERROR_CODES.CONFLICT, 'That message is already being sent.', 409);
+    }
+
+    // --- send ---------------------------------------------------------------
+    const sender = this.senderFor(conversation.channel);
+
+    if (!sender?.sendTemplate) {
+      // Unreachable today — the channel check above already refused anything
+      // but WhatsApp — but handled rather than asserted, because the optional
+      // method is exactly what a future non-template channel would leave out.
+      await this.repository.markMessageFailed(claimed.id, 'This channel cannot send templates.');
+      throw new AppException(
+        ERROR_CODES.CONFLICT,
+        'Templates are only available on WhatsApp.',
+        409,
+      );
+    }
+
+    const result = await sender.sendTemplate({
+      accountId: integration!.providerAccountId,
+      encryptedAccessToken: integration!.encryptedAccessToken,
+      recipient: recipient!,
+      template: {
+        name: row.name,
+        language: row.language,
+        components: built.components,
+      },
+    });
+
+    if (!result.ok) {
+      await this.repository.markMessageFailed(claimed.id, result.message);
+
+      // Same treatment as a free-form failure: the row stays, so an uncertain
+      // send leaves a trace the salesperson can check before resending.
+      throw new AppException(ERROR_CODES.CONFLICT, result.message, result.uncertain ? 502 : 409);
+    }
+
+    const sent = await this.repository.markMessageSent(claimed.id, result.providerMessageId);
+
+    await this.audit.record({
+      action: 'omnichannel.template_sent',
+      entityType: 'conversation',
+      entityId: conversationId,
+      after: {
+        messageId: claimed.id,
+        channel: conversation.channel,
+        // The template NAME is recorded — unlike message content, it is a
+        // business decision about what was sent, not the customer's words.
+        template: row.name,
+        language: row.language,
+        // Counts, not values: the parameters carry customer data.
+        parameterCount: input.parameters.header.length + input.parameters.body.length,
+        // Whether this reopened a closed conversation, which is the operational
+        // question anybody reading this log will have.
+        outsideWindow: !capability.canSend,
       },
     });
 

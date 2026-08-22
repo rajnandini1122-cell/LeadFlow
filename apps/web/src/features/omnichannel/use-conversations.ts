@@ -139,8 +139,130 @@ export interface ConversationDetail {
    * number and letting the provider reject what it accepted.
    */
   maxTextLength?: number | null;
+  /**
+   * Whether an approved WhatsApp template may be sent.
+   *
+   * A SEPARATE answer from `canSend`, not a fallback for it. Outside the
+   * 24-hour window `canSend` stays false and this can be true, which is the
+   * whole point of the feature. Typed text is never converted into a template:
+   * the two are different actions with different endpoints.
+   */
+  canSendTemplate?: boolean | null;
+  /** Why not. Safe to show verbatim. */
+  templateDisabledReason?: string | null;
   candidateLeads: CandidateLead[];
   messages: ConversationMessage[];
+}
+
+/**
+ * A WhatsApp template, as Meta last reported it.
+ *
+ * `status` is Meta's answer and nothing else. LeadFlow cannot create a template
+ * and cannot approve one, so the UI's job is to show what Meta said and refuse
+ * anything that is not both APPROVED and supported.
+ */
+export interface WhatsAppTemplate {
+  name: string;
+  language: string;
+  category: string | null;
+  status: 'APPROVED' | 'PENDING' | 'REJECTED' | 'PAUSED' | 'DISABLED';
+  /** Whether LeadFlow can render and send it. Decided by the API. */
+  supported: boolean;
+  /** Why not, in words meant to be shown verbatim. */
+  unsupportedReason: string | null;
+  /** The literal text Meta holds, placeholders included. */
+  headerText: string | null;
+  bodyText: string | null;
+  footerText: string | null;
+  buttons: string[];
+  /** How many values the form must collect for each section. */
+  headerParameterCount: number;
+  bodyParameterCount: number;
+  syncedAt: string;
+}
+
+export interface WhatsAppTemplateList {
+  items: WhatsAppTemplate[];
+  /** Whether WhatsApp is connected and switched on at all. */
+  connected: boolean;
+}
+
+/**
+ * The cached template list.
+ *
+ * Served from our own store, so opening the picker never waits on Meta. It is
+ * refreshed by an explicit sync, never automatically — a provider call behind
+ * a screen people open constantly is a bad trade.
+ */
+export function useWhatsAppTemplates(enabled = true): UseQueryResult<WhatsAppTemplateList> {
+  return useQuery({
+    queryKey: ['channel-integrations', 'whatsapp', 'templates'],
+    queryFn: () => apiGet<WhatsAppTemplateList>('/channel-integrations/whatsapp/templates'),
+    enabled,
+  });
+}
+
+export interface TemplateSyncResult {
+  total: number;
+  supported: number;
+  approved: number;
+}
+
+/** Re-read the list from Meta. Requires org.update; nothing is created here. */
+export function useSyncWhatsAppTemplates(): UseMutationResult<TemplateSyncResult, Error, void> {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: () =>
+      apiPost<TemplateSyncResult>('/channel-integrations/whatsapp/templates/sync'),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: ['channel-integrations', 'whatsapp', 'templates'],
+      });
+      // The capability on every open conversation can change when the list
+      // does: a first approved template makes canSendTemplate true.
+      void queryClient.invalidateQueries({ queryKey: ['conversations'] });
+    },
+  });
+}
+
+/**
+ * Send an approved template.
+ *
+ * A separate hook and a separate endpoint from `useSendMessage`, deliberately.
+ * Sending a template can reach a customer whose window has closed and is
+ * usually billed, so it is something a person chooses — never something the
+ * ordinary send falls back to. Sharing a hook would put that fallback one
+ * branch away.
+ *
+ * The idempotency key works exactly as it does for a free-form reply: generated
+ * once per composed message, reused on retry, enforced by the server.
+ */
+export function useSendTemplate(
+  conversationId: string,
+): UseMutationResult<
+  ConversationMessage,
+  Error,
+  {
+    templateName: string;
+    language: string;
+    headerParameters: string[];
+    bodyParameters: string[];
+    idempotencyKey: string;
+  }
+> {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (input) =>
+      apiPost<ConversationMessage>(
+        `/conversations/${conversationId}/template-messages`,
+        input,
+      ),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['conversations'] });
+    },
+  });
 }
 
 export interface LinkedConversation {

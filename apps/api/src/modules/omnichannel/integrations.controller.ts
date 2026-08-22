@@ -16,6 +16,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { IntegrationsService } from './integrations.service';
 import { WhatsAppSetupService } from './providers/whatsapp/whatsapp-setup.service';
+import { WhatsAppTemplateService } from './providers/whatsapp/whatsapp-template.service';
 import { MessengerSetupService } from './providers/messenger/messenger-setup.service';
 import {
   FACEBOOK_CHANNEL,
@@ -46,6 +47,7 @@ export class IntegrationsController {
   constructor(
     private readonly integrations: IntegrationsService,
     private readonly whatsapp: WhatsAppSetupService,
+    private readonly templates: WhatsAppTemplateService,
     private readonly messenger: MessengerSetupService,
   ) {}
 
@@ -156,6 +158,37 @@ export class IntegrationsController {
   @ApiOperation({ summary: 'Disconnect Facebook Messenger, keeping all history' })
   async disconnectFacebook(@CurrentUser() principal: TenantPrincipal) {
     return this.messenger.disconnect(FACEBOOK_CHANNEL, principal.userId);
+  }
+
+  /**
+   * The templates this organization can send.
+   *
+   * Served from our cache, so opening the composer never waits on Meta and a
+   * provider outage does not take the feature down. `ORG_VIEW` rather than
+   * `ORG_UPDATE` because every role that can reply needs to read this list —
+   * a sales rep choosing a template is the ordinary case, not an admin one.
+   */
+  @Get('whatsapp/templates')
+  @RequirePermissions(PERMISSIONS.ORG_VIEW)
+  @ApiOperation({ summary: 'The cached WhatsApp templates for this organization' })
+  async listTemplates() {
+    return this.templates.list();
+  }
+
+  /**
+   * Re-read the template list from Meta.
+   *
+   * Explicit, and restricted to `ORG_UPDATE`: it is a provider call against the
+   * organization's credentials, and it replaces the cache. LeadFlow cannot
+   * create a template and cannot approve one — both happen in Meta — so this
+   * only ever discovers what is already there.
+   */
+  @Post('whatsapp/templates/sync')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSIONS.ORG_UPDATE)
+  @ApiOperation({ summary: 'Load the latest WhatsApp templates from Meta' })
+  async syncTemplates(@CurrentUser() principal: TenantPrincipal) {
+    return this.templates.sync(principal.userId);
   }
 
   @Patch(':id')

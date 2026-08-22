@@ -20,12 +20,19 @@ number to it.
 | App Secret | App dashboard → Settings → Basic | The whole deployment |
 | Verify token | You invent it | The whole deployment |
 | Phone number ID | WhatsApp → API Setup | Per tenant |
-| WhatsApp Business Account ID | WhatsApp → API Setup | Per tenant (optional) |
+| WhatsApp Business Account ID | WhatsApp → API Setup | Per tenant — **required for templates** |
 | Permanent access token | System user with `whatsapp_business_messaging` | Per tenant |
 
 A temporary 24-hour token from the API Setup page is fine for a first test. It
 will expire, the integration will move to `ERROR`, and it will need replacing —
 use a system user token for anything lasting.
+
+**Two token permissions, not one.** `whatsapp_business_messaging` sends
+messages. Reading the template list additionally needs
+`whatsapp_business_management`. A token with only the first connects and sends
+perfectly well and then fails on **Refresh templates** with a permission error —
+which is the most common template setup problem, and the reason the error names
+the scope.
 
 ---
 
@@ -201,11 +208,17 @@ is answered from the database, so opening a conversation never waits on Meta:
 | Integration exists, `CONNECTED`, enabled | Points at settings |
 | Customer wrote within the last 24 hours | Explains the template requirement |
 
+A second, **separate** answer sits alongside it: `canSendTemplate`, with
+`templateDisabledReason`. It is not a fallback for `canSend` — see §10.
+
 **The 24-hour customer service window** is WhatsApp's rule, not ours. Free-form
 replies are permitted only within 24 hours of the customer's most recent
-message; after that Meta requires an approved template, which LeadFlow cannot
-send yet. The window is computed from the last inbound message and the composer
-disappears when it closes.
+message; after that Meta requires an approved template. The window is computed
+from the last inbound message and the composer disappears when it closes.
+
+Since Phase K an approved template **can** be sent once it closes — see §10. The
+free-form rule itself is unchanged: `canSend` is still false, and a typed
+message is still refused.
 
 ### Sending
 
@@ -260,9 +273,9 @@ how a customer receives the same message twice.
 
 ### Not in this phase
 
-Templates, media, interactive messages, reactions, typing indicators, read
-receipts sent by us, and any form of automated or AI reply. `canSend` is false
-for Instagram and Facebook.
+Interactive messages, reactions, typing indicators, read receipts sent by us,
+and any form of automated or AI reply. (Media arrived in Phase J and templates
+in Phase K.)
 
 ### Stale sends, and why they are not retried
 
@@ -312,3 +325,148 @@ real provider answer to supersede `UNCONFIRMED` if one ever arrives.
 
 There is no resend button. A human-controlled resend, with a fresh idempotency
 key, is deliberately left to a later phase.
+
+---
+
+## 10. Message templates
+
+Added in Phase K. A template is the only message WhatsApp will deliver once the
+24-hour customer service window has closed.
+
+### LeadFlow does not create or approve templates
+
+This is the whole shape of the feature. Templates are written and submitted in
+**Meta** — WhatsApp Manager → Message templates — and Meta approves or rejects
+them, usually within a few minutes to a day. LeadFlow only ever **reads** that
+list. There is no endpoint that creates a template, and no way to mark one
+approved locally; `status` on every row is a copy of Meta's answer.
+
+A status LeadFlow does not recognise is stored as `DISABLED`, not as approved.
+Failing closed is deliberate: an unknown value must never become permission to
+message a customer.
+
+### Loading them
+
+Settings → Channel integrations → WhatsApp → **Refresh templates**.
+
+```
+POST /api/v1/channel-integrations/whatsapp/templates/sync   # org.update
+GET  /api/v1/channel-integrations/whatsapp/templates        # org.view
+```
+
+Sync calls `GET /{whatsapp-business-account-id}/message_templates`, replaces the
+cached list and deletes anything Meta no longer returns. The list is **cached,
+not fetched live** — otherwise every conversation opened would cost a provider
+call, and a Meta outage would take replying down rather than serving a slightly
+stale list.
+
+Sync is explicit and manual. Nothing polls Meta.
+
+Reading the list needs `org.view`, which every role including SALES_REP holds:
+choosing a template is the ordinary case. Refreshing needs `org.update`, because
+it spends the organization's credential.
+
+### Which templates can actually be sent
+
+Both must be true:
+
+| | |
+|---|---|
+| `status` is `APPROVED` | Meta refuses anything else outright |
+| `supported` is `true` | LeadFlow can render it correctly |
+
+Everything else is **shown but not offered**, with a reason. Hiding a rejected
+template would leave an owner wondering where the one they wrote went.
+
+Supported in this phase:
+
+- TEXT body, with `{{n}}` parameters
+- TEXT header, with `{{n}}` parameters
+- Footer text and button labels — shown in the preview, informational only
+
+Not supported, and refused with a reason:
+
+- IMAGE / VIDEO / DOCUMENT / LOCATION headers
+- Any component type LeadFlow does not recognise (carousels, and whatever Meta
+  adds next)
+- A template with no body
+
+An unrecognised component makes the whole template unsupported rather than being
+silently dropped — dropping it would send a customer half a message.
+
+### Parameters
+
+`{{1}}`, `{{2}}` … in the template text. The picker asks for one value per
+**distinct** placeholder: `{{1}}` appearing twice still takes one value, and it
+is substituted in both places.
+
+Validated against the **stored definition**, never against anything the browser
+claims, and re-checked server-side even though the UI checks first. Rejected:
+
+- the wrong number of values
+- a blank or whitespace-only value — it reaches the customer as a gap in a
+  sentence, and a delivered WhatsApp message cannot be corrected
+- newlines, tabs or carriage returns — Meta rejects these anyway
+- anything over 1024 characters
+
+The conversation timeline stores the **rendered** text — what the customer
+actually received — not the template name, which they never saw. The name and
+the submitted values are kept in the message's metadata.
+
+### Sending one
+
+```
+POST /api/v1/conversations/:id/template-messages     # lead.update
+{
+  "templateName": "order_ready",
+  "language": "en_US",
+  "bodyParameters": ["Rahul", "A-1024"],
+  "headerParameters": [],
+  "idempotencyKey": "<uuid>"
+}
+```
+
+A **separate endpoint** from `POST :id/messages`, deliberately. It reuses the
+identical machinery — the same authorization, the same conversation visibility,
+the same idempotency key, the same claim-before-send ordering, the same message
+table and timeline — and differs in exactly two ways: it checks
+`canSendTemplate` instead of `canSend`, and its content comes from the stored
+definition rather than from typed text.
+
+### There is no automatic fallback
+
+**A free-form send refused because the window closed stays refused.** It returns
+409 and nothing reaches Meta. It does not quietly become a template.
+
+This is a product decision, not an oversight. A template can reach a customer
+who has not written for weeks and is billed on most plans, so it must be
+something a person chose — not something that happened because a colleague
+mistimed a reply. Folding the two into one endpoint would put that fallback one
+`if` away, which is why they are two.
+
+Equally, nothing selects a template on the user's behalf, and no AI writes one.
+
+### When a template stops working
+
+| At Meta | What LeadFlow does |
+|---|---|
+| Paused / rejected / disabled | Still listed, with that status, not sendable. The send is refused before Meta is called |
+| Deleted | Disappears on the next **Refresh templates** |
+| Edited and re-approved | The new text appears on the next refresh |
+| Revoked since the last sync | The send reaches Meta and is refused; the message is marked `FAILED` with "It may no longer be approved — refresh the template list" |
+
+The cache going stale therefore costs a failed send, never an unauthorised one.
+Meta re-checks approval on every send regardless of what we stored.
+
+### Still to be done in Meta
+
+Nothing beyond the ordinary: create the templates, get them approved, and make
+sure the tenant's access token carries `whatsapp_business_management`. LeadFlow
+needs no additional app review or permission for templates.
+
+### Not implemented
+
+Media headers, interactive buttons in a send, template creation or editing,
+approval status polling, bulk or broadcast sending, campaign scheduling,
+Instagram and Facebook templates (neither platform has the concept), and
+HUMAN_AGENT tags.

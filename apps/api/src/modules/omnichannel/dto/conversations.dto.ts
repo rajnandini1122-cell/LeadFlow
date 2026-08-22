@@ -1,6 +1,8 @@
 import { ApiPropertyOptional, ApiProperty } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import {
+  ArrayMaxSize,
+  IsArray,
   IsBoolean,
   IsIn,
   IsInt,
@@ -130,6 +132,57 @@ export class SendMessageDto {
    * double click, a browser retry or a network timeout cannot send a customer
    * two copies of the same reply.
    */
+  @ApiProperty({ description: 'Client-generated key, reused on retry.' })
+  @IsString()
+  @MaxLength(120)
+  idempotencyKey!: string;
+}
+
+/**
+ * Sending an approved template.
+ *
+ * Carries a template NAME and the values for its placeholders — never a body,
+ * never a component structure. What the customer receives is fixed by the
+ * definition Meta approved, and the only thing a client gets to decide is which
+ * approved template and what goes in its blanks. Accepting text here would be
+ * accepting a free-form message dressed as a template, which is precisely what
+ * the 24-hour window exists to prevent.
+ */
+export class SendTemplateDto {
+  @ApiProperty({ description: "Meta's name for the approved template." })
+  @IsString()
+  @MaxLength(200)
+  templateName!: string;
+
+  @ApiProperty({ description: 'The template language code, e.g. en_US.' })
+  @IsString()
+  @MaxLength(20)
+  language!: string;
+
+  /**
+   * Values for the header's placeholders, in order.
+   *
+   * The COUNT is checked against the stored definition, not against what the
+   * client sends — a request claiming a template needs no values does not get
+   * to send one with `{{1}}` left in the text.
+   */
+  @ApiPropertyOptional({ description: "Values for the header's placeholders, in order." })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  @MaxLength(1024, { each: true })
+  @ArrayMaxSize(10)
+  headerParameters?: string[];
+
+  @ApiPropertyOptional({ description: "Values for the body's placeholders, in order." })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  @MaxLength(1024, { each: true })
+  @ArrayMaxSize(10)
+  bodyParameters?: string[];
+
+  /** Same guarantee as a free-form send: a retry cannot send a second copy. */
   @ApiProperty({ description: 'Client-generated key, reused on retry.' })
   @IsString()
   @MaxLength(120)
