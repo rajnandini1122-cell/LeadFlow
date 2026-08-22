@@ -155,9 +155,12 @@ export function ConversationDrawer({
                           <span>· {DELIVERY_LABELS[message.deliveryStatus]}</span>
                         )}
                       </p>
-                      {!inbound && message.deliveryStatus === 'FAILED' && message.failureReason && (
-                        <p className="mt-1 text-[11px] text-red-200">{message.failureReason}</p>
-                      )}
+                      {!inbound &&
+                        message.deliveryStatus &&
+                        EXPLAINED.includes(message.deliveryStatus) &&
+                        message.failureReason && (
+                          <p className="mt-1 text-[11px] text-red-200">{message.failureReason}</p>
+                        )}
                     </div>
                   </li>
                 );
@@ -185,7 +188,18 @@ const DELIVERY_LABELS: Record<DeliveryStatus, string> = {
   DELIVERED: 'Delivered',
   READ: 'Read',
   FAILED: 'Not delivered',
+  /*
+   * Deliberately not "Not delivered".
+   *
+   * The customer may well have received this one — we simply never got the
+   * answer. Someone reading "not delivered" would send it again, and that is
+   * exactly the duplicate the whole design exists to avoid.
+   */
+  UNCONFIRMED: '⚠ Delivery not confirmed',
 };
+
+/** Statuses whose explanation is worth showing under the message. */
+const EXPLAINED: DeliveryStatus[] = ['FAILED', 'UNCONFIRMED'];
 
 /**
  * The reply box.

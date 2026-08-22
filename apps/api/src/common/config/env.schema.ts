@@ -116,6 +116,29 @@ export const envSchema = z
      */
     WHATSAPP_API_VERSION: z.string().default('v21.0'),
     /**
+     * Whether the stale-outbound-message sweep runs in this process.
+     *
+     * On by default. Turned off in the test suite, where recovery is invoked
+     * directly so a background timer cannot race the assertions or keep the
+     * process alive after the suite finishes.
+     */
+    OUTBOUND_RECOVERY_ENABLED: z
+      .string()
+      .default('true')
+      .transform((value) => value !== 'false'),
+    /**
+     * How long a message may sit PENDING before it is treated as abandoned.
+     *
+     * Default 120 seconds. The provider call itself times out at 15, so
+     * anything still PENDING two minutes later is not in flight — it belongs
+     * to a process that is no longer running. Short enough that nobody watches
+     * "Sending…" for long; far enough past the timeout that a slow-but-alive
+     * send is never finalised out from under itself.
+     */
+    OUTBOUND_RECOVERY_AFTER_SECONDS: z.coerce.number().int().positive().default(120),
+    /** How often the sweep runs. */
+    OUTBOUND_RECOVERY_INTERVAL_SECONDS: z.coerce.number().int().positive().default(60),
+    /**
      * Base64 32-byte key encrypting provider access tokens at rest.
      *
      * Optional so the application still boots without WhatsApp configured;

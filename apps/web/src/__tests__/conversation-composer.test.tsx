@@ -207,6 +207,53 @@ describe('Conversation composer', () => {
       expect(await screen.findByText(expected)).toBeInTheDocument();
     });
 
+    it('distinguishes an unconfirmed message from a failed one', async () => {
+      mockConversation({
+        canSend: true,
+        messages: [
+          {
+            ...BASE.messages[0],
+            id: 'm-out',
+            direction: 'OUTGOING',
+            senderType: 'AGENT',
+            content: 'Thanks for your enquiry.',
+            deliveryStatus: 'UNCONFIRMED',
+            failureReason:
+              'Delivery could not be confirmed, and the message was not resent automatically.',
+          },
+        ],
+      });
+
+      renderDrawer();
+
+      // The customer may well have received it. Saying "not delivered" here
+      // would have a salesperson send it again.
+      expect(await screen.findByText(/delivery not confirmed/i)).toBeInTheDocument();
+      expect(screen.queryByText(/^Not delivered$/)).toBeNull();
+      expect(screen.getByText(/not resent automatically/i)).toBeInTheDocument();
+    });
+
+    it('never leaves a recovered message reading as still sending', async () => {
+      mockConversation({
+        canSend: true,
+        messages: [
+          {
+            ...BASE.messages[0],
+            id: 'm-out',
+            direction: 'OUTGOING',
+            senderType: 'AGENT',
+            content: 'Thanks.',
+            deliveryStatus: 'UNCONFIRMED',
+          },
+        ],
+      });
+
+      renderDrawer();
+
+      await screen.findByText(/delivery not confirmed/i);
+      expect(screen.queryByText(/sending/i)).toBeNull();
+    });
+
     it('shows why a message was not delivered', async () => {
       mockConversation({
         canSend: true,

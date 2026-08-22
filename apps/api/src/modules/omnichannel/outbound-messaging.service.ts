@@ -68,6 +68,14 @@ export class OutboundMessagingService {
      */
     const existing = await this.repository.findMessageByIdempotencyKey(input.idempotencyKey);
     if (existing) {
+      /*
+       * Whatever state the original reached, including UNCONFIRMED.
+       *
+       * A message finalised by the recovery sweep may or may not have reached
+       * the customer, so replaying its request must return the attempt rather
+       * than make a second one. Resending is a decision for a person who can
+       * see the conversation, not for a retried HTTP request.
+       */
       this.logger.debug(`Idempotent replay of send ${input.idempotencyKey}; returning the original.`);
       return toMessageView(existing);
     }

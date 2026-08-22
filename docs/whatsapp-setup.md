@@ -263,3 +263,52 @@ how a customer receives the same message twice.
 Templates, media, interactive messages, reactions, typing indicators, read
 receipts sent by us, and any form of automated or AI reply. `canSend` is false
 for Instagram and Facebook.
+
+### Stale sends, and why they are not retried
+
+Writing the row before calling Meta protects against duplicates, but it leaves
+one gap: if the process dies mid-send, nothing ever comes back to close the row.
+Without a sweep it would read "Sending…" forever.
+
+A background pass finalises any outbound message still `PENDING` after
+`OUTBOUND_RECOVERY_AFTER_SECONDS` (default **120**). The provider call times out
+at 15 seconds, so anything still pending two minutes later belongs to a process
+that is no longer running — comfortably past any slow-but-alive send, short
+enough that nobody watches a spinner for long.
+
+It runs once at startup — the likeliest reason a row is stranded is that this
+process's predecessor died holding it — and then every
+`OUTBOUND_RECOVERY_INTERVAL_SECONDS`. No queue, no scheduler, no new
+infrastructure. Set `OUTBOUND_RECOVERY_ENABLED=false` to turn it off.
+
+**It never resends.** After a crash we do not know whether Meta accepted the
+message, so resending would be a guess whose failure mode is a customer
+receiving the same message twice. The row becomes:
+
+```
+UNCONFIRMED — "Delivery could not be confirmed, and the message was not
+               resent automatically. Check WhatsApp before sending it again."
+```
+
+`UNCONFIRMED` is **not** `FAILED`, and the two are shown differently. `FAILED`
+means the customer did not get it, and someone reading that will quite
+reasonably send it again. `UNCONFIRMED` means nobody knows.
+
+Safety comes from a single conditional `UPDATE` matching only `PENDING` rows
+older than the cutoff. Instances sweeping simultaneously converge on the same
+state, and since nothing here talks to a provider, a race cannot produce a
+message. `SENT`, `DELIVERED`, `READ` and `FAILED` are never touched; neither is
+a lead, a conversation or an owner.
+
+Replaying the original request afterwards returns the `UNCONFIRMED` attempt
+rather than sending again — the idempotency key outlives recovery.
+
+**A known limitation:** a message reaches `UNCONFIRMED` precisely because its
+provider id was never stored, so a later status webhook has nothing to match on.
+Such a message stays `UNCONFIRMED` permanently. Matching it by phone number,
+content or timestamp would be a guess, and a wrong guess would attach one
+customer's delivery receipt to another's message. The status ladder does allow a
+real provider answer to supersede `UNCONFIRMED` if one ever arrives.
+
+There is no resend button. A human-controlled resend, with a fresh idempotency
+key, is deliberately left to a later phase.

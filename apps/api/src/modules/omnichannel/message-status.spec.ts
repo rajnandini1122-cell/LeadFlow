@@ -69,6 +69,34 @@ describe('nextDeliveryStatus', () => {
     );
   });
 
+  describe('unconfirmed', () => {
+    it.each(['SENT', 'DELIVERED', 'READ'] as const)(
+      'lets a real %s answer replace it',
+      (incoming) => {
+        // "We do not know" carries no information. Anything definite is better,
+        // including news the salesperson will be glad to have.
+        expect(nextDeliveryStatus('UNCONFIRMED', incoming)).toBe(incoming);
+      },
+    );
+
+    it('lets a definite failure replace it', () => {
+      expect(nextDeliveryStatus('UNCONFIRMED', 'FAILED')).toBe('FAILED');
+    });
+
+    it.each(['SENT', 'DELIVERED', 'READ', 'FAILED', 'PENDING'] as const)(
+      'is never reached FROM %s through a provider event',
+      (current) => {
+        // Only the recovery sweep may write UNCONFIRMED, and only to rows still
+        // PENDING. A provider event always knows more than "we do not know".
+        expect(nextDeliveryStatus(current, 'UNCONFIRMED')).toBeNull();
+      },
+    );
+
+    it('ignores a repeat of itself', () => {
+      expect(nextDeliveryStatus('UNCONFIRMED', 'UNCONFIRMED')).toBeNull();
+    });
+  });
+
   describe('a message with no status yet', () => {
     it('accepts whatever arrives first', () => {
       expect(nextDeliveryStatus(null, 'DELIVERED')).toBe('DELIVERED');

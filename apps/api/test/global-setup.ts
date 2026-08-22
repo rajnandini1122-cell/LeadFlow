@@ -89,6 +89,15 @@ export default async function globalSetup(): Promise<void> {
    * will. A deployment reading these from a committed file would be a
    * different matter; a test fixture is exactly what they are.
    */
+  /*
+   * The stale-outbound sweep is invoked directly by the tests that cover it.
+   *
+   * Left on, its timer would race assertions that depend on a message still
+   * being PENDING, and would keep a handle open after the suite finishes —
+   * which this configuration deliberately does not paper over with forceExit.
+   */
+  process.env['OUTBOUND_RECOVERY_ENABLED'] = 'false';
+
   process.env['WHATSAPP_APP_SECRET'] = 'test-whatsapp-app-secret';
   process.env['WHATSAPP_VERIFY_TOKEN'] = 'test-whatsapp-verify-token';
   // 32 zero bytes, base64. Sufficient for a round-trip; obviously not a key

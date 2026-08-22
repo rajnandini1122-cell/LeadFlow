@@ -794,6 +794,33 @@ export class OmnichannelRepository {
     });
   }
 
+  /**
+   * Closes outbound messages abandoned mid-send.
+   *
+   * A single conditional UPDATE, which is what makes this safe to run on every
+   * instance at once. `deliveryStatus: 'PENDING'` in the WHERE means a row that
+   * has already been finalised — by another instance, or by the send itself
+   * completing a moment ago — simply is not matched. Two instances racing
+   * produce the same end state and no second customer message, because nothing
+   * here talks to a provider at all.
+   *
+   * Deliberately narrow: only PENDING rows older than the cutoff, and only the
+   * two status columns. SENT, DELIVERED, READ and FAILED are never touched, and
+   * neither is a lead, a conversation or an owner.
+   */
+  async finaliseStalePending(cutoff: Date, reason: string): Promise<number> {
+    const result = await this.prisma.client.message.updateMany({
+      where: {
+        direction: 'OUTGOING',
+        deliveryStatus: 'PENDING',
+        createdAt: { lt: cutoff },
+      },
+      data: { deliveryStatus: 'UNCONFIRMED', failureReason: reason },
+    });
+
+    return result.count;
+  }
+
   // --- status webhooks ------------------------------------------------------
 
   /**

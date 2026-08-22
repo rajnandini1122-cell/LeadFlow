@@ -60,7 +60,14 @@ export interface CandidateLead {
   lastActivityAt: string | null;
 }
 
-export type DeliveryStatus = 'PENDING' | 'SENT' | 'DELIVERED' | 'READ' | 'FAILED';
+export type DeliveryStatus =
+  | 'PENDING'
+  | 'SENT'
+  | 'DELIVERED'
+  | 'READ'
+  | 'FAILED'
+  /** The send was never resolved. It may or may not have reached the customer. */
+  | 'UNCONFIRMED';
 
 export interface ConversationMessage {
   id: string;

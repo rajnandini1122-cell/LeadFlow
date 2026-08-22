@@ -1109,7 +1109,17 @@ enum MessageDeliveryStatus {
   DELIVERED
   READ
   /// The provider refused it, or a status webhook reported a failure.
+  ///
+  /// FAILED means we KNOW the customer did not receive it. It is not a
+  /// dumping ground for anything that went wrong — see UNCONFIRMED.
   FAILED
+  /// We do not know whether the customer received it.
+  ///
+  /// Reached when a send was claimed but never finalised — the process died
+  /// between calling Meta and recording the outcome. Deliberately distinct
+  /// from FAILED: telling a salesperson a message failed when it may have
+  /// arrived invites them to send it again, and the customer gets it twice.
+  UNCONFIRMED
 
   @@map("message_delivery_status")
 }
@@ -1187,6 +1197,10 @@ model Message {
   @@index([organizationId, conversationId, createdAt(sort: Desc)])
   /// Status webhooks arrive keyed on the provider id alone.
   @@index([organizationId, externalMessageId])
+  /// The recovery sweep: stale claims, oldest first. Deliberately NOT
+  /// organization-first — the sweep runs across every tenant at once, so a
+  /// tenant-leading index would not be selective for it.
+  @@index([deliveryStatus, createdAt])
   @@map("messages")
 }
 
