@@ -5,6 +5,7 @@ import { AuditRepository } from '../../common/audit/audit.repository';
 import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
 import { resolveLeadVisibility } from '../leads/lead-visibility';
 import { OmnichannelRepository } from './omnichannel.repository';
+import { conversationScope, conversationScopeFilter } from './conversation-visibility';
 import { selectLead } from './lead-selection';
 
 /**
@@ -24,34 +25,116 @@ export class ConversationReviewService {
   ) {}
 
   /**
-   * What this caller may see.
+   * The caller's conversation scope, as a query fragment.
    *
-   * A rep restricted to their own leads gets their own conversations plus the
-   * unassigned queue; anyone with team or organization visibility gets
-   * everything. Undefined means no restriction.
+   * Reads the organization's shared-queue setting, because whether a rep may
+   * see unowned threads is a tenant decision — see conversation-visibility.ts.
    */
-  private ownerScope(principal: TenantPrincipal): string | undefined {
-    return resolveLeadVisibility(principal) === 'OWN' ? principal.userId : undefined;
+  private async scopeFilter(principal: TenantPrincipal) {
+    const shared = await this.repository.sharedUnassignedQueue();
+    return conversationScopeFilter(conversationScope(principal, shared));
   }
 
   async list(
-    options: { category?: string; channel?: string; archived?: boolean; limit?: number },
+    options: {
+      category?: string;
+      channel?: string;
+      archived?: boolean;
+      limit?: number;
+      cursor?: string;
+      inboxFilter?: 'MINE' | 'UNASSIGNED';
+      /** The inbox shows linked threads too; the review queue does not. */
+      includeLinked?: boolean;
+    },
     principal: TenantPrincipal,
   ) {
-    const rows = await this.repository.listForReview({
-      ownerScope: this.ownerScope(principal),
+    const limit = Math.min(options.limit ?? 50, 100);
+
+    const { rows, hasMore } = await this.repository.listConversations({
+      scopeFilter: await this.scopeFilter(principal),
       channel: options.channel as 'WHATSAPP' | 'FACEBOOK' | 'INSTAGRAM' | undefined,
       category: options.category,
+      inboxFilter: options.inboxFilter,
+      userId: principal.userId,
       archived: options.archived ?? false,
-      limit: Math.min(options.limit ?? 50, 100),
+      excludeLinked: options.includeLinked !== true,
+      limit,
+      cursor: options.cursor,
     });
 
-    return { items: rows.map(toReviewRow), total: rows.length };
+    const items = rows.map(toReviewRow);
+    return {
+      items,
+      hasMore,
+      nextCursor: hasMore ? (items[items.length - 1]?.id ?? null) : null,
+    };
   }
 
   /** The badge count on the navigation item. */
   async pendingCount(principal: TenantPrincipal): Promise<{ count: number }> {
-    return { count: await this.repository.countForReview(this.ownerScope(principal)) };
+    return {
+      count: await this.repository.countConversations({
+        scopeFilter: await this.scopeFilter(principal),
+        archived: false,
+        excludeLinked: true,
+      }),
+    };
+  }
+
+  /** Counts for the inbox tabs. Cheap, and scoped exactly like the lists. */
+  async inboxCounts(principal: TenantPrincipal) {
+    const scopeFilter = await this.scopeFilter(principal);
+    const base = { scopeFilter, archived: false, excludeLinked: false } as const;
+
+    const [all, mine, unassigned, review] = await Promise.all([
+      this.repository.countConversations(base),
+      this.repository.countConversations({
+        ...base,
+        inboxFilter: 'MINE',
+        userId: principal.userId,
+      }),
+      this.repository.countConversations({ ...base, inboxFilter: 'UNASSIGNED' }),
+      this.repository.countConversations({ scopeFilter, archived: false, excludeLinked: true }),
+    ]);
+
+    return { all, mine, unassigned, review };
+  }
+
+  /**
+   * Hand a conversation to someone, or take it back off them.
+   *
+   * Conversation ownership only. The linked lead's assignee is not read, not
+   * written and not consulted — passing a thread to a colleague is not the same
+   * act as passing them the deal.
+   */
+  async assign(
+    conversationId: string,
+    userId: string | null,
+    principal: TenantPrincipal,
+  ) {
+    const conversation = await this.requireVisible(conversationId, principal);
+
+    if (userId) {
+      const member = await this.repository.findAssignableMember(userId);
+      if (!member) {
+        throw AppException.notFound(
+          ERROR_CODES.USER_NOT_FOUND,
+          'That person is not an active member of this organization.',
+        );
+      }
+    }
+
+    await this.repository.setConversationOwner(conversationId, userId);
+
+    await this.audit.record({
+      action: 'omnichannel.conversation_assigned',
+      entityType: 'conversation',
+      entityId: conversationId,
+      before: { ownerId: conversation.ownerId },
+      after: { ownerId: userId },
+    });
+
+    return { id: conversationId, ownerId: userId };
   }
 
   /**
@@ -67,20 +150,7 @@ export class ConversationReviewService {
     const conversation = await this.repository.findConversationDetail(id);
     if (!conversation) throw this.notFound();
 
-    // A conversation already attached to a lead is only visible to someone who
-    // may see that lead.
-    if (conversation.leadId) {
-      const visibility = resolveLeadVisibility(principal);
-      if (visibility === 'OWN' && conversation.lead?.assignedToId !== principal.userId) {
-        throw this.notFound();
-      }
-    } else if (
-      this.ownerScope(principal) &&
-      conversation.ownerId &&
-      conversation.ownerId !== principal.userId
-    ) {
-      throw this.notFound();
-    }
+    if (!(await this.canSee(conversation, principal))) throw this.notFound();
 
     const candidates = conversation.contactId
       ? await this.candidatesFor(conversation.contactId, conversation.leadId, principal)
@@ -242,16 +312,36 @@ export class ConversationReviewService {
   private async requireVisible(id: string, principal: TenantPrincipal) {
     const conversation = await this.repository.findConversationById(id);
     if (!conversation) throw this.notFound();
-
-    if (
-      this.ownerScope(principal) &&
-      conversation.ownerId &&
-      conversation.ownerId !== principal.userId
-    ) {
-      throw this.notFound();
-    }
+    if (!(await this.canSee(conversation, principal))) throw this.notFound();
 
     return conversation;
+  }
+
+  /**
+   * Whether one conversation is within the caller's scope.
+   *
+   * The same policy the list queries use, applied to a single row. Written
+   * against `conversationScope` rather than re-deriving the rule, so a change
+   * to who sees what lands here and in the inbox together — the two disagreeing
+   * is precisely how a detail endpoint becomes the hole in a list filter.
+   */
+  private async canSee(
+    conversation: { ownerId: string | null; leadId: string | null },
+    principal: TenantPrincipal,
+  ): Promise<boolean> {
+    const scope = conversationScope(principal, await this.repository.sharedUnassignedQueue());
+    if (scope.kind === 'ALL') return true;
+
+    if (conversation.ownerId === scope.userId) return true;
+
+    // Attached to a lead: the lead's own visibility decides, so a rep keeps
+    // sight of the conversation on their deal however the thread is owned.
+    if (conversation.leadId) {
+      const lead = await this.repository.findLeadById(conversation.leadId);
+      return lead?.assignedToId === scope.userId;
+    }
+
+    return scope.includeUnassigned && conversation.ownerId === null;
   }
 
   private notFound(): AppException {

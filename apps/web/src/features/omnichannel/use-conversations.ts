@@ -5,7 +5,7 @@ import {
   type UseMutationResult,
   type UseQueryResult,
 } from '@tanstack/react-query';
-import { apiGet, apiPost } from '../../lib/api-client';
+import { apiGet, apiPatch, apiPost } from '../../lib/api-client';
 
 /**
  * Data access for the channel review queue and conversation views.
@@ -109,11 +109,17 @@ export interface LinkedConversation {
   messages: { id: string; content: string | null; createdAt: string }[];
 }
 
+export interface ConversationPage {
+  items: ReviewRow[];
+  hasMore: boolean;
+  nextCursor: string | null;
+}
+
 export function useReviewQueue(filters: {
   category: ReviewCategory;
   channel?: Channel | undefined;
   archived?: boolean;
-}): UseQueryResult<{ items: ReviewRow[]; total: number }> {
+}): UseQueryResult<ConversationPage> {
   const params: Record<string, unknown> = {};
   if (filters.category !== 'ALL') params['category'] = filters.category;
   if (filters.channel) params['channel'] = filters.channel;
@@ -121,8 +127,95 @@ export function useReviewQueue(filters: {
 
   return useQuery({
     queryKey: ['conversations', 'review', params],
-    queryFn: () => apiGet<{ items: ReviewRow[]; total: number }>('/conversations/review', params),
+    queryFn: () => apiGet<ConversationPage>('/conversations/review', params),
   });
+}
+
+export type InboxFilter = 'ALL' | 'MINE' | 'UNASSIGNED';
+
+export interface InboxCounts {
+  all: number;
+  mine: number;
+  unassigned: number;
+  review: number;
+}
+
+/**
+ * The unified inbox.
+ *
+ * Reads the same conversations the review queue does — one store, two views —
+ * and simply does not hide threads that already belong to a lead.
+ */
+export function useInbox(filters: {
+  filter: InboxFilter;
+  channel?: Channel | undefined;
+  archived?: boolean;
+}): UseQueryResult<ConversationPage> {
+  const params: Record<string, unknown> = {};
+  if (filters.filter !== 'ALL') params['filter'] = filters.filter;
+  if (filters.channel) params['channel'] = filters.channel;
+  if (filters.archived) params['archived'] = true;
+
+  return useQuery({
+    queryKey: ['conversations', 'inbox', params],
+    queryFn: () => apiGet<ConversationPage>('/conversations/inbox', params),
+  });
+}
+
+export function useInboxCounts(enabled: boolean): UseQueryResult<InboxCounts> {
+  return useQuery({
+    queryKey: ['conversations', 'inbox', 'counts'],
+    queryFn: () => apiGet<InboxCounts>('/conversations/inbox/counts'),
+    enabled,
+  });
+}
+
+export interface IntegrationView {
+  channel: Channel;
+  id: string | null;
+  status: 'NOT_CONNECTED' | 'CONNECTED' | 'DISCONNECTED' | 'ERROR';
+  enabled: boolean;
+  displayName: string | null;
+  connectedAt: string | null;
+  disconnectedAt: string | null;
+  lastActivityAt: string | null;
+  lastErrorAt: string | null;
+  lastErrorMessage: string | null;
+  connectedBy: { id: string; fullName: string } | null;
+  /** False everywhere today: no provider is implemented yet. */
+  connectable: boolean;
+}
+
+export function useIntegrations(): UseQueryResult<IntegrationView[]> {
+  return useQuery({
+    queryKey: ['channel-integrations'],
+    queryFn: () => apiGet<IntegrationView[]>('/channel-integrations'),
+  });
+}
+
+export function useSetIntegrationEnabled(): UseMutationResult<
+  unknown,
+  Error,
+  { id: string; enabled: boolean }
+> {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ id, enabled }) => apiPatch(`/channel-integrations/${id}`, { enabled }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['channel-integrations'] });
+    },
+  });
+}
+
+export function useAssignConversation(): UseMutationResult<
+  unknown,
+  Error,
+  { conversationId: string; userId: string | null }
+> {
+  return useConversationMutation(({ conversationId, userId }) =>
+    apiPost(`/conversations/${conversationId}/assign`, { userId }),
+  );
 }
 
 export function useReviewCount(enabled: boolean): UseQueryResult<{ count: number }> {

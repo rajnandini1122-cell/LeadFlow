@@ -4,6 +4,8 @@ import { ConversationReviewService } from './conversation-review.service';
 import { ConversationsController } from './conversations.controller';
 import { IdentityResolutionService } from './identity-resolution.service';
 import { IngestionService } from './ingestion.service';
+import { IntegrationsController } from './integrations.controller';
+import { IntegrationsService } from './integrations.service';
 import { OmnichannelRepository } from './omnichannel.repository';
 
 /**
@@ -16,14 +18,20 @@ import { OmnichannelRepository } from './omnichannel.repository';
  * second lead service by accident.
  */
 @Module({
-  controllers: [ConversationsController],
+  controllers: [ConversationsController, IntegrationsController],
   providers: [
     OmnichannelRepository,
     IdentityResolutionService,
     IngestionService,
     ConversationLinkingService,
     ConversationReviewService,
+    IntegrationsService,
   ],
-  exports: [IngestionService, ConversationLinkingService, ConversationReviewService],
+  exports: [
+    IngestionService,
+    ConversationLinkingService,
+    ConversationReviewService,
+    IntegrationsService,
+  ],
 })
 export class OmnichannelModule {}

@@ -155,6 +155,14 @@ export interface OrganizationSettings {
    * belongs with connecting a channel rather than with editing settings.
    */
   omnichannelEnabled: boolean;
+  /**
+   * Whether ordinary sales users may browse conversations nobody owns.
+   *
+   * Editable, unlike omnichannelEnabled: it is a policy choice about who sees
+   * unclaimed customer enquiries, and it belongs with the organization's other
+   * settings.
+   */
+  sharedUnassignedQueue: boolean;
 }
 
 export interface UpdateOrganizationRequest {

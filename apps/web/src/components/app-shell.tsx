@@ -4,7 +4,7 @@ import { PERMISSIONS, type Permission } from '@leadflow/api-types';
 import { useAuth } from '../features/auth/auth-context';
 import { useFollowUps } from '../features/leads/use-lead-mutations';
 import { useOmnichannelEnabled } from '../features/omnichannel/use-omnichannel-enabled';
-import { useReviewCount } from '../features/omnichannel/use-conversations';
+import { useInboxCounts, useReviewCount } from '../features/omnichannel/use-conversations';
 import { Avatar } from './ui';
 import { Copyright, LogoMark } from './brand';
 import { OrganizationSwitcher } from './organization-switcher';
@@ -16,7 +16,7 @@ interface NavItem {
   /** Hidden without this permission. Visibility is convenience — the API guards. */
   permission?: Permission;
   /** Shows a live count; red when it represents something overdue. */
-  badge?: 'overdue' | 'review';
+  badge?: 'overdue' | 'review' | 'inbox';
   /**
    * Hidden unless the organization has switched omnichannel capture on.
    * A tenant that has connected no channel never sees an empty queue for a
@@ -34,6 +34,7 @@ interface NavItem {
 /** Navigation from spec §25. */
 const NAV_ITEMS: NavItem[] = [
   { to: '/dashboard', label: 'Dashboard', icon: '◆' },
+  { to: '/inbox', label: 'Inbox', icon: '✉', badge: 'inbox', requiresOmnichannel: true },
   { to: '/leads', label: 'Leads', icon: '☰' },
   {
     to: '/leads/review',
@@ -48,6 +49,13 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/reports', label: 'Reports', icon: '▤', permission: PERMISSIONS.REPORT_VIEW, exact: true },
   { to: '/reports/daily', label: 'Daily report', icon: '☀', permission: PERMISSIONS.REPORT_VIEW },
   { to: '/settings', label: 'Settings', icon: '⚙', permission: PERMISSIONS.ORG_VIEW, exact: true },
+  {
+    to: '/settings/channels',
+    label: 'Channels',
+    icon: '⇄',
+    permission: PERMISSIONS.ORG_VIEW,
+    requiresOmnichannel: true,
+  },
   {
     to: '/settings/billing',
     label: 'Plan & billing',
@@ -72,6 +80,9 @@ export function AppShell(): React.JSX.Element {
   const omnichannel = useOmnichannelEnabled();
   const review = useReviewCount(omnichannel);
   const reviewCount = review.data?.count ?? 0;
+
+  const inboxCounts = useInboxCounts(omnichannel);
+  const inboxCount = inboxCounts.data?.all ?? 0;
 
   const visible = NAV_ITEMS.filter(
     (item) =>
@@ -126,6 +137,15 @@ export function AppShell(): React.JSX.Element {
                     work to do, whereas an overdue follow-up is a promise
                     already broken. Colouring them alike would flatten that.
                   */}
+                  {/*
+                    Neutral, not amber: the inbox count is how much
+                    correspondence exists, not how much is going wrong.
+                  */}
+                  {item.badge === 'inbox' && inboxCount > 0 && (
+                    <span className="rounded-full bg-slate-200 px-1.5 py-0.5 text-[10px] font-semibold text-slate-700 tabular-nums">
+                      {inboxCount}
+                    </span>
+                  )}
                   {item.badge === 'review' && reviewCount > 0 && (
                     <span className="rounded-full bg-amber-500 px-1.5 py-0.5 text-[10px] font-semibold text-white tabular-nums">
                       {reviewCount}

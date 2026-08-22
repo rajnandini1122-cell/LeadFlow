@@ -1,6 +1,17 @@
 import { ApiPropertyOptional, ApiProperty } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
-import { IsBoolean, IsIn, IsInt, IsOptional, IsString, IsUUID, Max, Min, MaxLength } from 'class-validator';
+import {
+  IsBoolean,
+  IsIn,
+  IsInt,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Max,
+  MaxLength,
+  Min,
+  ValidateIf,
+} from 'class-validator';
 
 export class ListConversationsDto {
   @ApiProperty({ description: 'The lead whose conversations to return.' })
@@ -48,6 +59,54 @@ export class ReviewQueueDto {
   @Min(1)
   @Max(100)
   limit?: number;
+}
+
+export class InboxQueryDto {
+  @ApiPropertyOptional({ enum: ['ALL', 'MINE', 'UNASSIGNED'] })
+  @IsOptional()
+  @IsIn(['ALL', 'MINE', 'UNASSIGNED'])
+  filter?: string;
+
+  @ApiPropertyOptional({ enum: ['WHATSAPP', 'FACEBOOK', 'INSTAGRAM'] })
+  @IsOptional()
+  @IsIn(['WHATSAPP', 'FACEBOOK', 'INSTAGRAM'])
+  channel?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true')
+  @IsBoolean()
+  archived?: boolean;
+
+  @ApiPropertyOptional({ default: 25 })
+  @IsOptional()
+  @Transform(({ value }) => (value === undefined ? undefined : Number(value)))
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit?: number;
+
+  @ApiPropertyOptional({ description: 'Id of the last row from the previous page.' })
+  @IsOptional()
+  @IsUUID()
+  cursor?: string;
+}
+
+export class AssignConversationDto {
+  @ApiPropertyOptional({
+    description: 'Who should handle this conversation. Null hands it back to nobody.',
+    nullable: true,
+  })
+  @IsOptional()
+  @ValidateIf((_object, value) => value !== null)
+  @IsUUID()
+  userId?: string | null;
+}
+
+export class SetIntegrationEnabledDto {
+  @ApiProperty({ description: 'Whether this integration should be acted on.' })
+  @IsBoolean()
+  enabled!: boolean;
 }
 
 export class ArchiveConversationDto {

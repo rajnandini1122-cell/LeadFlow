@@ -16,6 +16,8 @@ import { ContactPage } from './features/marketing/contact-page';
 import { DashboardPage } from './features/dashboard/dashboard-page';
 import { LeadsPage } from './features/leads/leads-page';
 import { ChannelReviewPage } from './features/omnichannel/channel-review-page';
+import { InboxPage } from './features/omnichannel/inbox-page';
+import { ChannelIntegrationsPage } from './features/settings/channel-integrations-page';
 import { LeadDetailPage } from './features/leads/lead-detail-page';
 import { ImportLeadsPage } from './features/leads/import-leads-page';
 import { ContactsPage } from './features/contacts/contacts-page';
@@ -109,6 +111,7 @@ export function App(): React.JSX.Element {
             <Route element={<RequireAuth />}>
               <Route element={<AppShell />}>
                 <Route path="dashboard" element={<DashboardPage />} />
+                <Route path="inbox" element={<InboxPage />} />
                 <Route path="leads" element={<LeadsPage />} />
                 {/* Before :id, or the router matches "import" as a lead id. */}
                 <Route path="leads/review" element={<ChannelReviewPage />} />
@@ -121,6 +124,7 @@ export function App(): React.JSX.Element {
                 <Route path="reports" element={<ReportsPage />} />
                 <Route path="reports/daily" element={<DailyReportPage />} />
                 <Route path="settings" element={<SettingsPage />} />
+                <Route path="settings/channels" element={<ChannelIntegrationsPage />} />
                 <Route path="settings/billing" element={<BillingPage />} />
                 <Route path="settings/security" element={<SecurityPage />} />
               </Route>

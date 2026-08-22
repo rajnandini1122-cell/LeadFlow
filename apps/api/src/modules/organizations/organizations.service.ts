@@ -18,6 +18,7 @@ const DEFAULT_SETTINGS: OrganizationSettings = {
   workingHoursEnd: '18:30',
   leadSources: [],
   omnichannelEnabled: false,
+  sharedUnassignedQueue: false,
 };
 
 @Injectable()
@@ -85,6 +86,7 @@ type OrganizationRow = {
     workingHoursEnd: string;
     leadSources: string[];
     omnichannelEnabled: boolean;
+    sharedUnassignedQueue: boolean;
   } | null;
 };
 
@@ -108,6 +110,7 @@ function toDetail(organization: OrganizationRow): OrganizationDetail {
           workingHoursEnd: organization.settings.workingHoursEnd,
           leadSources: organization.settings.leadSources,
           omnichannelEnabled: organization.settings.omnichannelEnabled,
+          sharedUnassignedQueue: organization.settings.sharedUnassignedQueue,
         }
       : DEFAULT_SETTINGS,
   };

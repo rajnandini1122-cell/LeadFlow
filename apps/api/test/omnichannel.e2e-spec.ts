@@ -961,7 +961,16 @@ describe('Omnichannel capture', () => {
       expect(asRep.status).toBe(404);
     });
 
-    it('still shows unassigned conversations to everyone', async () => {
+    /*
+     * REPLACED IN PHASE D.
+     *
+     * This used to assert that every user could see every unowned conversation.
+     * That was too generous: an unassigned enquiry is a customer's private
+     * message to the business, and "nobody has picked it up yet" is not a
+     * reason to show it to every salesperson. It is now a per-tenant decision —
+     * see the shared-unassigned-queue cases below.
+     */
+    it('hides an unowned conversation from a rep unless the tenant opts in', async () => {
       const result = await ingestion.ingest(
         event(ctx.orgA, { senderPhone: '4155558841', content: 'need price list' }),
       );
@@ -972,8 +981,17 @@ describe('Omnichannel capture', () => {
         .set(auth(ctx.orgA.rep.accessToken));
 
       expect(asRep.status).toBe(200);
-      // An enquiry nobody owns is exactly what must not sit unnoticed.
-      expect(asRep.body.data.items.map((i: { id: string }) => i.id)).toContain(
+      expect(asRep.body.data.items.map((i: { id: string }) => i.id)).not.toContain(
+        result.conversationId,
+      );
+
+      // The people who can already see the whole pipeline still see it, so
+      // nothing goes unnoticed.
+      const asOwner = await ctx
+        .http()
+        .get('/api/v1/conversations/review')
+        .set(auth(ctx.orgA.owner.accessToken));
+      expect(asOwner.body.data.items.map((i: { id: string }) => i.id)).toContain(
         result.conversationId,
       );
     });
@@ -992,6 +1010,507 @@ describe('Omnichannel capture', () => {
       expect(queueB.body.data.items.map((i: { id: string }) => i.id)).not.toContain(
         result.conversationId,
       );
+    });
+  });
+
+
+  // ===========================================================================
+  // PHASE D — conversation visibility
+  //
+  // The rule Phase C got wrong. An unassigned enquiry is a customer's private
+  // message to the business, not a noticeboard, and "nobody has picked it up
+  // yet" is not a reason to show it to every salesperson.
+  // ===========================================================================
+
+  describe('conversation visibility', () => {
+    /** Flips the organization's shared-unassigned-queue setting. */
+    async function setSharedQueue(enabled: boolean): Promise<void> {
+      const response = await ctx
+        .http()
+        .patch('/api/v1/organizations/current')
+        .set(auth(ctx.orgA.owner.accessToken))
+        .send({ settings: { sharedUnassignedQueue: enabled } });
+
+      expect(response.status).toBe(200);
+      expect(response.body.data.settings.sharedUnassignedQueue).toBe(enabled);
+    }
+
+    afterEach(async () => {
+      await setSharedQueue(false);
+    });
+
+    it('hides an unowned conversation from a sales rep by default', async () => {
+      await setSharedQueue(false);
+
+      const result = await ingestion.ingest(
+        event(ctx.orgA, { senderPhone: '4155559101', content: 'need a quotation' }),
+      );
+
+      const asRep = await ctx
+        .http()
+        .get('/api/v1/conversations/inbox')
+        .set(auth(ctx.orgA.rep.accessToken));
+
+      expect(asRep.status).toBe(200);
+      expect(asRep.body.data.items.map((i: { id: string }) => i.id)).not.toContain(
+        result.conversationId,
+      );
+
+      // And not through the detail endpoint either — a list filter with a
+      // readable detail route underneath it is not a filter.
+      const detail = await ctx
+        .http()
+        .get(`/api/v1/conversations/${result.conversationId}`)
+        .set(auth(ctx.orgA.rep.accessToken));
+      expect(detail.status).toBe(404);
+    });
+
+    it('shows the same conversation to the owner, who sees everything', async () => {
+      const result = await ingestion.ingest(
+        event(ctx.orgA, { senderPhone: '4155559102', content: 'pricing please' }),
+      );
+
+      const asOwner = await ctx
+        .http()
+        .get('/api/v1/conversations/inbox')
+        .set(auth(ctx.orgA.owner.accessToken));
+
+      expect(asOwner.body.data.items.map((i: { id: string }) => i.id)).toContain(
+        result.conversationId,
+      );
+    });
+
+    it('opens unowned conversations to a rep once the organization enables the shared queue', async () => {
+      const result = await ingestion.ingest(
+        event(ctx.orgA, { senderPhone: '4155559103', content: 'bulk order' }),
+      );
+
+      const before = await ctx
+        .http()
+        .get('/api/v1/conversations/inbox')
+        .set(auth(ctx.orgA.rep.accessToken));
+      expect(before.body.data.items.map((i: { id: string }) => i.id)).not.toContain(
+        result.conversationId,
+      );
+
+      await setSharedQueue(true);
+
+      const after = await ctx
+        .http()
+        .get('/api/v1/conversations/inbox')
+        .set(auth(ctx.orgA.rep.accessToken));
+      expect(after.body.data.items.map((i: { id: string }) => i.id)).toContain(
+        result.conversationId,
+      );
+    });
+
+    it('still shows a rep the conversation on their own lead', async () => {
+      const mobile = '4155559104';
+      await createLead(ctx.orgA, ctx.orgA.owner.accessToken, {
+        mobile,
+        assignedToId: ctx.orgA.rep.id,
+      });
+
+      const result = await ingestion.ingest(event(ctx.orgA, { senderPhone: mobile }));
+
+      const asRep = await ctx
+        .http()
+        .get('/api/v1/conversations/inbox')
+        .set(auth(ctx.orgA.rep.accessToken));
+
+      // Tightening unassigned visibility must not cost a rep sight of their
+      // own customers.
+      expect(asRep.body.data.items.map((i: { id: string }) => i.id)).toContain(
+        result.conversationId,
+      );
+    });
+
+    it('never shows a rep a conversation on a colleague’s lead, shared queue or not', async () => {
+      const mobile = '4155559105';
+      await createLead(ctx.orgA, ctx.orgA.owner.accessToken, {
+        mobile,
+        assignedToId: ctx.orgA.owner.id,
+      });
+
+      const result = await ingestion.ingest(event(ctx.orgA, { senderPhone: mobile }));
+
+      await setSharedQueue(true);
+
+      const asRep = await ctx
+        .http()
+        .get('/api/v1/conversations/inbox')
+        .set(auth(ctx.orgA.rep.accessToken));
+
+      // The shared queue is about enquiries nobody has picked up. It is not a
+      // back door into threads that belong to someone else's deal.
+      expect(asRep.body.data.items.map((i: { id: string }) => i.id)).not.toContain(
+        result.conversationId,
+      );
+    });
+
+    it('does not leak an inaccessible lead through the counts', async () => {
+      const mobile = '4155559106';
+      await createLead(ctx.orgA, ctx.orgA.owner.accessToken, {
+        mobile,
+        assignedToId: ctx.orgA.owner.id,
+      });
+      await ingestion.ingest(event(ctx.orgA, { senderPhone: mobile }));
+
+      const repCounts = await ctx
+        .http()
+        .get('/api/v1/conversations/inbox/counts')
+        .set(auth(ctx.orgA.rep.accessToken));
+
+      const ownerCounts = await ctx
+        .http()
+        .get('/api/v1/conversations/inbox/counts')
+        .set(auth(ctx.orgA.owner.accessToken));
+
+      expect(repCounts.status).toBe(200);
+      // A count is a disclosure too: "there are 40 conversations you cannot
+      // see" is information the rep should not have.
+      expect(repCounts.body.data.all).toBeLessThan(ownerCounts.body.data.all);
+    });
+  });
+
+  // ===========================================================================
+  // PHASE D — the inbox
+  // ===========================================================================
+
+  describe('the unified inbox', () => {
+    it('shows linked conversations, which the review queue hides', async () => {
+      const mobile = '4155559110';
+      await createLead(ctx.orgA, ctx.orgA.owner.accessToken, {
+        mobile,
+        assignedToId: ctx.orgA.rep.id,
+      });
+
+      const result = await ingestion.ingest(event(ctx.orgA, { senderPhone: mobile }));
+      expect(result.linkState).toBe('LINKED');
+
+      const inbox = await ctx
+        .http()
+        .get('/api/v1/conversations/inbox')
+        .set(auth(ctx.orgA.owner.accessToken));
+      const review = await ctx
+        .http()
+        .get('/api/v1/conversations/review')
+        .set(auth(ctx.orgA.owner.accessToken));
+
+      // Same row, same table — the review queue is a view over the inbox, not
+      // a second copy.
+      expect(inbox.body.data.items.map((i: { id: string }) => i.id)).toContain(
+        result.conversationId,
+      );
+      expect(review.body.data.items.map((i: { id: string }) => i.id)).not.toContain(
+        result.conversationId,
+      );
+    });
+
+    it('filters to mine', async () => {
+      const mobile = '4155559111';
+      await createLead(ctx.orgA, ctx.orgA.owner.accessToken, {
+        mobile,
+        assignedToId: ctx.orgA.rep.id,
+      });
+      const mine = await ingestion.ingest(event(ctx.orgA, { senderPhone: mobile }));
+
+      const other = await ingestion.ingest(
+        event(ctx.orgA, { senderPhone: '4155559112', content: 'hello' }),
+      );
+
+      const inbox = await ctx
+        .http()
+        .get('/api/v1/conversations/inbox')
+        .query({ filter: 'MINE' })
+        .set(auth(ctx.orgA.rep.accessToken));
+
+      const ids = inbox.body.data.items.map((i: { id: string }) => i.id);
+      expect(ids).toContain(mine.conversationId);
+      expect(ids).not.toContain(other.conversationId);
+    });
+
+    it('filters by channel', async () => {
+      const whatsapp = await ingestion.ingest(
+        event(ctx.orgA, { senderPhone: '4155559113', content: 'quote' }),
+      );
+      const instagram = await ingestion.ingest(
+        event(ctx.orgA, { channel: 'INSTAGRAM', content: 'wholesale pricing?' }),
+      );
+
+      const filtered = await ctx
+        .http()
+        .get('/api/v1/conversations/inbox')
+        .query({ channel: 'INSTAGRAM' })
+        .set(auth(ctx.orgA.owner.accessToken));
+
+      const ids = filtered.body.data.items.map((i: { id: string }) => i.id);
+      expect(ids).toContain(instagram.conversationId);
+      expect(ids).not.toContain(whatsapp.conversationId);
+    });
+
+    it('keeps dismissed conversations out of the default view', async () => {
+      const result = await ingestion.ingest(
+        event(ctx.orgA, { senderPhone: '4155559114', content: 'spam' }),
+      );
+
+      await ctx
+        .http()
+        .post(`/api/v1/conversations/${result.conversationId}/archive`)
+        .set(auth(ctx.orgA.owner.accessToken))
+        .send({});
+
+      const inbox = await ctx
+        .http()
+        .get('/api/v1/conversations/inbox')
+        .set(auth(ctx.orgA.owner.accessToken));
+      expect(inbox.body.data.items.map((i: { id: string }) => i.id)).not.toContain(
+        result.conversationId,
+      );
+
+      const archived = await ctx
+        .http()
+        .get('/api/v1/conversations/inbox')
+        .query({ archived: true })
+        .set(auth(ctx.orgA.owner.accessToken));
+      expect(archived.body.data.items.map((i: { id: string }) => i.id)).toContain(
+        result.conversationId,
+      );
+    });
+
+    it('pages without loading every message', async () => {
+      const page = await ctx
+        .http()
+        .get('/api/v1/conversations/inbox')
+        .query({ limit: 2 })
+        .set(auth(ctx.orgA.owner.accessToken));
+
+      expect(page.status).toBe(200);
+      expect(page.body.data.items.length).toBeLessThanOrEqual(2);
+      // A summary row carries a preview, never a full history.
+      for (const item of page.body.data.items) {
+        expect(item).not.toHaveProperty('messages');
+      }
+    });
+
+    it('does not show organization B anything of organization A’s', async () => {
+      const result = await ingestion.ingest(
+        event(ctx.orgA, { senderPhone: '4155559115', content: 'quotation' }),
+      );
+
+      const inboxB = await ctx
+        .http()
+        .get('/api/v1/conversations/inbox')
+        .set(auth(ctx.orgB.owner.accessToken));
+
+      expect(inboxB.body.data.items.map((i: { id: string }) => i.id)).not.toContain(
+        result.conversationId,
+      );
+    });
+  });
+
+  // ===========================================================================
+  // PHASE D — conversation assignment
+  // ===========================================================================
+
+  describe('assigning a conversation', () => {
+    it('sets the conversation owner and leaves the lead owner alone', async () => {
+      const mobile = '4155559120';
+      const lead = await createLead(ctx.orgA, ctx.orgA.owner.accessToken, {
+        mobile,
+        assignedToId: ctx.orgA.rep.id,
+      });
+
+      const result = await ingestion.ingest(event(ctx.orgA, { senderPhone: mobile }));
+
+      const assigned = await ctx
+        .http()
+        .post(`/api/v1/conversations/${result.conversationId}/assign`)
+        .set(auth(ctx.orgA.owner.accessToken))
+        .send({ userId: ctx.orgA.owner.id });
+
+      expect(assigned.status).toBe(200);
+      expect(assigned.body.data.ownerId).toBe(ctx.orgA.owner.id);
+
+      // THE point of the separation: handing over a thread is not handing over
+      // the deal.
+      const after = await ctx
+        .http()
+        .get(`/api/v1/leads/${lead.id}`)
+        .set(auth(ctx.orgA.owner.accessToken));
+      expect(after.body.data.assignedTo?.id ?? after.body.data.assignedToId).toBe(
+        ctx.orgA.rep.id,
+      );
+    });
+
+    it('hands a conversation back to nobody', async () => {
+      const result = await ingestion.ingest(
+        event(ctx.orgA, { senderPhone: '4155559121', content: 'price list' }),
+      );
+
+      await ctx
+        .http()
+        .post(`/api/v1/conversations/${result.conversationId}/assign`)
+        .set(auth(ctx.orgA.owner.accessToken))
+        .send({ userId: ctx.orgA.rep.id });
+
+      const cleared = await ctx
+        .http()
+        .post(`/api/v1/conversations/${result.conversationId}/assign`)
+        .set(auth(ctx.orgA.owner.accessToken))
+        .send({ userId: null });
+
+      expect(cleared.status).toBe(200);
+      expect(cleared.body.data.ownerId).toBeNull();
+    });
+
+    it('refuses someone who is not a member of this organization', async () => {
+      const result = await ingestion.ingest(
+        event(ctx.orgA, { senderPhone: '4155559122', content: 'quote' }),
+      );
+
+      const attack = await ctx
+        .http()
+        .post(`/api/v1/conversations/${result.conversationId}/assign`)
+        .set(auth(ctx.orgA.owner.accessToken))
+        .send({ userId: ctx.orgB.rep.id });
+
+      expect(attack.status).toBe(404);
+    });
+
+    it('does not let organization B assign organization A’s conversation', async () => {
+      const result = await ingestion.ingest(
+        event(ctx.orgA, { senderPhone: '4155559123', content: 'hi' }),
+      );
+
+      const attack = await ctx
+        .http()
+        .post(`/api/v1/conversations/${result.conversationId}/assign`)
+        .set(auth(ctx.orgB.owner.accessToken))
+        .send({ userId: ctx.orgB.owner.id });
+
+      expect(attack.status).toBe(404);
+    });
+  });
+
+  // ===========================================================================
+  // PHASE D — channel integrations
+  // ===========================================================================
+
+  describe('channel integrations', () => {
+    it('lists every supported channel, connected or not', async () => {
+      const response = await ctx
+        .http()
+        .get('/api/v1/channel-integrations')
+        .set(auth(ctx.orgA.owner.accessToken));
+
+      expect(response.status).toBe(200);
+      expect(response.body.data.map((row: { channel: string }) => row.channel)).toEqual(
+        expect.arrayContaining(['WHATSAPP', 'INSTAGRAM', 'FACEBOOK']),
+      );
+    });
+
+    it('reports every channel as not connectable, because no provider exists yet', async () => {
+      const response = await ctx
+        .http()
+        .get('/api/v1/channel-integrations')
+        .set(auth(ctx.orgA.owner.accessToken));
+
+      // The screen reads this to decide whether "Connect" can do anything.
+      // Claiming otherwise would have an owner believing their number is live.
+      for (const row of response.body.data) {
+        expect(row.connectable).toBe(false);
+      }
+    });
+
+    it('shows a channel with no record as NOT_CONNECTED and invents no timestamps', async () => {
+      const response = await ctx
+        .http()
+        .get('/api/v1/channel-integrations')
+        .set(auth(ctx.orgA.owner.accessToken));
+
+      const facebook = response.body.data.find(
+        (row: { channel: string }) => row.channel === 'FACEBOOK',
+      );
+      expect(facebook.status).toBe('NOT_CONNECTED');
+      expect(facebook.connectedAt).toBeNull();
+      expect(facebook.lastActivityAt).toBeNull();
+    });
+
+    it('switches an integration off without touching its history', async () => {
+      const list = await ctx
+        .http()
+        .get('/api/v1/channel-integrations')
+        .set(auth(ctx.orgA.owner.accessToken));
+
+      const whatsapp = list.body.data.find(
+        (row: { channel: string }) => row.channel === 'WHATSAPP',
+      );
+      expect(whatsapp.id).toBeTruthy();
+
+      const before = await ctx
+        .http()
+        .get('/api/v1/conversations/inbox')
+        .set(auth(ctx.orgA.owner.accessToken));
+
+      const disabled = await ctx
+        .http()
+        .patch(`/api/v1/channel-integrations/${whatsapp.id}`)
+        .set(auth(ctx.orgA.owner.accessToken))
+        .send({ enabled: false });
+
+      expect(disabled.status).toBe(200);
+      expect(disabled.body.data.enabled).toBe(false);
+
+      const after = await ctx
+        .http()
+        .get('/api/v1/conversations/inbox')
+        .set(auth(ctx.orgA.owner.accessToken));
+
+      // Turning a channel off is not a way to delete its history.
+      expect(after.body.data.items.length).toBe(before.body.data.items.length);
+
+      await ctx
+        .http()
+        .patch(`/api/v1/channel-integrations/${whatsapp.id}`)
+        .set(auth(ctx.orgA.owner.accessToken))
+        .send({ enabled: true });
+    });
+
+    it('refuses a sales rep the ability to change integrations', async () => {
+      const list = await ctx
+        .http()
+        .get('/api/v1/channel-integrations')
+        .set(auth(ctx.orgA.owner.accessToken));
+      const whatsapp = list.body.data.find(
+        (row: { channel: string }) => row.channel === 'WHATSAPP',
+      );
+
+      const attempt = await ctx
+        .http()
+        .patch(`/api/v1/channel-integrations/${whatsapp.id}`)
+        .set(auth(ctx.orgA.rep.accessToken))
+        .send({ enabled: false });
+
+      expect(attempt.status).toBe(403);
+    });
+
+    it('does not let organization B see or change organization A’s integration', async () => {
+      const listA = await ctx
+        .http()
+        .get('/api/v1/channel-integrations')
+        .set(auth(ctx.orgA.owner.accessToken));
+      const whatsappA = listA.body.data.find(
+        (row: { channel: string }) => row.channel === 'WHATSAPP',
+      );
+
+      const attack = await ctx
+        .http()
+        .patch(`/api/v1/channel-integrations/${whatsappA.id}`)
+        .set(auth(ctx.orgB.owner.accessToken))
+        .send({ enabled: false });
+
+      expect(attack.status).toBe(404);
     });
   });
 

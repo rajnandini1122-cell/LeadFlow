@@ -18,6 +18,8 @@ import { ConversationLinkingService } from './conversation-linking.service';
 import { ConversationReviewService } from './conversation-review.service';
 import {
   ArchiveConversationDto,
+  AssignConversationDto,
+  InboxQueryDto,
   LinkConversationDto,
   ListConversationsDto,
   ReviewQueueDto,
@@ -54,6 +56,39 @@ export class ConversationsController {
   @ApiOperation({ summary: 'Conversations linked to a lead' })
   async list(@Query() query: ListConversationsDto, @CurrentUser() principal: TenantPrincipal) {
     return this.linking.forLead(query.leadId, principal);
+  }
+
+  /**
+   * The unified inbox.
+   *
+   * Same rows, same table and same visibility policy as the review queue — it
+   * simply does not hide threads that have already been linked. There is no
+   * second conversation store and nothing is copied between the two views.
+   */
+  @Get('inbox')
+  @RequirePermissions(PERMISSIONS.LEAD_VIEW_OWN)
+  @ApiOperation({ summary: 'Every conversation this user may see' })
+  async inbox(@Query() query: InboxQueryDto, @CurrentUser() principal: TenantPrincipal) {
+    return this.review.list(
+      {
+        ...(query.channel ? { channel: query.channel } : {}),
+        ...(query.archived ? { archived: query.archived } : {}),
+        ...(query.limit ? { limit: query.limit } : {}),
+        ...(query.cursor ? { cursor: query.cursor } : {}),
+        ...(query.filter === 'MINE' || query.filter === 'UNASSIGNED'
+          ? { inboxFilter: query.filter }
+          : {}),
+        includeLinked: true,
+      },
+      principal,
+    );
+  }
+
+  @Get('inbox/counts')
+  @RequirePermissions(PERMISSIONS.LEAD_VIEW_OWN)
+  @ApiOperation({ summary: 'Counts for the inbox tabs' })
+  async inboxCounts(@CurrentUser() principal: TenantPrincipal) {
+    return this.review.inboxCounts(principal);
   }
 
   @Get('review')
@@ -101,6 +136,24 @@ export class ConversationsController {
     @CurrentUser() principal: TenantPrincipal,
   ) {
     return this.linking.unlink(id, principal);
+  }
+
+  /**
+   * Hand a conversation to someone.
+   *
+   * Conversation ownership ONLY. The linked lead keeps its assignee — passing
+   * a thread to a colleague is not the same act as passing them the deal.
+   */
+  @Post(':id/assign')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSIONS.LEAD_UPDATE)
+  @ApiOperation({ summary: 'Set who is handling a conversation' })
+  async assign(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: AssignConversationDto,
+    @CurrentUser() principal: TenantPrincipal,
+  ) {
+    return this.review.assign(id, dto.userId ?? null, principal);
   }
 
   @Post(':id/archive')

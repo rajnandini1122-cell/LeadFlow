@@ -85,6 +85,17 @@ export class UpdateOrganizationSettingsDto {
   @IsBoolean()
   escalateToManager?: boolean;
 
+  /**
+   * Whether ordinary sales users may browse conversations nobody owns.
+   *
+   * Off by default. An unassigned enquiry is a customer's private message to
+   * the business, not a shared noticeboard, so opening it up is a decision the
+   * organization makes deliberately.
+   */
+  @IsOptional()
+  @IsBoolean()
+  sharedUnassignedQueue?: boolean;
+
   @IsOptional()
   @Matches(/^([01]\d|2[0-3]):[0-5]\d$/, { message: 'must be HH:MM in 24-hour form' })
   workingHoursStart?: string;

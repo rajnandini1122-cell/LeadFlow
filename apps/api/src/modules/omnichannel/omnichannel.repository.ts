@@ -316,35 +316,111 @@ export class OmnichannelRepository {
   // --- review queue ---------------------------------------------------------
 
   /**
-   * Conversations waiting on a human decision.
+   * The summary shape every list returns.
    *
-   * `ownerScope` is the caller's lead visibility expressed as an owner filter.
-   * A rep restricted to their own leads sees their own conversations and the
-   * unassigned queue — never a colleague's. Unassigned threads are visible to
-   * everyone on purpose: an enquiry nobody owns is exactly what must not sit
-   * unnoticed, which is the whole premise of the product.
+   * Deliberately excludes messages beyond the most recent one: an inbox page
+   * showing fifty threads must not drag fifty full histories across the wire,
+   * and the detail view loads them when a thread is actually opened.
    */
-  async listForReview(options: {
-    ownerScope: string | undefined;
+  private static readonly SUMMARY_INCLUDE = {
+    contact: {
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        mobile: true,
+        email: true,
+        companyName: true,
+      },
+    },
+    owner: { select: { id: true, fullName: true } },
+    lead: { select: { id: true, leadNumber: true, status: true } },
+    messages: { orderBy: { createdAt: 'desc' }, take: 1 },
+  } as const;
+
+  /**
+   * Conversations, filtered by what the caller may see.
+   *
+   * `scopeFilter` comes from conversation-visibility.ts and is merged into the
+   * WHERE clause rather than applied afterwards, so a conversation the caller
+   * may not see is never loaded and never counted.
+   */
+  async listConversations(options: {
+    scopeFilter: Record<string, unknown> | undefined;
     channel?: 'WHATSAPP' | 'FACEBOOK' | 'INSTAGRAM' | undefined;
     category?: string | undefined;
+    /** Inbox-only: narrow to mine or to unowned. */
+    inboxFilter?: 'MINE' | 'UNASSIGNED' | undefined;
+    userId?: string | undefined;
     archived: boolean;
+    /** Review lists hide already-linked threads; the inbox shows everything. */
+    excludeLinked: boolean;
     limit: number;
+    cursor?: string | undefined;
   }) {
+    const where = this.buildWhere(options);
+
+    const rows = await this.prisma.client.conversation.findMany({
+      where,
+      orderBy: [{ lastMessageAt: 'desc' }, { id: 'desc' }],
+      take: options.limit + 1,
+      ...(options.cursor ? { cursor: { id: options.cursor }, skip: 1 } : {}),
+      include: OmnichannelRepository.SUMMARY_INCLUDE,
+    });
+
+    const hasMore = rows.length > options.limit;
+    return { rows: hasMore ? rows.slice(0, options.limit) : rows, hasMore };
+  }
+
+  async countConversations(options: {
+    scopeFilter: Record<string, unknown> | undefined;
+    inboxFilter?: 'MINE' | 'UNASSIGNED' | undefined;
+    userId?: string | undefined;
+    archived: boolean;
+    excludeLinked: boolean;
+    category?: string | undefined;
+  }): Promise<number> {
+    return this.prisma.client.conversation.count({ where: this.buildWhere(options) });
+  }
+
+  /** One WHERE builder, so a list and its count can never disagree. */
+  private buildWhere(options: {
+    scopeFilter: Record<string, unknown> | undefined;
+    channel?: 'WHATSAPP' | 'FACEBOOK' | 'INSTAGRAM' | undefined;
+    category?: string | undefined;
+    inboxFilter?: 'MINE' | 'UNASSIGNED' | undefined;
+    userId?: string | undefined;
+    archived: boolean;
+    excludeLinked: boolean;
+  }): Record<string, unknown> {
+    const and: Record<string, unknown>[] = [];
+
     const where: Record<string, unknown> = {
       archivedAt: options.archived ? { not: null } : null,
     };
 
     if (options.channel) where['channel'] = options.channel;
+    if (options.scopeFilter) and.push(options.scopeFilter);
 
-    if (options.ownerScope) {
-      where['OR'] = [{ ownerId: options.ownerScope }, { ownerId: null }];
+    switch (options.inboxFilter) {
+      case 'MINE':
+        // Mine means mine: threads assigned to me, or on a lead assigned to me.
+        and.push({
+          OR: [{ ownerId: options.userId }, { lead: { assignedToId: options.userId } }],
+        });
+        break;
+      case 'UNASSIGNED':
+        // Narrows what is already visible. It never widens it — the scope
+        // filter above still applies, so a rep with the shared queue switched
+        // off sees nothing here rather than everything.
+        and.push({ ownerId: null });
+        break;
+      default:
+        break;
     }
 
     switch (options.category) {
       case 'UNRESOLVED':
-        // Nobody could be identified. The hardest pile, and the one that goes
-        // stale most quietly.
         where['contactId'] = null;
         where['linkState'] = 'UNLINKED';
         break;
@@ -363,41 +439,13 @@ export class OmnichannelRepository {
         where['linkState'] = 'LINKED';
         break;
       default:
-        // "All" still means all that NEED something. A linked conversation has
-        // already been dealt with and would only bury the ones that have not.
-        where['linkState'] = { not: 'LINKED' };
+        // The review queue hides what has already been dealt with; the inbox
+        // is the whole picture and hides nothing.
+        if (options.excludeLinked) where['linkState'] = { not: 'LINKED' };
     }
 
-    return this.prisma.client.conversation.findMany({
-      where,
-      orderBy: { lastMessageAt: 'desc' },
-      take: options.limit,
-      include: {
-        contact: {
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            mobile: true,
-            email: true,
-            companyName: true,
-          },
-        },
-        owner: { select: { id: true, fullName: true } },
-        lead: { select: { id: true, leadNumber: true, status: true } },
-        messages: { orderBy: { createdAt: 'desc' }, take: 1 },
-      },
-    });
-  }
-
-  async countForReview(ownerScope: string | undefined): Promise<number> {
-    const where: Record<string, unknown> = {
-      archivedAt: null,
-      linkState: { not: 'LINKED' },
-    };
-    if (ownerScope) where['OR'] = [{ ownerId: ownerScope }, { ownerId: null }];
-
-    return this.prisma.client.conversation.count({ where });
+    if (and.length > 0) where['AND'] = and;
+    return where;
   }
 
   /** One conversation with its full message history, for the detail view. */
@@ -503,6 +551,85 @@ export class OmnichannelRepository {
     return existing !== null;
   }
 
+  // --- integrations ---------------------------------------------------------
+
+  /**
+   * Every integration record this organization has.
+   *
+   * A channel with no row has simply never been connected. The UI derives
+   * "Not connected" from the absence rather than from a stored state, so there
+   * is nothing to keep in step and no row to invent at signup.
+   */
+  async listIntegrations() {
+    return this.prisma.client.channelIntegration.findMany({
+      orderBy: { channel: 'asc' },
+      select: {
+        id: true,
+        channel: true,
+        status: true,
+        enabled: true,
+        displayName: true,
+        providerAccountId: true,
+        connectedAt: true,
+        disconnectedAt: true,
+        lastErrorAt: true,
+        lastErrorMessage: true,
+        connectedBy: { select: { id: true, fullName: true } },
+      },
+    });
+  }
+
+  async findIntegration(id: string) {
+    return this.prisma.client.channelIntegration.findFirst({ where: { id } });
+  }
+
+  async setIntegrationEnabled(id: string, enabled: boolean) {
+    await this.prisma.client.channelIntegration.update({ where: { id }, data: { enabled } });
+  }
+
+  /** The most recent inbound message per channel, for "last activity". */
+  async lastActivityByChannel(): Promise<Record<string, string>> {
+    const rows = await this.prisma.client.message.groupBy({
+      by: ['channel'],
+      _max: { createdAt: true },
+      orderBy: { channel: 'asc' },
+    });
+
+    const result: Record<string, string> = {};
+    for (const row of rows) {
+      // Only real timestamps. A channel that has never carried a message gets
+      // no entry, and the UI shows nothing rather than inventing a date.
+      if (row._max.createdAt) result[row.channel] = row._max.createdAt.toISOString();
+    }
+    return result;
+  }
+
+  // --- assignment -----------------------------------------------------------
+
+  /**
+   * Sets who is handling a conversation.
+   *
+   * Writes `conversations.owner_id` and nothing else. The linked lead's
+   * `assignedToId` is deliberately untouched: handing a thread to a colleague
+   * is not the same act as handing them the deal, and conflating the two would
+   * silently move a salesperson's pipeline out from under them.
+   */
+  async setConversationOwner(conversationId: string, ownerId: string | null): Promise<void> {
+    await this.prisma.client.conversation.update({
+      where: { id: conversationId },
+      data: { ownerId },
+    });
+  }
+
+  /** An ACTIVE member of this organization, for validating an assignee. */
+  async findAssignableMember(userId: string) {
+    const membership = await this.prisma.client.organizationUser.findFirst({
+      where: { userId, status: 'ACTIVE' },
+      select: { userId: true, user: { select: { id: true, fullName: true } } },
+    });
+    return membership?.user ?? null;
+  }
+
   // --- settings -------------------------------------------------------------
 
   /**
@@ -525,5 +652,18 @@ export class OmnichannelRepository {
       select: { omnichannelEnabled: true },
     });
     return settings?.omnichannelEnabled ?? false;
+  }
+
+  /**
+   * Whether ordinary sales users may browse unowned conversations.
+   *
+   * Defaults to false when a tenant has no settings row at all — the closed
+   * answer, so a missing row can never widen who sees a customer's message.
+   */
+  async sharedUnassignedQueue(): Promise<boolean> {
+    const settings = await this.prisma.client.organizationSettings.findFirst({
+      select: { sharedUnassignedQueue: true },
+    });
+    return settings?.sharedUnassignedQueue ?? false;
   }
 }

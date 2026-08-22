@@ -227,6 +227,15 @@ model OrganizationSettings {
   /// fills with noise, and it is much harder to undo than to enable.
   omnichannelAutoCreateLeads Boolean @default(false) @map("omnichannel_auto_create_leads")
 
+  /// Whether ordinary sales users may browse conversations nobody owns.
+  ///
+  /// Default false, and that default is the safe one: an unassigned enquiry is
+  /// a customer's private message to the business, not a shared noticeboard.
+  /// An organization that wants a first-come queue turns this on deliberately;
+  /// one that does not keeps unowned threads with the people who already see
+  /// the whole pipeline.
+  sharedUnassignedQueue Boolean @default(false) @map("shared_unassigned_queue")
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -902,6 +911,15 @@ model ChannelIntegration {
   organizationId String                   @map("organization_id") @db.Uuid
   channel        ChannelType
   status         ChannelIntegrationStatus @default(DISCONNECTED)
+
+  /// Whether this integration should be acted on.
+  ///
+  /// Separate from `status`, which describes the PROVIDER relationship. A
+  /// tenant can switch off an integration that is perfectly healthy — during a
+  /// migration, or while a campaign is paused — and switching it off must not
+  /// look like the provider dropped the connection. Nothing is deleted either
+  /// way: conversations and messages stay exactly where they are.
+  enabled        Boolean                  @default(true)
 
   /// The provider's own identifier — a WhatsApp phone number id, a Facebook
   /// page id, an Instagram business account id.
