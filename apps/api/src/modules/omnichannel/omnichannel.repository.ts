@@ -322,21 +322,27 @@ export class OmnichannelRepository {
    * showing fifty threads must not drag fifty full histories across the wire,
    * and the detail view loads them when a thread is actually opened.
    */
-  private static readonly SUMMARY_INCLUDE = {
-    contact: {
-      select: {
-        id: true,
-        firstName: true,
-        lastName: true,
-        mobile: true,
-        email: true,
-        companyName: true,
+  private static summaryInclude() {
+    return {
+      contact: {
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          mobile: true,
+          email: true,
+          companyName: true,
+        },
       },
-    },
-    owner: { select: { id: true, fullName: true } },
-    lead: { select: { id: true, leadNumber: true, status: true } },
-    messages: { orderBy: { createdAt: 'desc' }, take: 1 },
-  } as const;
+      owner: { select: { id: true, fullName: true } },
+      lead: { select: { id: true, leadNumber: true, status: true } },
+      // Newest by provider time, for the list preview.
+      messages: {
+        orderBy: [{ sentAt: 'desc' as const }, { createdAt: 'desc' as const }],
+        take: 1,
+      },
+    };
+  }
 
   /**
    * Conversations, filtered by what the caller may see.
@@ -365,7 +371,7 @@ export class OmnichannelRepository {
       orderBy: [{ lastMessageAt: 'desc' }, { id: 'desc' }],
       take: options.limit + 1,
       ...(options.cursor ? { cursor: { id: options.cursor }, skip: 1 } : {}),
-      include: OmnichannelRepository.SUMMARY_INCLUDE,
+      include: OmnichannelRepository.summaryInclude(),
     });
 
     const hasMore = rows.length > options.limit;
@@ -468,7 +474,17 @@ export class OmnichannelRepository {
           select: { id: true, leadNumber: true, status: true, assignedToId: true },
         },
         integration: { select: { id: true, displayName: true, status: true } },
-        messages: { orderBy: { createdAt: 'asc' }, take: 200 },
+        /*
+         * Ordered by when the customer SENT each message, not when we stored
+         * it. Meta does not guarantee delivery order, and a retried webhook
+         * arrives long after the message it carries — sorting by insertion
+         * would show a conversation in an order neither party experienced.
+         * createdAt breaks ties for messages sharing a second.
+         */
+        messages: {
+          orderBy: [{ sentAt: 'asc' as const }, { createdAt: 'asc' as const }],
+          take: 200,
+        },
       },
     });
   }
@@ -570,6 +586,10 @@ export class OmnichannelRepository {
         enabled: true,
         displayName: true,
         providerAccountId: true,
+        // The HINT only. encryptedAccessToken is deliberately never selected
+        // here: this shape is what the settings API returns, and a credential
+        // that is never loaded cannot be serialised out by accident.
+        accessTokenHint: true,
         connectedAt: true,
         disconnectedAt: true,
         lastErrorAt: true,

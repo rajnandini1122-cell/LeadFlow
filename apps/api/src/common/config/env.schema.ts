@@ -103,8 +103,28 @@ export const envSchema = z
     FIREBASE_PRIVATE_KEY: z.string().optional(),
 
     WHATSAPP_PROVIDER: z.string().default('meta'),
+    /** Meta app secret. Every webhook body is HMAC-signed with it. */
     WHATSAPP_APP_SECRET: z.string().optional(),
+    /** Shared string Meta echoes back when the webhook URL is first saved. */
     WHATSAPP_VERIFY_TOKEN: z.string().optional(),
+    /**
+     * Graph API version, in one place.
+     *
+     * Meta deprecates versions on a rolling schedule, so this has to be a
+     * configuration value: pinning it across a dozen call sites turns a routine
+     * upgrade into a search-and-replace with no way to roll back.
+     */
+    WHATSAPP_API_VERSION: z.string().default('v21.0'),
+    /**
+     * Base64 32-byte key encrypting provider access tokens at rest.
+     *
+     * Optional so the application still boots without WhatsApp configured;
+     * connecting an integration fails loudly if it is missing, rather than
+     * quietly storing a bearer token in plaintext.
+     *
+     *   openssl rand -base64 32
+     */
+    CREDENTIAL_ENCRYPTION_KEY: z.string().optional(),
 
     THROTTLE_TTL: z.coerce.number().int().positive().default(60),
     THROTTLE_LIMIT: z.coerce.number().int().positive().default(100),

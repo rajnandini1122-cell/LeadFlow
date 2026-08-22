@@ -173,7 +173,7 @@ export function useInboxCounts(enabled: boolean): UseQueryResult<InboxCounts> {
 export interface IntegrationView {
   channel: Channel;
   id: string | null;
-  status: 'NOT_CONNECTED' | 'CONNECTED' | 'DISCONNECTED' | 'ERROR';
+  status: 'NOT_CONNECTED' | 'CONNECTING' | 'CONNECTED' | 'DISCONNECTED' | 'ERROR';
   enabled: boolean;
   displayName: string | null;
   connectedAt: string | null;
@@ -182,7 +182,9 @@ export interface IntegrationView {
   lastErrorAt: string | null;
   lastErrorMessage: string | null;
   connectedBy: { id: string; fullName: string } | null;
-  /** False everywhere today: no provider is implemented yet. */
+  /** Last four characters of the stored token. Never the token itself. */
+  accessTokenHint: string | null;
+  /** True where a real setup flow exists. WhatsApp only, from Phase E1. */
   connectable: boolean;
 }
 
@@ -190,6 +192,47 @@ export function useIntegrations(): UseQueryResult<IntegrationView[]> {
   return useQuery({
     queryKey: ['channel-integrations'],
     queryFn: () => apiGet<IntegrationView[]>('/channel-integrations'),
+  });
+}
+
+export interface ConnectWhatsAppResult {
+  id: string;
+  status: 'CONNECTED' | 'ERROR';
+  displayName?: string | null;
+  message?: string;
+}
+
+/**
+ * Connect a WhatsApp Business number.
+ *
+ * The access token is write-only: it goes up once, is encrypted server-side and
+ * is never returned by any endpoint. The form must not keep it either — see
+ * the setup card, which clears the field on success and on failure alike.
+ */
+export function useConnectWhatsApp(): UseMutationResult<
+  ConnectWhatsAppResult,
+  Error,
+  { phoneNumberId: string; businessAccountId?: string; accessToken: string }
+> {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (input) =>
+      apiPost<ConnectWhatsAppResult>('/channel-integrations/whatsapp/connect', input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['channel-integrations'] });
+    },
+  });
+}
+
+export function useDisconnectWhatsApp(): UseMutationResult<unknown, Error, void> {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: () => apiPost('/channel-integrations/whatsapp/disconnect'),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['channel-integrations'] });
+    },
   });
 }
 

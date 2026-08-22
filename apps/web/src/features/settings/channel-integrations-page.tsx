@@ -5,8 +5,11 @@ import { apiGet, apiPatch } from '../../lib/api-client';
 import { Card, CardHeader, ErrorNotice, PageHeader, SkeletonRows } from '../../components/ui';
 import { formatDateTime } from '../../lib/format';
 import { useAuth } from '../auth/auth-context';
+import { useState, type FormEvent } from 'react';
 import {
   CHANNEL_PRESENTATION,
+  useConnectWhatsApp,
+  useDisconnectWhatsApp,
   useIntegrations,
   useSetIntegrationEnabled,
   type IntegrationView,
@@ -30,6 +33,11 @@ const STATUS_PRESENTATION: Record<
   IntegrationView['status'],
   { label: string; tone: string; meaning: string }
 > = {
+  CONNECTING: {
+    label: 'Finishing setup',
+    tone: 'bg-sky-50 text-sky-700',
+    meaning: 'Configuration was saved but has not been confirmed with Meta yet.',
+  },
   NOT_CONNECTED: {
     label: 'Not connected',
     tone: 'bg-slate-100 text-slate-600',
@@ -68,13 +76,13 @@ export function ChannelIntegrationsPage(): React.JSX.Element {
 
       <div
         role="note"
-        className="mb-6 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"
+        className="mb-6 rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700"
       >
-        <p className="font-medium">Provider connections are not available yet.</p>
+        <p className="font-medium">Incoming messages only.</p>
         <p className="mt-1 text-pretty">
-          Connecting a WhatsApp Business, Instagram or Facebook account needs an approved Meta
-          app, which is not part of this release. Everything else here is real: conversations
-          that reach LeadFlow are captured, matched to your leads and kept.
+          Connected channels capture what customers send you and match it to your leads.
+          Replying from LeadFlow is not available yet, so keep answering wherever you do today.
+          Instagram and Facebook cannot be connected in this release.
         </p>
       </div>
 
@@ -228,20 +236,30 @@ function IntegrationCard({
           )}
         </dl>
 
+        {/*
+          Gated on `connectable`, which the SERVER decides. The component
+          knowing how to render a WhatsApp form is not the same as the
+          deployment being able to use one, and letting the client decide would
+          put a working-looking form in front of a build that cannot honour it.
+        */}
+        {integration.channel === 'WHATSAPP' && integration.connectable && canManage && (
+          <WhatsAppSetup integration={integration} />
+        )}
+
         <div className="flex flex-wrap items-center gap-3">
-          {!connected ? (
+          {!connected && !integration.connectable ? (
             <>
               <button
                 type="button"
                 disabled
-                title="Provider connections are not available in this release"
+                title="This channel cannot be connected in this release"
                 className="cursor-not-allowed rounded-lg bg-slate-100 px-3 py-1.5 text-sm font-medium text-slate-400"
               >
                 Connect
               </button>
               <span className="text-xs text-slate-500">Not available yet</span>
             </>
-          ) : canManage ? (
+          ) : !connected ? null : canManage ? (
             <button
               type="button"
               disabled={busy}
@@ -261,6 +279,188 @@ function IntegrationCard({
         )}
       </div>
     </Card>
+  );
+}
+
+/**
+ * The WhatsApp Cloud API setup form.
+ *
+ * Three values from the Meta app dashboard. The token is a password field, is
+ * sent once, and is cleared from component state whatever the outcome - a
+ * bearer credential sitting in a React state tree is one screenshot or one
+ * devtools session away from being someone else's.
+ *
+ * Nothing here claims success on its own. The server calls Meta with these
+ * credentials and reports back CONNECTED or ERROR; the form only renders what
+ * it was told.
+ */
+function WhatsAppSetup({ integration }: { integration: IntegrationView }): React.JSX.Element {
+  const connect = useConnectWhatsApp();
+  const disconnect = useDisconnectWhatsApp();
+
+  const connected = integration.status === 'CONNECTED';
+  const [open, setOpen] = useState(false);
+
+  const [phoneNumberId, setPhoneNumberId] = useState('');
+  const [businessAccountId, setBusinessAccountId] = useState('');
+  const [accessToken, setAccessToken] = useState('');
+  const [failure, setFailure] = useState<string | null>(null);
+
+  const submit = (event: FormEvent): void => {
+    event.preventDefault();
+    setFailure(null);
+
+    connect.mutate(
+      {
+        phoneNumberId: phoneNumberId.trim(),
+        ...(businessAccountId.trim() ? { businessAccountId: businessAccountId.trim() } : {}),
+        accessToken: accessToken.trim(),
+      },
+      {
+        onSettled: () => {
+          // Cleared on success AND on failure. Retrying means pasting it
+          // again, which is the correct amount of friction for a credential.
+          setAccessToken('');
+        },
+        onSuccess: (result) => {
+          if (result.status === 'ERROR') {
+            setFailure(result.message ?? 'Meta rejected the configuration.');
+            return;
+          }
+          setOpen(false);
+          setPhoneNumberId('');
+          setBusinessAccountId('');
+        },
+        onError: () => setFailure('Could not save the configuration.'),
+      },
+    );
+  };
+
+  if (connected && !open) {
+    return (
+      <div className="flex flex-wrap items-center gap-3">
+        <span className="text-xs text-slate-500">
+          Token {integration.accessTokenHint ?? '****'}
+        </span>
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+        >
+          Replace credentials
+        </button>
+        <button
+          type="button"
+          disabled={disconnect.isPending}
+          onClick={() => disconnect.mutate()}
+          className="rounded-lg px-3 py-1.5 text-sm font-medium text-slate-500 transition hover:bg-slate-100 disabled:opacity-50"
+        >
+          Disconnect
+        </button>
+      </div>
+    );
+  }
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="rounded-lg bg-slate-900 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-slate-800"
+      >
+        Connect
+      </button>
+    );
+  }
+
+  return (
+    <form onSubmit={submit} className="space-y-3 rounded-lg border border-slate-200 p-4">
+      <p className="text-sm text-pretty text-slate-600">
+        From your Meta app dashboard, under WhatsApp &rsaquo; API Setup.
+      </p>
+
+      <Field
+        id="wa-phone-number-id"
+        label="Phone number ID"
+        value={phoneNumberId}
+        onChange={setPhoneNumberId}
+        required
+      />
+      <Field
+        id="wa-business-account-id"
+        label="WhatsApp Business Account ID (optional)"
+        value={businessAccountId}
+        onChange={setBusinessAccountId}
+      />
+      <Field
+        id="wa-access-token"
+        label="Permanent access token"
+        value={accessToken}
+        onChange={setAccessToken}
+        type="password"
+        required
+        hint="Stored encrypted. It is never shown again, only the last four characters."
+      />
+
+      {failure && <ErrorNotice message={failure} />}
+
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="submit"
+          disabled={connect.isPending || !phoneNumberId.trim() || !accessToken.trim()}
+          className="rounded-lg bg-slate-900 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-slate-800 disabled:opacity-50"
+        >
+          {connect.isPending ? 'Checking with Meta...' : 'Save and verify'}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setOpen(false);
+            setAccessToken('');
+            setFailure(null);
+          }}
+          className="rounded-lg px-3 py-1.5 text-sm font-medium text-slate-600 transition hover:bg-slate-100"
+        >
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function Field({
+  id,
+  label,
+  value,
+  onChange,
+  type = 'text',
+  required = false,
+  hint,
+}: {
+  id: string;
+  label: string;
+  value: string;
+  onChange: (next: string) => void;
+  type?: string;
+  required?: boolean;
+  hint?: string;
+}): React.JSX.Element {
+  return (
+    <div>
+      <label htmlFor={id} className="mb-1 block text-sm font-medium text-slate-700">
+        {label}
+      </label>
+      <input
+        id={id}
+        type={type}
+        value={value}
+        required={required}
+        autoComplete="off"
+        onChange={(event) => onChange(event.target.value)}
+        className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+      />
+      {hint && <p className="mt-1 text-xs text-slate-500">{hint}</p>}
+    </div>
   );
 }
 

@@ -1410,17 +1410,31 @@ describe('Omnichannel capture', () => {
       );
     });
 
-    it('reports every channel as not connectable, because no provider exists yet', async () => {
+    /*
+     * UPDATED IN PHASE E1.
+     *
+     * This used to assert that NO channel was connectable, which was true while
+     * no provider existed. WhatsApp now has a real setup flow; Instagram and
+     * Facebook still do not, and the distinction is what the settings screen
+     * reads to decide whether Connect can do anything.
+     */
+    it('reports only the channels with a real implementation as connectable', async () => {
       const response = await ctx
         .http()
         .get('/api/v1/channel-integrations')
         .set(auth(ctx.orgA.owner.accessToken));
 
-      // The screen reads this to decide whether "Connect" can do anything.
-      // Claiming otherwise would have an owner believing their number is live.
-      for (const row of response.body.data) {
-        expect(row.connectable).toBe(false);
-      }
+      const byChannel = Object.fromEntries(
+        response.body.data.map((row: { channel: string; connectable: boolean }) => [
+          row.channel,
+          row.connectable,
+        ]),
+      );
+
+      expect(byChannel['WHATSAPP']).toBe(true);
+      // Claiming otherwise would have an owner believing their account is live.
+      expect(byChannel['INSTAGRAM']).toBe(false);
+      expect(byChannel['FACEBOOK']).toBe(false);
     });
 
     it('shows a channel with no record as NOT_CONNECTED and invents no timestamps', async () => {

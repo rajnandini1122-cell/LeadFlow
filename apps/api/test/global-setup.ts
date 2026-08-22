@@ -80,6 +80,20 @@ export default async function globalSetup(): Promise<void> {
   process.env['JWT_ACCESS_TTL'] = '15m';
   process.env['JWT_REFRESH_TTL'] = '30d';
   process.env['LOG_LEVEL'] = 'fatal';
+
+  /*
+   * WhatsApp webhook credentials for the suite.
+   *
+   * Fixed test values, never real ones — the point of these is that the
+   * signature and verification tests can compute the SAME HMAC the server
+   * will. A deployment reading these from a committed file would be a
+   * different matter; a test fixture is exactly what they are.
+   */
+  process.env['WHATSAPP_APP_SECRET'] = 'test-whatsapp-app-secret';
+  process.env['WHATSAPP_VERIFY_TOKEN'] = 'test-whatsapp-verify-token';
+  // 32 zero bytes, base64. Sufficient for a round-trip; obviously not a key
+  // anything real would use.
+  process.env['CREDENTIAL_ENCRYPTION_KEY'] = Buffer.alloc(32).toString('base64');
   process.env['CORS_ORIGINS'] = 'http://localhost:5173';
   // Keep argon2 at its floor: the suite hashes many passwords and production
   // cost parameters would dominate the runtime.

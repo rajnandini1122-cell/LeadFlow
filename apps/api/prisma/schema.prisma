@@ -888,6 +888,10 @@ enum ChannelType {
 }
 
 enum ChannelIntegrationStatus {
+  /// Configuration accepted but not yet validated against the provider.
+  /// A row in this state has never been confirmed working, so nothing is
+  /// ingested for it — see WhatsAppWebhookService.
+  CONNECTING
   /// Credentials present and the provider is accepting calls.
   CONNECTED
   /// Deliberately disconnected by an administrator. The row is kept so the
@@ -926,8 +930,24 @@ model ChannelIntegration {
   providerAccountId String  @map("provider_account_id") @db.VarChar(120)
   /// Human-readable, for the settings screen.
   displayName       String? @map("display_name") @db.VarChar(200)
-  /// Opaque handle for the credentials, never the credentials themselves.
+  /// Handle for credentials held in an external vault. Unused today — there is
+  /// no vault — and kept for the deployment that eventually has one.
   credentialsRef    String? @map("credentials_ref") @db.VarChar(200)
+
+  /// The provider access token, encrypted with CREDENTIAL_ENCRYPTION_KEY.
+  ///
+  /// Never plaintext, and never leaves the server. A WhatsApp access token is a
+  /// bearer credential — whoever holds it can send messages as the business —
+  /// so a database dump must not be enough to use it. See common/crypto/secret-box.ts.
+  encryptedAccessToken String? @map("encrypted_access_token") @db.Text
+  /// Last four characters, so the settings screen can show WHICH token is
+  /// configured without being able to reveal it.
+  accessTokenHint      String? @map("access_token_hint") @db.VarChar(16)
+
+  /// WhatsApp Business Account id. Diagnostic only: the tenant is resolved by
+  /// providerAccountId (the phone number id), which is globally unique.
+  businessAccountId String? @map("business_account_id") @db.VarChar(120)
+
   metadata          Json?
 
   connectedById  String?   @map("connected_by") @db.Uuid

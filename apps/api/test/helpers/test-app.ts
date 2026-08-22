@@ -314,6 +314,15 @@ export async function createTestContext(): Promise<TestContext> {
   // TEST_LOGS=1 to see server-side stacks when diagnosing a 500.
   const app = moduleRef.createNestApplication({
     logger: process.env['TEST_LOGS'] ? ['error', 'warn'] : false,
+    /*
+     * Must match main.ts.
+     *
+     * The WhatsApp webhook verifies Meta's HMAC against the exact bytes
+     * received, so without this the suite would exercise an application that
+     * rejects every signed request — and the webhook tests would be asserting
+     * the behaviour of a misconfiguration rather than of the code.
+     */
+    rawBody: true,
   });
   app.use(cookieParser());
   app.setGlobalPrefix('api', { exclude: ['health', 'readiness'] });

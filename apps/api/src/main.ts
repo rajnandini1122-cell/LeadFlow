@@ -17,7 +17,19 @@ import { AppConfig } from './common/config/config.module';
  * implementation while scaling independently (spec §27).
  */
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create<NestExpressApplication>(AppModule, { bufferLogs: true });
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    bufferLogs: true,
+    /*
+     * Keeps the exact bytes of each request body alongside the parsed one.
+     *
+     * Required by the WhatsApp webhook: Meta signs the raw payload, and any
+     * re-serialisation of the parsed JSON — key order, unicode escaping,
+     * whitespace — produces a different HMAC and rejects a legitimate message.
+     * Verifying a re-encoded body is the classic way a signature check ends up
+     * validating nothing.
+     */
+    rawBody: true,
+  });
 
   app.useLogger(app.get(Logger));
   const config = app.get(AppConfig);

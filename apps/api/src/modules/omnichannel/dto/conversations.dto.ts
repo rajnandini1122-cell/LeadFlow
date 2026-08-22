@@ -109,6 +109,30 @@ export class SetIntegrationEnabledDto {
   enabled!: boolean;
 }
 
+export class ConnectWhatsAppDto {
+  @ApiProperty({ description: "Meta's id for the business phone number." })
+  @IsString()
+  @MaxLength(120)
+  phoneNumberId!: string;
+
+  @ApiPropertyOptional({ description: 'WhatsApp Business Account id, for diagnostics.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  businessAccountId?: string;
+
+  /**
+   * A permanent access token from the Meta app.
+   *
+   * Write-only: it is encrypted immediately and never returned by any endpoint.
+   * Only the last four characters are ever readable again.
+   */
+  @ApiProperty({ description: 'Permanent access token. Stored encrypted; never returned.' })
+  @IsString()
+  @MaxLength(1000)
+  accessToken!: string;
+}
+
 export class ArchiveConversationDto {
   @ApiPropertyOptional({ description: 'Why this is not a lead. Shown to whoever looks later.' })
   @IsOptional()

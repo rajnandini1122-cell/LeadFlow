@@ -174,6 +174,7 @@ describe('Channel integrations', () => {
     lastErrorAt: null,
     lastErrorMessage: null,
     connectedBy: null,
+    accessTokenHint: null,
     connectable: false,
   };
 
@@ -212,13 +213,117 @@ describe('Channel integrations', () => {
     expect(screen.getByText('Facebook')).toBeInTheDocument();
   });
 
-  it('disables Connect rather than opening a flow that goes nowhere', async () => {
+  it('disables Connect for a channel with no implementation', async () => {
     renderWith(<ChannelIntegrationsPage />);
 
+    // Every channel in this fixture reports connectable: false, so none of
+    // them may offer a working button.
     const connect = await screen.findAllByRole('button', { name: 'Connect' });
     for (const button of connect) {
       expect(button).toBeDisabled();
     }
+  });
+
+  it('offers a real Connect for WhatsApp once the server says it is connectable', async () => {
+    vi.spyOn(apiClient, 'apiGet').mockImplementation((url: string) => {
+      if (url === '/channel-integrations') {
+        return Promise.resolve([
+          { ...NOT_CONNECTED, connectable: true },
+          { ...NOT_CONNECTED, channel: 'INSTAGRAM' },
+        ] as never);
+      }
+      return Promise.resolve({ settings: { sharedUnassignedQueue: false } } as never);
+    });
+
+    renderWith(<ChannelIntegrationsPage />);
+
+    const buttons = await screen.findAllByRole('button', { name: 'Connect' });
+    // WhatsApp's is live; Instagram's is still disabled. The SERVER decides
+    // which, so a client build can never present a form the deployment cannot
+    // honour.
+    expect(buttons.some((button) => !(button as HTMLButtonElement).disabled)).toBe(true);
+    expect(buttons.some((button) => (button as HTMLButtonElement).disabled)).toBe(true);
+  });
+
+  it('never shows a stored access token, only its last four characters', async () => {
+    vi.spyOn(apiClient, 'apiGet').mockImplementation((url: string) => {
+      if (url === '/channel-integrations') {
+        return Promise.resolve([
+          {
+            ...NOT_CONNECTED,
+            connectable: true,
+            status: 'CONNECTED',
+            enabled: true,
+            accessTokenHint: '****cdef',
+          },
+        ] as never);
+      }
+      return Promise.resolve({ settings: { sharedUnassignedQueue: false } } as never);
+    });
+
+    renderWith(<ChannelIntegrationsPage />);
+
+    expect(await screen.findByText(/\*\*\*\*cdef/)).toBeInTheDocument();
+  });
+
+  it('sends the token once and does not keep it in the form', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(apiClient, 'apiGet').mockImplementation((url: string) => {
+      if (url === '/channel-integrations') {
+        return Promise.resolve([{ ...NOT_CONNECTED, connectable: true }] as never);
+      }
+      return Promise.resolve({ settings: { sharedUnassignedQueue: false } } as never);
+    });
+    vi.spyOn(apiClient, 'apiPost').mockResolvedValue({
+      id: 'i-1',
+      status: 'CONNECTED',
+      displayName: 'Acme',
+    } as never);
+
+    renderWith(<ChannelIntegrationsPage />);
+
+    await user.click(await screen.findByRole('button', { name: 'Connect' }));
+    await user.type(screen.getByLabelText(/phone number id/i), '106540352242922');
+
+    const token = screen.getByLabelText(/permanent access token/i);
+    // A password field, not a text field: shoulder-surfing a bearer credential
+    // is a real way to lose one.
+    expect(token).toHaveAttribute('type', 'password');
+    await user.type(token, 'EAAG-secret-token');
+
+    await user.click(screen.getByRole('button', { name: /save and verify/i }));
+
+    await waitFor(() => {
+      expect(apiClient.apiPost).toHaveBeenCalledWith('/channel-integrations/whatsapp/connect', {
+        phoneNumberId: '106540352242922',
+        accessToken: 'EAAG-secret-token',
+      });
+    });
+  });
+
+  it('reports a rejected token honestly instead of claiming success', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(apiClient, 'apiGet').mockImplementation((url: string) => {
+      if (url === '/channel-integrations') {
+        return Promise.resolve([{ ...NOT_CONNECTED, connectable: true }] as never);
+      }
+      return Promise.resolve({ settings: { sharedUnassignedQueue: false } } as never);
+    });
+    vi.spyOn(apiClient, 'apiPost').mockResolvedValue({
+      id: 'i-1',
+      status: 'ERROR',
+      message: 'Meta rejected the access token. Check it has not expired.',
+    } as never);
+
+    renderWith(<ChannelIntegrationsPage />);
+
+    await user.click(await screen.findByRole('button', { name: 'Connect' }));
+    await user.type(screen.getByLabelText(/phone number id/i), '123');
+    await user.type(screen.getByLabelText(/permanent access token/i), 'expired');
+    await user.click(screen.getByRole('button', { name: /save and verify/i }));
+
+    // An owner who believes their number is live stops watching their phone.
+    expect(await screen.findByText(/rejected the access token/i)).toBeInTheDocument();
   });
 
   it('shows no invented activity date for a channel that has never been used', async () => {

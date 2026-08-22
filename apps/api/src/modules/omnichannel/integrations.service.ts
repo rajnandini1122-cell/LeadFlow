@@ -7,15 +7,18 @@ import { OmnichannelRepository } from './omnichannel.repository';
 /**
  * Channel integrations, as the settings screen sees them.
  *
- * No provider is implemented yet, and this service says so rather than
- * pretending otherwise. There is deliberately no `connect` operation: an
- * endpoint that created a CONNECTED row without a real OAuth exchange would be
- * a lie told in the database, and the first person to believe it would be an
- * owner who thinks their WhatsApp number is live and stops checking their
- * phone.
+ * WhatsApp has a real setup flow as of Phase E1; Instagram and Facebook do not,
+ * and this service says so rather than pretending otherwise. `connectable` is
+ * what the UI reads to decide whether Connect can do anything, so a channel
+ * without an implementation can never present a button that goes nowhere.
  *
- * What exists is honest bookkeeping — what is on record, whether it is switched
- * on, when it last carried a message, and what went wrong if anything did.
+ * CONNECTED is never written here. It is written by WhatsAppSetupService, and
+ * only after the credentials have actually worked against Meta — an owner who
+ * believes their number is live stops watching their phone.
+ *
+ * Nothing in the shape returned here carries a credential. The access token is
+ * not selected by the query at all; only its last four characters are, which is
+ * enough to answer "is this the token I pasted?" and not enough to use.
  */
 
 /** The channels the product intends to support. */
@@ -25,18 +28,18 @@ export type SupportedChannel = (typeof SUPPORTED_CHANNELS)[number];
 /**
  * Providers with a working implementation.
  *
- * Empty, and that is the point: the settings screen reads this to decide
- * whether "Connect" can do anything. When the Meta integration lands it is
- * added here, and the UI stops saying "not available yet" without any other
- * change.
+ * WhatsApp arrived in Phase E1. Instagram and Facebook are still absent, and
+ * the settings screen reads this list rather than assuming — so adding one
+ * later turns its Connect button on with no other change, and forgetting to
+ * add one leaves a button that is honestly disabled rather than broken.
  */
-export const IMPLEMENTED_PROVIDERS: readonly SupportedChannel[] = [];
+export const IMPLEMENTED_PROVIDERS: readonly SupportedChannel[] = ['WHATSAPP'];
 
 export interface IntegrationView {
   channel: SupportedChannel;
   /** Null when this channel has never been connected. */
   id: string | null;
-  status: 'NOT_CONNECTED' | 'CONNECTED' | 'DISCONNECTED' | 'ERROR';
+  status: 'NOT_CONNECTED' | 'CONNECTING' | 'CONNECTED' | 'DISCONNECTED' | 'ERROR';
   enabled: boolean;
   displayName: string | null;
   connectedAt: string | null;
@@ -45,8 +48,10 @@ export interface IntegrationView {
   lastErrorAt: string | null;
   lastErrorMessage: string | null;
   connectedBy: { id: string; fullName: string } | null;
-  /** False for every channel today. The UI must not offer to connect. */
+  /** Whether a real setup flow exists. The UI must not offer to connect without one. */
   connectable: boolean;
+  /** Last four characters of the stored token, or null. Never the token. */
+  accessTokenHint: string | null;
 }
 
 @Injectable()
@@ -89,6 +94,7 @@ export class IntegrationsService {
           lastErrorAt: null,
           lastErrorMessage: null,
           connectedBy: null,
+          accessTokenHint: null,
           connectable: IMPLEMENTED_PROVIDERS.includes(channel),
         };
       }
@@ -105,6 +111,7 @@ export class IntegrationsService {
         lastErrorAt: row.lastErrorAt?.toISOString() ?? null,
         lastErrorMessage: row.lastErrorMessage,
         connectedBy: row.connectedBy,
+        accessTokenHint: row.accessTokenHint,
         connectable: IMPLEMENTED_PROVIDERS.includes(channel),
       };
     });

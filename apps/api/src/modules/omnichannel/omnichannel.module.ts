@@ -7,6 +7,10 @@ import { IngestionService } from './ingestion.service';
 import { IntegrationsController } from './integrations.controller';
 import { IntegrationsService } from './integrations.service';
 import { OmnichannelRepository } from './omnichannel.repository';
+import { WhatsAppIntegrationRepository } from './providers/whatsapp/whatsapp-integration.repository';
+import { WhatsAppSetupService } from './providers/whatsapp/whatsapp-setup.service';
+import { WhatsAppWebhookController } from './providers/whatsapp/whatsapp-webhook.controller';
+import { WhatsAppWebhookService } from './providers/whatsapp/whatsapp-webhook.service';
 
 /**
  * Omnichannel capture.
@@ -18,7 +22,7 @@ import { OmnichannelRepository } from './omnichannel.repository';
  * second lead service by accident.
  */
 @Module({
-  controllers: [ConversationsController, IntegrationsController],
+  controllers: [ConversationsController, IntegrationsController, WhatsAppWebhookController],
   providers: [
     OmnichannelRepository,
     IdentityResolutionService,
@@ -26,6 +30,9 @@ import { OmnichannelRepository } from './omnichannel.repository';
     ConversationLinkingService,
     ConversationReviewService,
     IntegrationsService,
+    WhatsAppIntegrationRepository,
+    WhatsAppSetupService,
+    WhatsAppWebhookService,
   ],
   exports: [
     IngestionService,
