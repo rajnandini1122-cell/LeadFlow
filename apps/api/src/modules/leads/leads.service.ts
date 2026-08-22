@@ -280,18 +280,39 @@ export class LeadsService {
         assignedToId: dto.assignedToId,
         nextFollowUpAt,
         contactId,
+        duplicateAcknowledged: dto.allowDuplicate === true,
         actorId: principal.userId,
       });
     } catch (error) {
       const code = (error as { code?: string }).code;
-      const constraint = String((error as { meta?: { target?: unknown } }).meta?.target ?? '');
 
       // P2002 = unique constraint violation.
       if (code === 'P2002' && attempt <= 5) {
-        // The mobile index firing means another request created the same
-        // customer between our duplicate check and this insert. That is the
-        // race the index exists to catch, and it is not retryable.
-        if (constraint.includes('mobile')) {
+        /*
+         * Which unique index fired?
+         *
+         * Determined by looking at the data rather than by reading the error.
+         * Prisma 7 removed the Rust engine, and the driver-adapter path no
+         * longer populates `meta.target` — the previous code read it, found
+         * undefined, and so never recognised a mobile collision. Every such
+         * collision fell through to the lead-number retry below, exhausted its
+         * attempts and surfaced as a 500, including the ordinary race this
+         * branch was written to handle.
+         *
+         * A re-query cannot go stale the way a parsed error shape can, and it
+         * only runs on the rare collision path.
+         */
+        const collidingLead = await this.repository.findActiveByMobile(mobile);
+
+        /*
+         * An acknowledged duplicate is excluded from the index, so a P2002
+         * here cannot have come from the mobile. Treating it as one would turn
+         * a lead-number collision into a spurious DUPLICATE_LEAD.
+         */
+        if (collidingLead && dto.allowDuplicate !== true) {
+          // Another request created this customer between our duplicate check
+          // and this insert. That is the race the index exists to catch, and
+          // it is not retryable.
           throw AppException.conflict(
             ERROR_CODES.DUPLICATE_LEAD,
             'A lead with this mobile number was just created.',

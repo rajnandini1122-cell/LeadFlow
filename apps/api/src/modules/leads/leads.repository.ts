@@ -195,6 +195,13 @@ export class LeadsRepository {
     assignedToId?: string | undefined;
     nextFollowUpAt: Date | null;
     contactId?: string | undefined;
+    /**
+     * True when the caller passed `allowDuplicate`.
+     *
+     * Recorded on the row so the partial unique index lets it through. Without
+     * it the index refuses what the API just agreed to.
+     */
+    duplicateAcknowledged?: boolean | undefined;
     actorId: string;
   }) {
     const organizationId = this.tenantContext.requireOrganizationId();
@@ -219,6 +226,7 @@ export class LeadsRepository {
           assignedById: input.assignedToId ? input.actorId : null,
           nextFollowUpAt: input.nextFollowUpAt,
           contactId: input.contactId ?? null,
+          duplicateAcknowledgedAt: input.duplicateAcknowledged ? new Date() : null,
           lastActivityAt: new Date(),
           createdBy: input.actorId,
           updatedBy: input.actorId,

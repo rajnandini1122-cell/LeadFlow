@@ -521,6 +521,21 @@ model Lead {
   wonAt      DateTime? @map("won_at") @db.Timestamptz(6)
   lostAt     DateTime? @map("lost_at") @db.Timestamptz(6)
 
+  /**
+   * Set when someone deliberately created a second live lead for a person who
+   * already had one.
+   *
+   * The partial unique index on (organization_id, mobile) excludes these rows.
+   * That index exists to catch the RACE — two requests that each checked for a
+   * duplicate, each found none, and each inserted — not to forbid a choice the
+   * API explicitly offers through `allowDuplicate`. Before this column the
+   * index did both, so opting in returned a 500.
+   *
+   * A timestamp rather than a boolean because "when was this decided" is the
+   * question anyone looking at two live leads for one customer will ask.
+   */
+  duplicateAcknowledgedAt DateTime? @map("duplicate_acknowledged_at") @db.Timestamptz(6)
+
   deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
   createdBy String?   @map("created_by") @db.Uuid
   updatedBy String?   @map("updated_by") @db.Uuid

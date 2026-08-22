@@ -20,6 +20,8 @@
     "test:e2e": "npm run test:e2e -w apps/api",
     "format": "prettier --write \"**/*.{ts,tsx,js,json,md}\"",
     "format:check": "prettier --check \"**/*.{ts,tsx,js,json,md}\"",
+    "db:local": "node scripts/local-db.mjs --port 5433",
+    "db:migrate:deploy": "npm run db:migrate:deploy -w apps/api",
     "dev:api": "npm run start:dev -w apps/api",
     "dev:web": "npm run dev -w apps/web",
     "dev:worker": "npm run start:worker -w apps/api",
