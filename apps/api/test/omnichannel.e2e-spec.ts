@@ -1431,6 +1431,22 @@ describe('Omnichannel capture', () => {
      * Facebook still do not, and the distinction is what the settings screen
      * reads to decide whether Connect can do anything.
      */
+    it('does not imply that a connectable channel can also be replied to', async () => {
+      // Instagram is connectable and capture-only. The two questions are
+      // answered by different code — IMPLEMENTED_PROVIDERS and
+      // send-capability.ts — and conflating them would put a composer over a
+      // conversation that cannot send.
+      const response = await ctx
+        .http()
+        .get('/api/v1/channel-integrations')
+        .set(auth(ctx.orgA.owner.accessToken));
+
+      const instagram = response.body.data.find(
+        (row: { channel: string }) => row.channel === 'INSTAGRAM',
+      );
+      expect(instagram.connectable).toBe(true);
+    });
+
     it('reports only the channels with a real implementation as connectable', async () => {
       const response = await ctx
         .http()
@@ -1445,8 +1461,10 @@ describe('Omnichannel capture', () => {
       );
 
       expect(byChannel['WHATSAPP']).toBe(true);
-      // Claiming otherwise would have an owner believing their account is live.
-      expect(byChannel['INSTAGRAM']).toBe(false);
+      // UPDATED IN PHASE F: Instagram gained a real setup flow. Facebook has
+      // not, and claiming otherwise would have an owner believing their
+      // Messenger account is live when nothing is listening to it.
+      expect(byChannel['INSTAGRAM']).toBe(true);
       expect(byChannel['FACEBOOK']).toBe(false);
     });
 

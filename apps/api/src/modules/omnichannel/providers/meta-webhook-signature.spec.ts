@@ -1,8 +1,8 @@
 import { createHmac } from 'node:crypto';
-import { verifySubscription, verifyWebhookSignature } from './whatsapp-signature';
+import { verifySubscription, verifyWebhookSignature } from './meta-webhook-signature';
 
 /**
- * Webhook authenticity.
+ * Webhook authenticity, for every Meta channel.
  *
  * This is the only thing standing between the public internet and a write into
  * a customer's CRM. Every one of these cases is a way that check could be made

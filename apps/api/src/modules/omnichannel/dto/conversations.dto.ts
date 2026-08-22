@@ -152,6 +152,25 @@ export class ConnectWhatsAppDto {
   accessToken!: string;
 }
 
+export class ConnectInstagramDto {
+  @ApiProperty({ description: 'The Instagram professional account id.' })
+  @IsString()
+  @MaxLength(120)
+  instagramAccountId!: string;
+
+  @ApiPropertyOptional({ description: 'The linked Facebook Page id.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  pageId?: string;
+
+  /** Write-only: encrypted immediately and never returned by any endpoint. */
+  @ApiProperty({ description: 'Page access token. Stored encrypted; never returned.' })
+  @IsString()
+  @MaxLength(1000)
+  accessToken!: string;
+}
+
 export class ArchiveConversationDto {
   @ApiPropertyOptional({ description: 'Why this is not a lead. Shown to whoever looks later.' })
   @IsOptional()

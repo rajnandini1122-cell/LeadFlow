@@ -198,11 +198,73 @@ describe('Channel integrations', () => {
     vi.restoreAllMocks();
   });
 
-  it('says plainly that provider connections are not available', async () => {
+  it('says plainly which channels can be replied to', async () => {
     renderWith(<ChannelIntegrationsPage />);
 
-    // The single most important claim on this screen.
-    expect(await screen.findByText(/not available yet/i)).toBeInTheDocument();
+    /*
+     * UPDATED IN PHASE F.
+     *
+     * This used to assert that no provider connection was available at all,
+     * which was true before WhatsApp existed. What must stay true is narrower
+     * and more important: the screen never implies a channel can do something
+     * it cannot. Instagram is capture-only, and it says so.
+     */
+    expect(await screen.findByText(/capture-only/i)).toBeInTheDocument();
+    expect(screen.getByText(/facebook messenger cannot be connected/i)).toBeInTheDocument();
+  });
+
+  it('offers Instagram setup once the server reports it connectable', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(apiClient, 'apiGet').mockImplementation((url: string) => {
+      if (url === '/channel-integrations') {
+        return Promise.resolve([
+          { ...NOT_CONNECTED, channel: 'INSTAGRAM', connectable: true },
+        ] as never);
+      }
+      return Promise.resolve({ settings: { sharedUnassignedQueue: false } } as never);
+    });
+
+    renderWith(<ChannelIntegrationsPage />);
+    await user.click(await screen.findByRole('button', { name: 'Connect' }));
+
+    // Instagram's own identifiers, not WhatsApp's.
+    expect(screen.getByLabelText(/instagram professional account id/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/phone number id/i)).toBeNull();
+  });
+
+  it('sends Instagram credentials to the Instagram endpoint', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(apiClient, 'apiGet').mockImplementation((url: string) => {
+      if (url === '/channel-integrations') {
+        return Promise.resolve([
+          { ...NOT_CONNECTED, channel: 'INSTAGRAM', connectable: true },
+        ] as never);
+      }
+      return Promise.resolve({ settings: { sharedUnassignedQueue: false } } as never);
+    });
+    vi.spyOn(apiClient, 'apiPost').mockResolvedValue({ id: 'i-1', status: 'CONNECTED' } as never);
+
+    renderWith(<ChannelIntegrationsPage />);
+    await user.click(await screen.findByRole('button', { name: 'Connect' }));
+
+    await user.type(
+      screen.getByLabelText(/instagram professional account id/i),
+      '17841400008460056',
+    );
+
+    const token = screen.getByLabelText(/access token/i);
+    // The same password handling as WhatsApp, because it is the same component.
+    expect(token).toHaveAttribute('type', 'password');
+    await user.type(token, 'IGQV-secret-token');
+
+    await user.click(screen.getByRole('button', { name: /save and verify/i }));
+
+    await waitFor(() => {
+      expect(apiClient.apiPost).toHaveBeenCalledWith('/channel-integrations/instagram/connect', {
+        instagramAccountId: '17841400008460056',
+        accessToken: 'IGQV-secret-token',
+      });
+    });
   });
 
   it('lists every supported channel', async () => {
@@ -285,7 +347,7 @@ describe('Channel integrations', () => {
     await user.click(await screen.findByRole('button', { name: 'Connect' }));
     await user.type(screen.getByLabelText(/phone number id/i), '106540352242922');
 
-    const token = screen.getByLabelText(/permanent access token/i);
+    const token = screen.getByLabelText(/access token/i);
     // A password field, not a text field: shoulder-surfing a bearer credential
     // is a real way to lose one.
     expect(token).toHaveAttribute('type', 'password');
@@ -319,7 +381,7 @@ describe('Channel integrations', () => {
 
     await user.click(await screen.findByRole('button', { name: 'Connect' }));
     await user.type(screen.getByLabelText(/phone number id/i), '123');
-    await user.type(screen.getByLabelText(/permanent access token/i), 'expired');
+    await user.type(screen.getByLabelText(/access token/i), 'expired');
     await user.click(screen.getByRole('button', { name: /save and verify/i }));
 
     // An owner who believes their number is live stops watching their phone.

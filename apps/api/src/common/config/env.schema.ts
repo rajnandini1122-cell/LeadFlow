@@ -116,6 +116,16 @@ export const envSchema = z
      */
     WHATSAPP_API_VERSION: z.string().default('v21.0'),
     /**
+     * Meta app secret for the Instagram product.
+     *
+     * Separate from the WhatsApp one because the two products can live in
+     * different Meta apps. If yours share an app, set the same value — but the
+     * config says which secret guards which endpoint rather than assuming.
+     */
+    INSTAGRAM_APP_SECRET: z.string().optional(),
+    /** Shared string Meta echoes back when the Instagram webhook is saved. */
+    INSTAGRAM_VERIFY_TOKEN: z.string().optional(),
+    /**
      * Whether the stale-outbound-message sweep runs in this process.
      *
      * On by default. Turned off in the test suite, where recovery is invoked

@@ -16,7 +16,12 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { IntegrationsService } from './integrations.service';
 import { WhatsAppSetupService } from './providers/whatsapp/whatsapp-setup.service';
-import { ConnectWhatsAppDto, SetIntegrationEnabledDto } from './dto/conversations.dto';
+import { InstagramSetupService } from './providers/instagram/instagram-setup.service';
+import {
+  ConnectInstagramDto,
+  ConnectWhatsAppDto,
+  SetIntegrationEnabledDto,
+} from './dto/conversations.dto';
 
 /**
  * Channel integration management.
@@ -37,6 +42,7 @@ export class IntegrationsController {
   constructor(
     private readonly integrations: IntegrationsService,
     private readonly whatsapp: WhatsAppSetupService,
+    private readonly instagram: InstagramSetupService,
   ) {}
 
   @Get()
@@ -78,6 +84,40 @@ export class IntegrationsController {
   @ApiOperation({ summary: 'Disconnect WhatsApp, keeping all history' })
   async disconnectWhatsApp(@CurrentUser() principal: TenantPrincipal) {
     return this.whatsapp.disconnect(principal.userId);
+  }
+
+  /**
+   * Connect this organization's Instagram professional account.
+   *
+   * Like WhatsApp, the response reports what actually happened: a failed
+   * validation comes back as ERROR with a non-secret explanation rather than a
+   * 500, because the request succeeded — the credentials are what did not.
+   */
+  @Post('instagram/connect')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSIONS.ORG_UPDATE)
+  @ApiOperation({ summary: 'Connect an Instagram professional account' })
+  async connectInstagram(
+    @Body() dto: ConnectInstagramDto,
+    @CurrentUser() principal: TenantPrincipal,
+  ) {
+    return this.instagram.connect(
+      {
+        instagramAccountId: dto.instagramAccountId,
+        ...(dto.pageId ? { pageId: dto.pageId } : {}),
+        accessToken: dto.accessToken,
+      },
+      principal.userId,
+      principal.organizationId,
+    );
+  }
+
+  @Post('instagram/disconnect')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSIONS.ORG_UPDATE)
+  @ApiOperation({ summary: 'Disconnect Instagram, keeping all history' })
+  async disconnectInstagram(@CurrentUser() principal: TenantPrincipal) {
+    return this.instagram.disconnect(principal.userId);
   }
 
   @Patch(':id')

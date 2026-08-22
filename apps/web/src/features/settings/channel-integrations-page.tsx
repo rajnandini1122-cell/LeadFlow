@@ -8,7 +8,9 @@ import { useAuth } from '../auth/auth-context';
 import { useState, type FormEvent } from 'react';
 import {
   CHANNEL_PRESENTATION,
+  useConnectInstagram,
   useConnectWhatsApp,
+  useDisconnectInstagram,
   useDisconnectWhatsApp,
   useIntegrations,
   useSetIntegrationEnabled,
@@ -81,8 +83,9 @@ export function ChannelIntegrationsPage(): React.JSX.Element {
         <p className="font-medium">Incoming messages only.</p>
         <p className="mt-1 text-pretty">
           Connected channels capture what customers send you and match it to your leads.
-          Replying from LeadFlow is not available yet, so keep answering wherever you do today.
-          Instagram and Facebook cannot be connected in this release.
+          WhatsApp also supports replying, within the 24-hour window WhatsApp allows. Instagram
+          is capture-only for now — answer those in the Instagram app. Facebook Messenger cannot
+          be connected in this release.
         </p>
       </div>
 
@@ -242,9 +245,7 @@ function IntegrationCard({
           deployment being able to use one, and letting the client decide would
           put a working-looking form in front of a build that cannot honour it.
         */}
-        {integration.channel === 'WHATSAPP' && integration.connectable && canManage && (
-          <WhatsAppSetup integration={integration} />
-        )}
+        {integration.connectable && canManage && <ProviderSetup integration={integration} />}
 
         <div className="flex flex-wrap items-center gap-3">
           {!connected && !integration.connectable ? (
@@ -275,6 +276,8 @@ function IntegrationCard({
           <p className="text-xs text-slate-500">
             Disabling stops new messages being acted on. Existing conversations, messages and
             leads are kept.
+            {integration.channel !== 'WHATSAPP' &&
+              ' Replying from LeadFlow is not available on this channel yet.'}
           </p>
         )}
       </div>
@@ -283,57 +286,99 @@ function IntegrationCard({
 }
 
 /**
- * The WhatsApp Cloud API setup form.
+ * What each provider's setup form asks for.
  *
- * Three values from the Meta app dashboard. The token is a password field, is
- * sent once, and is cleared from component state whatever the outcome - a
- * bearer credential sitting in a React state tree is one screenshot or one
- * devtools session away from being someone else's.
+ * Kept as data rather than two near-identical components. Instagram and
+ * WhatsApp differ only in which identifiers Meta issues; the security
+ * behaviour — write-only token, cleared on every outcome, server verifies
+ * before CONNECTED — must be identical, and one component is how it stays
+ * identical rather than drifting.
+ */
+const SETUP_FIELDS: Record<
+  string,
+  { hint: string; primary: { id: string; label: string }; secondary: { id: string; label: string } }
+> = {
+  WHATSAPP: {
+    hint: 'From your Meta app dashboard, under WhatsApp \u203a API Setup.',
+    primary: { id: 'phoneNumberId', label: 'Phone number ID' },
+    secondary: { id: 'businessAccountId', label: 'WhatsApp Business Account ID (optional)' },
+  },
+  INSTAGRAM: {
+    hint: 'From your Meta app dashboard, under Instagram \u203a API setup with Instagram login.',
+    primary: { id: 'instagramAccountId', label: 'Instagram professional account ID' },
+    secondary: { id: 'pageId', label: 'Linked Facebook Page ID (optional)' },
+  },
+};
+
+/**
+ * Provider setup.
+ *
+ * The token is a password field, is sent once, and is cleared from component
+ * state whatever the outcome — a bearer credential sitting in a React state
+ * tree is one screenshot or one devtools session away from being someone
+ * else's.
  *
  * Nothing here claims success on its own. The server calls Meta with these
- * credentials and reports back CONNECTED or ERROR; the form only renders what
- * it was told.
+ * credentials and reports back CONNECTED or ERROR; the form renders what it
+ * was told.
  */
-function WhatsAppSetup({ integration }: { integration: IntegrationView }): React.JSX.Element {
-  const connect = useConnectWhatsApp();
-  const disconnect = useDisconnectWhatsApp();
+function ProviderSetup({ integration }: { integration: IntegrationView }): React.JSX.Element | null {
+  const fields = SETUP_FIELDS[integration.channel];
+
+  const connectWhatsApp = useConnectWhatsApp();
+  const connectInstagram = useConnectInstagram();
+  const disconnectWhatsApp = useDisconnectWhatsApp();
+  const disconnectInstagram = useDisconnectInstagram();
+
+  const isInstagram = integration.channel === 'INSTAGRAM';
+  const connect = isInstagram ? connectInstagram : connectWhatsApp;
+  const disconnect = isInstagram ? disconnectInstagram : disconnectWhatsApp;
 
   const connected = integration.status === 'CONNECTED';
   const [open, setOpen] = useState(false);
 
-  const [phoneNumberId, setPhoneNumberId] = useState('');
-  const [businessAccountId, setBusinessAccountId] = useState('');
+  const [primary, setPrimary] = useState('');
+  const [secondary, setSecondary] = useState('');
   const [accessToken, setAccessToken] = useState('');
   const [failure, setFailure] = useState<string | null>(null);
+
+  // A channel with no field definition has no setup flow, whatever the server
+  // reported. Rendering an empty form would be worse than rendering nothing.
+  if (!fields) return null;
 
   const submit = (event: FormEvent): void => {
     event.preventDefault();
     setFailure(null);
 
-    connect.mutate(
-      {
-        phoneNumberId: phoneNumberId.trim(),
-        ...(businessAccountId.trim() ? { businessAccountId: businessAccountId.trim() } : {}),
-        accessToken: accessToken.trim(),
+    const payload = isInstagram
+      ? {
+          instagramAccountId: primary.trim(),
+          ...(secondary.trim() ? { pageId: secondary.trim() } : {}),
+          accessToken: accessToken.trim(),
+        }
+      : {
+          phoneNumberId: primary.trim(),
+          ...(secondary.trim() ? { businessAccountId: secondary.trim() } : {}),
+          accessToken: accessToken.trim(),
+        };
+
+    connect.mutate(payload as never, {
+      onSettled: () => {
+        // Cleared on success AND on failure. Retrying means pasting it again,
+        // which is the correct amount of friction for a credential.
+        setAccessToken('');
       },
-      {
-        onSettled: () => {
-          // Cleared on success AND on failure. Retrying means pasting it
-          // again, which is the correct amount of friction for a credential.
-          setAccessToken('');
-        },
-        onSuccess: (result) => {
-          if (result.status === 'ERROR') {
-            setFailure(result.message ?? 'Meta rejected the configuration.');
-            return;
-          }
-          setOpen(false);
-          setPhoneNumberId('');
-          setBusinessAccountId('');
-        },
-        onError: () => setFailure('Could not save the configuration.'),
+      onSuccess: (result) => {
+        if (result.status === 'ERROR') {
+          setFailure(result.message ?? 'Meta rejected the configuration.');
+          return;
+        }
+        setOpen(false);
+        setPrimary('');
+        setSecondary('');
       },
-    );
+      onError: () => setFailure('Could not save the configuration.'),
+    });
   };
 
   if (connected && !open) {
@@ -375,26 +420,24 @@ function WhatsAppSetup({ integration }: { integration: IntegrationView }): React
 
   return (
     <form onSubmit={submit} className="space-y-3 rounded-lg border border-slate-200 p-4">
-      <p className="text-sm text-pretty text-slate-600">
-        From your Meta app dashboard, under WhatsApp &rsaquo; API Setup.
-      </p>
+      <p className="text-sm text-pretty text-slate-600">{fields.hint}</p>
 
       <Field
-        id="wa-phone-number-id"
-        label="Phone number ID"
-        value={phoneNumberId}
-        onChange={setPhoneNumberId}
+        id={fields.primary.id}
+        label={fields.primary.label}
+        value={primary}
+        onChange={setPrimary}
         required
       />
       <Field
-        id="wa-business-account-id"
-        label="WhatsApp Business Account ID (optional)"
-        value={businessAccountId}
-        onChange={setBusinessAccountId}
+        id={fields.secondary.id}
+        label={fields.secondary.label}
+        value={secondary}
+        onChange={setSecondary}
       />
       <Field
-        id="wa-access-token"
-        label="Permanent access token"
+        id={`${integration.channel}-access-token`}
+        label="Access token"
         value={accessToken}
         onChange={setAccessToken}
         type="password"
@@ -407,7 +450,7 @@ function WhatsAppSetup({ integration }: { integration: IntegrationView }): React
       <div className="flex flex-wrap gap-2">
         <button
           type="submit"
-          disabled={connect.isPending || !phoneNumberId.trim() || !accessToken.trim()}
+          disabled={connect.isPending || !primary.trim() || !accessToken.trim()}
           className="rounded-lg bg-slate-900 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-slate-800 disabled:opacity-50"
         >
           {connect.isPending ? 'Checking with Meta...' : 'Save and verify'}

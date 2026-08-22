@@ -10,7 +10,7 @@ import {
   type WhatsAppInboundMessage,
   type WhatsAppStatusEvent,
 } from './whatsapp-normalizer';
-import { verifySubscription, verifyWebhookSignature } from './whatsapp-signature';
+import { verifySubscription, verifyWebhookSignature } from '../meta-webhook-signature';
 
 /**
  * The gate between Meta and the platform.

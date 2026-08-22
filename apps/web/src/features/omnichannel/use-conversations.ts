@@ -215,6 +215,7 @@ export function useIntegrations(): UseQueryResult<IntegrationView[]> {
   });
 }
 
+/** The shape every provider connect endpoint returns. */
 export interface ConnectWhatsAppResult {
   id: string;
   status: 'CONNECTED' | 'ERROR';
@@ -239,6 +240,33 @@ export function useConnectWhatsApp(): UseMutationResult<
   return useMutation({
     mutationFn: (input) =>
       apiPost<ConnectWhatsAppResult>('/channel-integrations/whatsapp/connect', input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['channel-integrations'] });
+    },
+  });
+}
+
+export function useConnectInstagram(): UseMutationResult<
+  ConnectWhatsAppResult,
+  Error,
+  { instagramAccountId: string; pageId?: string; accessToken: string }
+> {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (input) =>
+      apiPost<ConnectWhatsAppResult>('/channel-integrations/instagram/connect', input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['channel-integrations'] });
+    },
+  });
+}
+
+export function useDisconnectInstagram(): UseMutationResult<unknown, Error, void> {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: () => apiPost('/channel-integrations/instagram/disconnect'),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['channel-integrations'] });
     },

@@ -14,6 +14,10 @@ import { WhatsAppIntegrationRepository } from './providers/whatsapp/whatsapp-int
 import { WhatsAppSetupService } from './providers/whatsapp/whatsapp-setup.service';
 import { WhatsAppWebhookController } from './providers/whatsapp/whatsapp-webhook.controller';
 import { WhatsAppWebhookService } from './providers/whatsapp/whatsapp-webhook.service';
+import { InstagramIntegrationRepository } from './providers/instagram/instagram-integration.repository';
+import { InstagramSetupService } from './providers/instagram/instagram-setup.service';
+import { InstagramWebhookController } from './providers/instagram/instagram-webhook.controller';
+import { InstagramWebhookService } from './providers/instagram/instagram-webhook.service';
 
 /**
  * Omnichannel capture.
@@ -25,7 +29,12 @@ import { WhatsAppWebhookService } from './providers/whatsapp/whatsapp-webhook.se
  * second lead service by accident.
  */
 @Module({
-  controllers: [ConversationsController, IntegrationsController, WhatsAppWebhookController],
+  controllers: [
+    ConversationsController,
+    IntegrationsController,
+    WhatsAppWebhookController,
+    InstagramWebhookController,
+  ],
   providers: [
     OmnichannelRepository,
     IdentityResolutionService,
@@ -37,6 +46,9 @@ import { WhatsAppWebhookService } from './providers/whatsapp/whatsapp-webhook.se
     WhatsAppSetupService,
     WhatsAppWebhookService,
     WhatsAppOutboundService,
+    InstagramIntegrationRepository,
+    InstagramSetupService,
+    InstagramWebhookService,
     OutboundMessagingService,
     OutboundRecoveryService,
   ],

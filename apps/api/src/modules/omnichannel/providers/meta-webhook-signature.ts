@@ -1,7 +1,14 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
 /**
- * Meta webhook authenticity.
+ * Meta webhook authenticity, shared by every Meta-hosted channel.
+ *
+ * WhatsApp, Instagram and Messenger all sign their webhooks the same way, so
+ * this lives above the individual providers rather than inside one of them.
+ * Adding a channel should not mean writing a second HMAC check that might
+ * subtly disagree with the first — that is how one endpoint ends up verifying
+ * nothing while its sibling looks fine.
+ *
  *
  * Every webhook POST carries `X-Hub-Signature-256: sha256=<hex>`, an HMAC-SHA256
  * of the RAW request body keyed on the Meta app secret. Until that check
