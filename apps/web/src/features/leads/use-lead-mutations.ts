@@ -40,6 +40,15 @@ function useRefreshLeadData(): (leadId?: string) => void {
   return (leadId?: string) => {
     void queryClient.invalidateQueries({ queryKey: ['leads'] });
     void queryClient.invalidateQueries({ queryKey: ['follow-ups'] });
+    /*
+     * The dashboard counts the same follow-ups from its own endpoint.
+     *
+     * Without this it kept showing "6 overdue" after one was completed, while
+     * the sidebar badge beside it had already dropped to 5 — two numbers for
+     * the same thing, disagreeing on screen. A count that does not move when
+     * you do the work is worse than no count: it stops being believed.
+     */
+    void queryClient.invalidateQueries({ queryKey: ['dashboard'] });
     if (leadId) {
       void queryClient.invalidateQueries({ queryKey: ['lead', leadId] });
       void queryClient.invalidateQueries({ queryKey: ['lead-activities', leadId] });
