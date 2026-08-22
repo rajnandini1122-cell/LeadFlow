@@ -69,22 +69,30 @@ export function DashboardPage(): React.JSX.Element {
       />
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        {/*
+          * The follow-up tiles link to the list that contains them. A count
+          * with no way through to the work is a dead end.
+          */}
         <StatTile
           label="Overdue"
           value={overdue}
           tone={overdue > 0 ? 'danger' : 'success'}
           hint={overdue > 0 ? 'Needs attention now' : 'All clear'}
+          {...(overdue > 0 ? { to: '/follow-ups?bucket=overdue' } : {})}
         />
         <StatTile
           label="Due today"
           value={dueToday}
           tone={dueToday > 0 ? 'warning' : 'default'}
           hint={`${data.followUps.upcoming} scheduled later`}
+          to="/follow-ups?bucket=today"
         />
+        {/* A total, not a queue — but the open leads behind it are one. */}
         <StatTile
           label="Active pipeline"
           value={formatCurrencyCompact(data.pipeline.activeValue)}
           hint={`${data.pipeline.activeCount} open leads`}
+          to="/leads"
         />
         <StatTile
           label="Conversion"

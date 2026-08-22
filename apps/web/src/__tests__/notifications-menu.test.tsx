@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
 import { NotificationsMenu, type AttentionItem } from '../components/notifications-menu';
 
@@ -29,6 +29,12 @@ function renderMenu(list: AttentionItem[] = items) {
 }
 
 describe('NotificationsMenu', () => {
+  beforeEach(() => {
+    // The badge remembers what has been seen. Without clearing it, one test
+    // opening the menu would silence the badge for every test after it.
+    globalThis.localStorage.clear();
+  });
+
   it('totals only what is actually outstanding', async () => {
     renderMenu();
 
@@ -87,6 +93,59 @@ describe('NotificationsMenu', () => {
 
     await user.keyboard('{Escape}');
     expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+  });
+
+  describe('the badge, once you have looked', () => {
+    it('clears after the menu is opened', async () => {
+      const user = userEvent.setup();
+      renderMenu();
+
+      await user.click(screen.getByRole('button', { name: /3 items need attention/i }));
+
+      // Nagging about work somebody has already seen is how a badge gets
+      // ignored within a day.
+      expect(
+        await screen.findByRole('button', { name: /nothing needs attention/i }),
+      ).toBeInTheDocument();
+    });
+
+    it('still LISTS everything outstanding after clearing', async () => {
+      const user = userEvent.setup();
+      renderMenu();
+
+      await user.click(screen.getByRole('button', { name: /need attention/i }));
+
+      // The badge and the list answer different questions. Hiding real work
+      // because of a glance would be far worse than a stale badge.
+      expect(screen.getByRole('menuitem', { name: /overdue follow-ups/i })).toBeInTheDocument();
+      expect(
+        screen.getByRole('menuitem', { name: /conversations needing review/i }),
+      ).toBeInTheDocument();
+    });
+
+    it('comes back when a count rises', async () => {
+      const user = userEvent.setup();
+      const { rerender } = renderMenu();
+
+      await user.click(screen.getByRole('button', { name: /need attention/i }));
+      await screen.findByRole('button', { name: /nothing needs attention/i });
+
+      // One more overdue follow-up than when they looked.
+      rerender(
+        <MemoryRouter>
+          <NotificationsMenu
+            items={items.map((item) =>
+              item.id === 'overdue' ? { ...item, count: item.count + 1 } : item,
+            )}
+          />
+        </MemoryRouter>,
+      );
+
+      // Only the DIFFERENCE, not the whole total again.
+      expect(
+        await screen.findByRole('button', { name: /1 item need attention/i }),
+      ).toBeInTheDocument();
+    });
   });
 
   it('does not claim to be a message history', async () => {

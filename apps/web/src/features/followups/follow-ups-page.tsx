@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Link } from 'react-router-dom';
 import {
   formatCurrencyCompact,
@@ -38,7 +39,22 @@ import {
  */
 export function FollowUpsPage(): React.JSX.Element {
   const { can } = useAuth();
-  const [bucket, setBucket] = useState<FollowUpBucket>('overdue');
+  /*
+   * The bucket comes from the URL when one is given.
+   *
+   * The dashboard tiles link straight to a bucket, so "Due today" has to open
+   * the today tab rather than the default. It also makes the tab shareable and
+   * survives a reload, which a useState-only tab does not.
+   */
+  const [params, setParams] = useSearchParams();
+  const requested = params.get('bucket');
+  const bucket: FollowUpBucket = isBucket(requested) ? requested : 'overdue';
+  const setBucket = (next: FollowUpBucket): void => {
+    // `replace`, so flicking between tabs does not fill the back button with
+    // steps the user has to press through to leave the page.
+    setParams(next === 'overdue' ? {} : { bucket: next }, { replace: true });
+  };
+
   const [completing, setCompleting] = useState<FollowUp | null>(null);
   const [rescheduling, setRescheduling] = useState<FollowUp | null>(null);
 
@@ -252,3 +268,8 @@ function FollowUpRow({
 }
 
 export { formatCurrencyCompact };
+
+/** Narrows a query-string value to a real bucket. Anything else falls back. */
+function isBucket(value: string | null): value is FollowUpBucket {
+  return value === 'overdue' || value === 'today' || value === 'upcoming' || value === 'completed';
+}

@@ -11,10 +11,14 @@ import { NavLink } from 'react-router-dom';
  * fetches for its nav badges, gathered behind one bell so nothing has to be
  * noticed by scanning the sidebar.
  *
- * The consequence, stated plainly: it reflects what is true right now. It
- * cannot tell you what happened while you were away, and it has nothing to mark
- * as read, because an overdue follow-up stops being listed when it stops being
- * overdue — not when somebody looks at it.
+ * The consequence, stated plainly: the LIST reflects what is true right now. It
+ * cannot tell you what happened while you were away, and an item stops being
+ * listed when it stops being outstanding — not when somebody looks at it.
+ *
+ * The BADGE is the one thing that remembers: opening the menu records the
+ * current counts locally, so it stops nagging about work you have already
+ * seen, and returns if a count rises. That is a per-device convenience, not
+ * server-side read state.
  */
 
 export interface AttentionItem {
@@ -29,15 +33,70 @@ export interface AttentionItem {
   tone: 'urgent' | 'normal';
 }
 
+/**
+ * What the viewer has already looked at.
+ *
+ * A count per item, from the last time the menu was opened. Kept in
+ * localStorage because it is a per-person, per-device convenience — there is
+ * no server-side read state, and inventing one would mean a notifications
+ * table, delivery and a sync story for something that is a badge.
+ */
+const SEEN_KEY = 'leadflow.attention.seen';
+
+function readSeen(): Record<string, number> {
+  try {
+    const raw = globalThis.localStorage?.getItem(SEEN_KEY);
+    return raw ? (JSON.parse(raw) as Record<string, number>) : {};
+  } catch {
+    // Private window, cleared storage, or storage disabled. An empty record
+    // means "nothing seen", so the badge shows — which errs towards showing
+    // work rather than hiding it.
+    return {};
+  }
+}
+
+function writeSeen(counts: Record<string, number>): void {
+  try {
+    globalThis.localStorage?.setItem(SEEN_KEY, JSON.stringify(counts));
+  } catch {
+    // Not fatal: the badge simply keeps showing.
+  }
+}
+
 export function NotificationsMenu({ items }: { items: AttentionItem[] }): React.JSX.Element {
   const [open, setOpen] = useState(false);
+  const [seen, setSeen] = useState<Record<string, number>>(() => readSeen());
   const container = useRef<HTMLDivElement>(null);
 
   // Only things that actually need attention. A "0 overdue" row is noise that
   // trains people to ignore the bell.
   const active = items.filter((item) => item.count > 0);
-  const total = active.reduce((sum, item) => sum + item.count, 0);
-  const urgent = active.some((item) => item.tone === 'urgent');
+
+  /*
+   * The BADGE counts what is new; the LIST always shows everything current.
+   *
+   * Those are deliberately different questions. A badge that never clears is
+   * ignored within a day, but hiding outstanding work because somebody glanced
+   * at it once would be worse — so opening the menu stops the badge nagging
+   * and changes nothing about what the menu contains. If a count then RISES,
+   * the badge returns for the difference.
+   */
+  const unseen = active.reduce(
+    (sum, item) => sum + Math.max(0, item.count - (seen[item.id] ?? 0)),
+    0,
+  );
+  const total = unseen;
+  const urgent = active.some(
+    (item) => item.tone === 'urgent' && item.count > (seen[item.id] ?? 0),
+  );
+
+  /** Records what is on screen now, so the badge stops counting it. */
+  const markSeen = (): void => {
+    const snapshot: Record<string, number> = {};
+    for (const item of items) snapshot[item.id] = item.count;
+    writeSeen(snapshot);
+    setSeen(snapshot);
+  };
 
   useEffect(() => {
     if (!open) return undefined;
@@ -61,7 +120,12 @@ export function NotificationsMenu({ items }: { items: AttentionItem[] }): React.
     <div ref={container} className="relative">
       <button
         type="button"
-        onClick={() => setOpen((current) => !current)}
+        onClick={() => {
+          const next = !open;
+          setOpen(next);
+          // Opening it counts as having looked.
+          if (next) markSeen();
+        }}
         aria-expanded={open}
         aria-haspopup="menu"
         aria-label={
@@ -130,7 +194,8 @@ export function NotificationsMenu({ items }: { items: AttentionItem[] }): React.
             * should know they are looking at live counts, not a feed.
             */}
           <p className="border-t border-slate-100 px-4 py-2 text-[11px] text-slate-400">
-            Live counts, not a message history.
+            Live counts, not a message history. The badge clears once you have looked; the
+            list always shows what is outstanding.
           </p>
         </div>
       )}
