@@ -1,6 +1,7 @@
 import { BrowserRouter, Navigate, Outlet, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AuthProvider, useAuth } from './features/auth/auth-context';
+import { ScrollToTop } from './components/scroll-to-top';
 import { LoginPage } from './features/auth/login-page';
 import { RegisterPage } from './features/auth/register-page';
 import { AcceptInvitationPage } from './features/auth/accept-invitation-page';
@@ -56,10 +57,25 @@ function Restoring(): React.JSX.Element {
 
 /** Gate for authenticated routes. Real enforcement is server-side. */
 function RequireAuth(): React.JSX.Element {
-  const { status } = useAuth();
+  const { status, signedOut } = useAuth();
 
   if (status === 'loading') return <Restoring />;
-  if (status === 'anonymous') return <Navigate to="/login" replace />;
+
+  /*
+   * Two different anonymous states, two different destinations.
+   *
+   * Someone whose session expired, or who deep-linked to a protected page,
+   * wants the login form — they were trying to get IN. Someone who just
+   * pressed Sign out was trying to get OUT, and showing them another password
+   * box reads as "signing out failed".
+   *
+   * This also removes a race: `logout()` navigates home while clearing the
+   * session, and the clear commits first. Whichever redirect wins now, both
+   * agree on where a deliberate sign-out lands.
+   */
+  if (status === 'anonymous') {
+    return <Navigate to={signedOut ? '/' : '/login'} replace />;
+  }
 
   return <Outlet />;
 }
@@ -87,6 +103,8 @@ export function App(): React.JSX.Element {
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
         <AuthProvider>
+          {/* Every route change starts at the top, as a real page load would. */}
+          <ScrollToTop />
           <Routes>
             {/*
               Public marketing site. No session required, and deliberately

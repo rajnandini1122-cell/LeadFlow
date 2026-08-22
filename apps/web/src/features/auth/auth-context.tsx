@@ -49,6 +49,15 @@ interface AuthState {
   /** Switches tenant without re-entering credentials. Server validates membership. */
   switchOrganization: (organizationId: string) => Promise<void>;
   logout: () => Promise<void>;
+  /**
+   * Whether this anonymous state came from the user deliberately signing out.
+   *
+   * Distinguishes "I left" from "my session ended". They want different
+   * destinations — the front door for the first, the login form for the second
+   * — and without this the route guard cannot tell them apart, so everybody
+   * lands at a password box.
+   */
+  signedOut: boolean;
   can: (permission: Permission) => boolean;
 }
 
@@ -57,6 +66,7 @@ const AuthContext = createContext<AuthState | undefined>(undefined);
 export function AuthProvider({ children }: { children: ReactNode }): React.JSX.Element {
   const [user, setUser] = useState<AuthenticatedUser | null>(null);
   const [status, setStatus] = useState<AuthState['status']>('loading');
+  const [signedOut, setSignedOut] = useState(false);
   const [pendingOrganizations, setPendingOrganizations] = useState<OrganizationSummary[] | null>(
     null,
   );
@@ -86,6 +96,7 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
 
         if (cancelled) return;
         keepRefreshToken(result.tokens);
+        setSignedOut(false);
         setAccessToken(result.tokens.accessToken);
         applyOrganizationFormatting(result.user);
         setUser(result.user);
@@ -126,6 +137,7 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
       }
 
       setPendingOrganizations(null);
+      setSignedOut(false);
       keepRefreshToken(result.tokens);
       setAccessToken(result.tokens.accessToken);
       applyOrganizationFormatting(result.user);
@@ -149,6 +161,7 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
         platform: clientPlatform(),
       });
 
+      setSignedOut(false);
       keepRefreshToken(result.tokens);
       setAccessToken(result.tokens.accessToken);
       applyOrganizationFormatting(result.user);
@@ -182,6 +195,16 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
       // cleared below either way, and the server-side refresh cookie is
       // rejected on its next use.
     } finally {
+      /*
+       * Record the INTENT before clearing the session.
+       *
+       * `setStatus('anonymous')` commits urgently, while the router treats
+       * navigation as a transition — so the route guard re-renders at the
+       * protected path first and its own redirect wins the race. Rather than
+       * trying to win that race, both redirects are made to agree: the guard
+       * reads this flag and sends a deliberate sign-out to the front door.
+       */
+      setSignedOut(true);
       // Clear local state even if the call failed — the user asked to leave,
       // and the refresh cookie is cleared server-side on the next attempt.
       storeRefreshToken(null);
@@ -203,8 +226,18 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
   );
 
   const value = useMemo<AuthState>(
-    () => ({ user, status, pendingOrganizations, login, register, switchOrganization, logout, can }),
-    [user, status, pendingOrganizations, login, register, switchOrganization, logout, can],
+    () => ({
+      user,
+      status,
+      pendingOrganizations,
+      login,
+      register,
+      switchOrganization,
+      logout,
+      signedOut,
+      can,
+    }),
+    [user, status, pendingOrganizations, login, register, switchOrganization, logout, signedOut, can],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

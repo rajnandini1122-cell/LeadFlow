@@ -144,10 +144,24 @@ async function seedOrganization(
     },
   });
 
+  /*
+   * Omnichannel is ON for the demo organizations.
+   *
+   * The flag defaults to false in the schema, which is right for a real
+   * tenant: an organization that has connected no channel should not be shown
+   * an inbox and a review queue it cannot use. But a DEMO database exists to be
+   * explored, and with the flag off the Inbox, Channel review and Channel
+   * integration screens are all hidden — including the pages you would go to in
+   * order to connect a channel in the first place.
+   */
   await prisma.organizationSettings.upsert({
     where: { organizationId: organization.id },
-    create: { organizationId: organization.id, leadSources: DEFAULT_LEAD_SOURCES },
-    update: { leadSources: DEFAULT_LEAD_SOURCES },
+    create: {
+      organizationId: organization.id,
+      leadSources: DEFAULT_LEAD_SOURCES,
+      omnichannelEnabled: true,
+    },
+    update: { leadSources: DEFAULT_LEAD_SOURCES, omnichannelEnabled: true },
   });
 
   // --- members ---------------------------------------------------------------

@@ -609,6 +609,13 @@ function ProviderSetup({ integration }: { integration: IntegrationView }): React
         onChange={setAccessToken}
         type="password"
         required
+        /*
+         * "new-password", not "off". It tells the browser this is a value being
+         * SET rather than a login being recalled, which is both true and the
+         * only reliable way to stop the saved-password prompt appearing for an
+         * API token.
+         */
+        autoComplete="new-password"
         hint="Stored encrypted. It is never shown again, only the last four characters."
       />
 
@@ -646,6 +653,7 @@ function Field({
   type = 'text',
   required = false,
   hint,
+  autoComplete = 'off',
 }: {
   id: string;
   label: string;
@@ -654,18 +662,34 @@ function Field({
   type?: string;
   required?: boolean;
   hint?: string;
+  autoComplete?: string;
 }): React.JSX.Element {
   return (
     <div>
       <label htmlFor={id} className="mb-1 block text-sm font-medium text-slate-700">
         {label}
       </label>
+      {/*
+        * Autofill is actively suppressed here, not merely discouraged.
+        *
+        * `autoComplete="off"` alone is not enough: browsers ignore it on a form
+        * that contains a password field and offer saved credentials for the
+        * text input above it. On this form that means an email address being
+        * dropped into "Phone number ID" — which looks filled in, saves without
+        * complaint, and produces an integration that can never receive a
+        * message. A `name` that does not read as a login field, plus the
+        * password-manager opt-outs, is what actually stops it.
+        */}
       <input
         id={id}
+        name={id}
         type={type}
         value={value}
         required={required}
-        autoComplete="off"
+        autoComplete={autoComplete}
+        data-lpignore="true"
+        data-1p-ignore=""
+        data-form-type="other"
         onChange={(event) => onChange(event.target.value)}
         className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
       />

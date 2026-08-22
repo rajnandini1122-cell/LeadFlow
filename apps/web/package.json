@@ -11,7 +11,7 @@
     "typecheck": "tsc -b --noEmit",
     "lint": "eslint src --max-warnings 0",
     "test": "vitest run",
-    "android:sync": "npm run build && cap sync android",
+    "android:sync": "npm run build && node ../../scripts/strip-apk-from-bundle.mjs && cap sync android",
     "android:open": "cap open android",
     "android:build": "npm run android:sync && cd android && gradlew.bat assembleDebug"
   },

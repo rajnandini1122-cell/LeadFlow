@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { formatApkDate, formatApkSize, useApkManifest } from '../../lib/use-apk-manifest';
 
 /**
  * The Android download offer on the home page.
@@ -10,41 +10,13 @@ import { useEffect, useState } from 'react';
  *
  * If the manifest is missing, this renders NOTHING. A deployment that has not
  * published an APK shows no download button rather than a link that 404s.
+ *
+ * Settings carries the same offer for people who are already signed in, since
+ * a signed-in visitor to `/` never sees this page. Both read one manifest
+ * through one hook, so they cannot disagree.
  */
-
-interface ApkManifest {
-  fileName: string;
-  url: string;
-  variant: string;
-  applicationId: string | null;
-  versionName: string | null;
-  versionCode: number | null;
-  bytes: number;
-  sha256: string;
-  builtAt: string;
-}
-
 export function AndroidDownload(): React.JSX.Element | null {
-  const [manifest, setManifest] = useState<ApkManifest | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    // A plain fetch of a static file, not an API call: this is public and
-    // needs no session, and the marketing page is reachable signed out.
-    fetch('/downloads/leadflow-apk.json')
-      .then((response) => (response.ok ? response.json() : null))
-      .then((data: ApkManifest | null) => {
-        if (!cancelled && data?.url) setManifest(data);
-      })
-      .catch(() => {
-        // No manifest, no card. Nothing to tell the visitor about.
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const manifest = useApkManifest();
 
   if (!manifest) return null;
 
@@ -77,11 +49,11 @@ export function AndroidDownload(): React.JSX.Element | null {
               )}
               <div>
                 <dt className="inline font-medium text-slate-700">Size </dt>
-                <dd className="inline">{formatBytes(manifest.bytes)}</dd>
+                <dd className="inline">{formatApkSize(manifest.bytes)}</dd>
               </div>
               <div>
                 <dt className="inline font-medium text-slate-700">Built </dt>
-                <dd className="inline">{formatDate(manifest.builtAt)}</dd>
+                <dd className="inline">{formatApkDate(manifest.builtAt)}</dd>
               </div>
               {/*
                 * The build type is stated plainly. A debug APK is signed with
@@ -117,16 +89,4 @@ export function AndroidDownload(): React.JSX.Element | null {
       </div>
     </section>
   );
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
-
-function formatDate(iso: string): string {
-  const date = new Date(iso);
-  return Number.isNaN(date.getTime())
-    ? iso
-    : date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }
