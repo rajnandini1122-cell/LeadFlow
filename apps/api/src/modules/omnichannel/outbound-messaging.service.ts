@@ -5,8 +5,11 @@ import { AuditRepository } from '../../common/audit/audit.repository';
 import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
 import { OmnichannelRepository } from './omnichannel.repository';
 import { conversationScope } from './conversation-visibility';
-import { evaluateSendCapability, MAX_TEXT_LENGTH } from './send-capability';
+import { evaluateSendCapability, maxTextLengthFor, MAX_TEXT_LENGTH } from './send-capability';
 import { WhatsAppOutboundService } from './providers/whatsapp/whatsapp-outbound.service';
+import { MessengerOutboundService } from './providers/messenger/messenger-outbound.service';
+import type { ChannelSender } from './providers/channel-sender';
+import type { ChannelType } from '../../generated/prisma/enums';
 
 /**
  * Replying to a customer from the inbox.
@@ -33,8 +36,29 @@ export class OutboundMessagingService {
   constructor(
     private readonly repository: OmnichannelRepository,
     private readonly whatsapp: WhatsAppOutboundService,
+    private readonly messenger: MessengerOutboundService,
     private readonly audit: AuditRepository,
   ) {}
+
+  /**
+   * Which adapter speaks for a channel.
+   *
+   * The only place in the outbound flow that knows channels exist. Everything
+   * either side of it — authorization, capability, idempotency, failure
+   * handling — is identical for all three, which is the point: one outbound
+   * path, several providers behind it.
+   */
+  private senderFor(channel: ChannelType): ChannelSender | null {
+    switch (channel) {
+      case 'WHATSAPP':
+        return this.whatsapp;
+      case 'INSTAGRAM':
+      case 'FACEBOOK':
+        return this.messenger;
+      default:
+        return null;
+    }
+  }
 
   async send(
     conversationId: string,
@@ -51,10 +75,18 @@ export class OutboundMessagingService {
       );
     }
 
+    /*
+     * A cheap upper bound before anything is loaded.
+     *
+     * The real, channel-specific limit is checked once the conversation is
+     * known — Instagram accepts 1000 characters where WhatsApp accepts 4096,
+     * and rejecting at the larger bound first keeps an obviously oversized
+     * body from costing a database round trip.
+     */
     if (body.length > MAX_TEXT_LENGTH) {
       throw new AppException(
         ERROR_CODES.VALIDATION_ERROR,
-        `WhatsApp messages are limited to ${MAX_TEXT_LENGTH} characters.`,
+        `Messages are limited to ${MAX_TEXT_LENGTH} characters.`,
         400,
       );
     }
@@ -86,16 +118,35 @@ export class OutboundMessagingService {
 
     if (!(await this.mayReply(conversation, principal))) throw this.notFound();
 
+    const channelLimit = maxTextLengthFor(conversation.channel);
+    if (body.length > channelLimit) {
+      throw new AppException(
+        ERROR_CODES.VALIDATION_ERROR,
+        `Messages on this channel are limited to ${channelLimit} characters.`,
+        400,
+      );
+    }
+
     // --- capability ---------------------------------------------------------
-    const integration = await this.repository.findIntegrationForChannel(conversation.channel);
-    const lastInboundAt = await this.repository.lastInboundAt(conversationId);
+    const [integration, lastInboundAt, recipient] = await Promise.all([
+      this.repository.findIntegrationForChannel(conversation.channel),
+      this.repository.lastInboundAt(conversationId),
+      this.repository.recipientFor(conversationId),
+    ]);
 
     const capability = evaluateSendCapability({
       channel: conversation.channel,
-      integration: integration ? { status: integration.status, enabled: integration.enabled } : null,
+      integration: integration
+        ? {
+            status: integration.status,
+            enabled: integration.enabled,
+            hasCredential: integration.encryptedAccessToken !== null,
+          }
+        : null,
       lastInboundAt,
       mayReply: true,
-      });
+      hasRecipient: recipient !== null,
+    });
 
     if (!capability.canSend) {
       // 409 rather than 403: the caller is permitted, the conversation is not
@@ -103,15 +154,6 @@ export class OutboundMessagingService {
       throw new AppException(
         ERROR_CODES.CONFLICT,
         capability.sendDisabledReason ?? 'This conversation cannot be replied to right now.',
-        409,
-      );
-    }
-
-    const recipient = await this.repository.recipientFor(conversationId);
-    if (!recipient) {
-      throw new AppException(
-        ERROR_CODES.CONFLICT,
-        'This conversation has no WhatsApp number to reply to.',
         409,
       );
     }
@@ -140,11 +182,27 @@ export class OutboundMessagingService {
     }
 
     // --- send ---------------------------------------------------------------
-    const result = await this.whatsapp.sendText({
-      phoneNumberId: integration!.providerAccountId,
+    const sender = this.senderFor(conversation.channel);
+
+    if (!sender) {
+      // Unreachable: a channel with no adapter has no policy either, so the
+      // capability check above already refused. Handled anyway rather than
+      // asserting non-null on something a future channel could break.
+      await this.repository.markMessageFailed(claimed.id, 'This channel cannot send messages.');
+      throw new AppException(
+        ERROR_CODES.CONFLICT,
+        'Replying from LeadFlow is not available for this channel yet.',
+        409,
+      );
+    }
+
+    const result = await sender.sendText({
+      accountId: integration!.providerAccountId,
       encryptedAccessToken: integration!.encryptedAccessToken,
-      // Meta wants digits with no plus.
-      recipient: recipient.replace(/^\+/, ''),
+      // Passed as stored. Any provider-specific formatting is the adapter's
+      // business — a phone number needs its plus stripped for WhatsApp and a
+      // Messenger id must not be touched at all.
+      recipient: recipient!,
       body,
     });
 

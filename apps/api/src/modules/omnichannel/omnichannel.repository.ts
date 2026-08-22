@@ -713,22 +713,33 @@ export class OmnichannelRepository {
   async recipientFor(conversationId: string): Promise<string | null> {
     const conversation = await this.prisma.client.conversation.findFirst({
       where: { id: conversationId },
-      select: { channel: true, contactId: true },
+      select: { channel: true, contactId: true, externalConversationId: true },
     });
     if (!conversation) return null;
 
-    const inbound = await this.prisma.client.message.findFirst({
-      where: { conversationId, direction: 'INCOMING' },
-      orderBy: { createdAt: 'desc' as const },
-      select: { conversation: { select: { externalConversationId: true } } },
-    });
+    /*
+     * The provider-scoped identity, taken from the conversation key.
+     *
+     * Every channel writes it as "<businessAccountId>:<customerId>" when the
+     * customer's own message opens the thread, so the second half is the only
+     * address the provider will accept.
+     */
+    const external = conversation.externalConversationId;
+    const providerIdentity = external.includes(':') ? external.split(':')[1] : undefined;
+    if (providerIdentity) return providerIdentity;
 
-    // externalConversationId is "<phoneNumberId>:<wa_id>" for WhatsApp.
-    const external = inbound?.conversation.externalConversationId;
-    const waId = external?.includes(':') ? external.split(':')[1] : undefined;
-    if (waId) return waId;
-
+    /*
+     * Fallback to the contact's mobile — WhatsApp ONLY.
+     *
+     * A phone number is a valid WhatsApp address. It is emphatically not a
+     * valid Instagram or Messenger one: those take an opaque provider-scoped
+     * id, and posting a phone number in that field would either be refused or,
+     * far worse, resolve to a different person's id-shaped string. Guessing an
+     * address is how a reply reaches the wrong customer.
+     */
+    if (conversation.channel !== 'WHATSAPP') return null;
     if (!conversation.contactId) return null;
+
     const contact = await this.prisma.client.contact.findFirst({
       where: { id: conversation.contactId },
       select: { mobile: true },

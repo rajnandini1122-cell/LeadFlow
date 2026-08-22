@@ -158,6 +158,49 @@ describe('Conversation composer', () => {
     });
   });
 
+  describe('channel awareness', () => {
+    it.each([
+      ['WHATSAPP', 'WhatsApp', 4096],
+      ['INSTAGRAM', 'Instagram', 1000],
+      ['FACEBOOK', 'Facebook', 2000],
+    ])('names %s in the composer and uses its own limit', async (channel, label, maxTextLength) => {
+      mockConversation({ channel, canSend: true, maxTextLength });
+      renderDrawer();
+
+      const box = await screen.findByLabelText('Reply');
+      // The salesperson must know which channel they are about to answer on.
+      expect(box).toHaveAttribute('placeholder', expect.stringContaining(label));
+      // Meta's limits genuinely differ; one number for all three would let the
+      // composer accept a body the provider then rejects.
+      expect(box).toHaveAttribute('maxlength', String(maxTextLength));
+    });
+
+    it('warns only as the limit approaches', async () => {
+      const user = userEvent.setup();
+      mockConversation({ channel: 'INSTAGRAM', canSend: true, maxTextLength: 1000 });
+      renderDrawer();
+
+      const box = await screen.findByLabelText('Reply');
+      expect(screen.queryByText(/characters left/i)).toBeNull();
+
+      await user.type(box, 'x'.repeat(60));
+      // Still quiet — a counter on every message is noise.
+      expect(screen.queryByText(/characters left/i)).toBeNull();
+    });
+
+    it('names the channel in the free-reply window notice', async () => {
+      mockConversation({
+        channel: 'FACEBOOK',
+        canSend: true,
+        maxTextLength: 2000,
+        windowExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      });
+
+      renderDrawer();
+      expect(await screen.findByText(/Facebook.*allows free replies until/i)).toBeInTheDocument();
+    });
+  });
+
   describe('when the server says replying is not possible', () => {
     it('shows no composer at all', async () => {
       mockConversation({

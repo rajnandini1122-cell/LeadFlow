@@ -214,6 +214,12 @@ function Composer({ conversation }: { conversation: ConversationDetail }): React
   const [text, setText] = useState('');
   const [failure, setFailure] = useState<string | null>(null);
 
+  const channel = CHANNEL_PRESENTATION[conversation.channel];
+  // The server's number, not a constant here: Instagram accepts 1000
+  // characters where WhatsApp accepts 4096.
+  const maxLength = conversation.maxTextLength ?? 4096;
+  const remaining = maxLength - text.length;
+
   /*
    * One key per composed message.
    *
@@ -263,7 +269,7 @@ function Composer({ conversation }: { conversation: ConversationDetail }): React
           id="composer"
           rows={2}
           value={text}
-          maxLength={4096}
+          maxLength={maxLength}
           disabled={send.isPending}
           onChange={(event) => setText(event.target.value)}
           onKeyDown={(event) => {
@@ -274,7 +280,7 @@ function Composer({ conversation }: { conversation: ConversationDetail }): React
               submit(event);
             }
           }}
-          placeholder="Write a reply…"
+          placeholder={`Reply on ${channel.label}…`}
           className="min-h-[2.5rem] flex-1 resize-y rounded-lg border border-slate-200 px-3 py-2 text-sm"
         />
         <button
@@ -286,11 +292,20 @@ function Composer({ conversation }: { conversation: ConversationDetail }): React
         </button>
       </div>
 
-      {conversation.windowExpiresAt && (
-        <p className="mt-1.5 text-xs text-slate-500">
-          WhatsApp allows free replies until {formatDateTime(conversation.windowExpiresAt)}.
-        </p>
-      )}
+      <div className="mt-1.5 flex flex-wrap items-center gap-x-3 text-xs text-slate-500">
+        {conversation.windowExpiresAt && (
+          <span>
+            {channel.label} allows free replies until{' '}
+            {formatDateTime(conversation.windowExpiresAt)}.
+          </span>
+        )}
+        {/* Only once it matters, so the composer stays quiet most of the time. */}
+        {remaining <= 200 && (
+          <span className={remaining <= 0 ? 'text-red-600' : ''}>
+            {remaining} characters left
+          </span>
+        )}
+      </div>
     </form>
   );
 }

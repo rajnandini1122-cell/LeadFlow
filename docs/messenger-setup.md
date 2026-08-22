@@ -1,10 +1,9 @@
 # Instagram DMs and Facebook Messenger — setup and operation
 
 LeadFlow captures Instagram Direct Messages and Facebook Messenger messages,
-matches them to contacts and leads, and shows them in the same inbox and review
-queue as every other channel. **Inbound only** — replying from LeadFlow is not
-implemented for either, and the UI says so rather than offering a composer that
-cannot send.
+matches them to contacts and leads, shows them in the same inbox and review
+queue as every other channel, and — inside Meta's 24-hour messaging window —
+sends text replies back.
 
 Both are documented together because they are the same Meta protocol under two
 names: the same webhook envelope, the same signature scheme, the same
@@ -183,15 +182,72 @@ queue — as a human decision, which is the correct place for it.
 
 ## 8. Why there is no reply box
 
-Outbound is not implemented for either channel. `canSend` is false and the
-drawer shows *"Replying from LeadFlow is not available for this channel yet."*
+Both channels send text replies through the same endpoint every other channel
+uses:
 
-That is enforced by the API, not by hiding a button: `POST
-/conversations/:id/messages` refuses both with `409`.
+```
+POST /api/v1/conversations/:id/messages
+{ "content": "…", "idempotencyKey": "<uuid>" }
+```
 
-Messenger's rules differ from WhatsApp's — a different window, a different
-permission set, and human-agent handover semantics — so outbound is its own
-piece of work rather than a flag flip.
+There is no `/instagram/send` or `/facebook/send`. The conversation knows its
+own channel, and the outbound service picks the provider adapter from it.
+
+### The messaging window
+
+**All three Meta channels enforce a 24-hour window** from the customer's last
+message. That is Meta's rule for each channel independently — not an assumption
+carried across from WhatsApp. What differs is the escape hatch once it closes,
+and LeadFlow implements **none** of them:
+
+| Channel | Outside the window |
+|---|---|
+| WhatsApp | An approved message template |
+| Instagram | A `HUMAN_AGENT` tag — extends to 7 days, needs `human_agent` via app review |
+| Messenger | The same `HUMAN_AGENT` tag, same review, same 7 days |
+
+So the composer disappears when the window closes, and the reason names the
+right escape hatch for that channel rather than sending someone looking for a
+template Instagram does not have.
+
+### Text limits
+
+Meta's limits genuinely differ, and the API reports the right one per
+conversation so the composer can enforce it before sending:
+
+| Channel | Limit |
+|---|---|
+| WhatsApp | 4096 |
+| Messenger | 2000 |
+| Instagram | 1000 |
+
+### Delivery status
+
+Outbound messages reach **`SENT`** and stop there.
+
+`DELIVERED` and `READ` are **not** tracked for these two channels. Messenger and
+Instagram report those through `message_deliveries` and `message_reads` events
+keyed by a **watermark timestamp**, not by the message id we stored — meaning a
+receipt covers "everything up to this moment" rather than a specific message.
+Correlating that reliably needs per-conversation watermark tracking, which is
+not implemented. Manufacturing `DELIVERED` without provider evidence would tell
+a salesperson something Meta never said, so the status stays at the last thing
+we actually know.
+
+WhatsApp is unaffected: it reports status per message id and continues to
+progress through `DELIVERED` and `READ`.
+
+### Echoes
+
+Meta reflects the business's own outgoing messages back on the same webhook,
+carrying the id we already stored. Those are ignored at the normalizer, so a
+reply sent from LeadFlow never reappears as an inbound customer message — and
+an echo is **not** treated as delivery evidence.
+
+### Required permissions
+
+Sending needs `pages_messaging` for Messenger and `instagram_manage_messages`
+for Instagram, on top of what inbound already required.
 
 ---
 

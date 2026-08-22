@@ -10,6 +10,7 @@ import { OmnichannelRepository } from './omnichannel.repository';
 import { OutboundMessagingService } from './outbound-messaging.service';
 import { OutboundRecoveryService } from './outbound-recovery.service';
 import { WhatsAppOutboundService } from './providers/whatsapp/whatsapp-outbound.service';
+import { MessengerOutboundService } from './providers/messenger/messenger-outbound.service';
 import { WhatsAppIntegrationRepository } from './providers/whatsapp/whatsapp-integration.repository';
 import { WhatsAppSetupService } from './providers/whatsapp/whatsapp-setup.service';
 import { WhatsAppWebhookController } from './providers/whatsapp/whatsapp-webhook.controller';
@@ -50,6 +51,7 @@ import {
     WhatsAppSetupService,
     WhatsAppWebhookService,
     WhatsAppOutboundService,
+    MessengerOutboundService,
     MessengerIntegrationRepository,
     MessengerSetupService,
     MessengerWebhookService,

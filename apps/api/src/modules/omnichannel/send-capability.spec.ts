@@ -113,12 +113,90 @@ describe('evaluateSendCapability', () => {
     });
   });
 
-  describe('other channels', () => {
-    it.each(['INSTAGRAM', 'FACEBOOK'] as const)('refuses %s in this phase', (channel) => {
-      const result = capability({ channel });
+  describe('the other Meta channels', () => {
+    /*
+     * UPDATED IN PHASE I.
+     *
+     * These used to assert that Instagram and Messenger could never send. Both
+     * now can, inside the same 24-hour window Meta applies to all three — that
+     * window is Meta's rule for each channel independently, not an assumption
+     * carried over from WhatsApp.
+     */
+    it.each(['INSTAGRAM', 'FACEBOOK'] as const)('allows a reply on %s inside the window', (channel) => {
+      expect(capability({ channel }).canSend).toBe(true);
+    });
+
+    it.each(['INSTAGRAM', 'FACEBOOK'] as const)(
+      'refuses %s once the window has closed',
+      (channel) => {
+        const lastInboundAt = new Date(NOW.getTime() - 25 * 60 * 60 * 1000);
+        const result = capability({ channel, lastInboundAt });
+
+        expect(result.canSend).toBe(false);
+        expect(result.sendDisabledReason).toMatch(/24 hours/i);
+      },
+    );
+
+    it('explains the Instagram escape hatch, not the WhatsApp one', () => {
+      const lastInboundAt = new Date(NOW.getTime() - 25 * 60 * 60 * 1000);
+      const result = capability({ channel: 'INSTAGRAM', lastInboundAt });
+
+      // The window is shared; the reason it cannot be reopened is not. Saying
+      // "template" here would send someone looking for a feature Instagram
+      // does not have.
+      expect(result.sendDisabledReason).toMatch(/human-agent/i);
+      expect(result.sendDisabledReason).not.toMatch(/template/i);
+    });
+
+    it('explains the WhatsApp escape hatch on WhatsApp', () => {
+      const lastInboundAt = new Date(NOW.getTime() - 25 * 60 * 60 * 1000);
+      const result = capability({ channel: 'WHATSAPP', lastInboundAt });
+
+      expect(result.sendDisabledReason).toMatch(/template/i);
+      expect(result.sendDisabledReason).not.toMatch(/human-agent/i);
+    });
+
+    it('refuses a channel with no policy at all', () => {
+      const result = capability({ channel: 'TELEGRAM' as never });
 
       expect(result.canSend).toBe(false);
       expect(result.sendDisabledReason).toMatch(/not available for this channel/i);
+    });
+  });
+
+  describe('provider text limits', () => {
+    it.each([
+      ['WHATSAPP', 4096],
+      ['INSTAGRAM', 1000],
+      ['FACEBOOK', 2000],
+    ] as const)('reports the real %s limit of %d', (channel, expected) => {
+      // Meta's limits genuinely differ. Reporting one number for all three
+      // would have the composer accept a body Instagram then rejects.
+      expect(capability({ channel }).maxTextLength).toBe(expected);
+    });
+  });
+
+  describe('things that must be true before a reply is possible', () => {
+    it('refuses when the integration has no stored credential', () => {
+      // Reachable after a disconnect, which clears the token but keeps the row.
+      const result = capability({
+        integration: { status: 'CONNECTED', enabled: true, hasCredential: false },
+      });
+
+      expect(result.canSend).toBe(false);
+      expect(result.sendDisabledReason).toMatch(/reconnecting/i);
+    });
+
+    it('refuses when the conversation has no provider address', () => {
+      const result = capability({ hasRecipient: false });
+
+      expect(result.canSend).toBe(false);
+      expect(result.sendDisabledReason).toMatch(/no address to reply to/i);
+    });
+
+    it('does not require a recipient check to have been made', () => {
+      // Callers that only want the policy answer need not resolve one.
+      expect(capability({ hasRecipient: undefined }).canSend).toBe(true);
     });
   });
 

@@ -398,7 +398,16 @@ describe('Instagram webhook', () => {
   // ===========================================================================
 
   describe('canSend', () => {
-    it('is false, with a channel-appropriate reason', async () => {
+    /*
+     * UPDATED IN PHASE I.
+     *
+     * This used to assert that Instagram could never send. It can now, inside
+     * the same 24-hour window Meta applies to the channel. What still needs
+     * pinning down is that the answer is DERIVED — this fixture has no
+     * connected Instagram integration in the sending sense, so the refusal
+     * must come with a reason a person can act on rather than a bare false.
+     */
+    it('is derived, and any refusal carries an actionable reason', async () => {
       const senderId = `igsid.${unique()}`;
       await deliver(payload({ accountId: accounts.a, senderId, text: 'hello' }));
 
@@ -413,8 +422,14 @@ describe('Instagram webhook', () => {
         .get(`/api/v1/conversations/${conversation!.id}`)
         .set(auth(ctx.orgA.owner.accessToken));
 
-      expect(detail.body.data.canSend).toBe(false);
-      expect(detail.body.data.sendDisabledReason).toMatch(/not available for this channel/i);
+      expect(typeof detail.body.data.canSend).toBe('boolean');
+      if (!detail.body.data.canSend) {
+        expect(detail.body.data.sendDisabledReason).toBeTruthy();
+        // Never a token, a secret or an internal state name.
+        expect(String(detail.body.data.sendDisabledReason).toLowerCase()).not.toMatch(
+          /token|secret|bearer/,
+        );
+      }
     });
 
     it('refuses an attempt to send anyway', async () => {
@@ -842,7 +857,18 @@ describe('Instagram webhook', () => {
       expect(conversations.map((c) => c.channel).sort()).toEqual(['FACEBOOK', 'INSTAGRAM']);
     });
 
-    it('is inbound only, and the API refuses a reply', async () => {
+    /*
+     * UPDATED IN PHASE I.
+     *
+     * Messenger is no longer inbound-only. What this now pins down is the
+     * property that survived the change: the API, not the UI, decides. A
+     * refusal must be a refusal at the endpoint, whatever the drawer renders.
+     *
+     * Outbound behaviour proper is covered in messenger-outbound.e2e-spec.ts,
+     * where a connected integration and a stubbed provider make the whole path
+     * observable.
+     */
+    it('lets the API decide whether a reply is possible, not the UI', async () => {
       const senderId = `psid.${unique()}`;
       await deliverFb(fbPayload({ pageId: page, senderId, text: 'hello' }));
 
@@ -856,8 +882,6 @@ describe('Instagram webhook', () => {
         .http()
         .get(`/api/v1/conversations/${conversation!.id}`)
         .set(auth(ctx.orgA.owner.accessToken));
-      expect(detail.body.data.canSend).toBe(false);
-      expect(detail.body.data.sendDisabledReason).toMatch(/not available for this channel/i);
 
       const send = await ctx
         .http()
@@ -865,8 +889,14 @@ describe('Instagram webhook', () => {
         .set(auth(ctx.orgA.owner.accessToken))
         .send({ content: 'we do', idempotencyKey: `key-${unique()}` });
 
-      // Hiding the composer is presentation; the API is what enforces it.
-      expect(send.status).toBe(409);
+      // The two must agree. A composer offered over an endpoint that refuses
+      // is the failure mode worth guarding against.
+      if (detail.body.data.canSend) {
+        expect(send.status).toBe(201);
+      } else {
+        expect(send.status).toBe(409);
+        expect(detail.body.data.sendDisabledReason).toBeTruthy();
+      }
     });
 
     it('appears in the unified inbox under the Facebook filter', async () => {

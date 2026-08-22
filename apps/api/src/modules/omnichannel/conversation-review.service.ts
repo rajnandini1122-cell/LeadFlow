@@ -216,9 +216,10 @@ export class ConversationReviewService {
     conversation: { id: string; channel: ChannelType; ownerId: string | null; leadId: string | null },
     principal: TenantPrincipal,
   ) {
-    const [integration, lastInboundAt] = await Promise.all([
+    const [integration, lastInboundAt, recipient] = await Promise.all([
       this.repository.findIntegrationForChannel(conversation.channel),
       this.repository.lastInboundAt(conversation.id),
+      this.repository.recipientFor(conversation.id),
     ]);
 
     // Reading a conversation and replying to it are different permissions, so
@@ -228,10 +229,15 @@ export class ConversationReviewService {
     return evaluateSendCapability({
       channel: conversation.channel,
       integration: integration
-        ? { status: integration.status, enabled: integration.enabled }
+        ? {
+            status: integration.status,
+            enabled: integration.enabled,
+            hasCredential: integration.encryptedAccessToken !== null,
+          }
         : null,
       lastInboundAt,
       mayReply,
+      hasRecipient: recipient !== null,
     });
   }
 

@@ -115,6 +115,14 @@ export interface ConversationDetail {
   sendDisabledReason?: string | null;
   /** When the free-form reply window closes, if one applies. */
   windowExpiresAt?: string | null;
+  /**
+   * The provider's own text limit.
+   *
+   * Meta's limits differ per channel — 4096 on WhatsApp, 2000 on Messenger,
+   * 1000 on Instagram — so the composer reads this rather than assuming one
+   * number and letting the provider reject what it accepted.
+   */
+  maxTextLength?: number | null;
   candidateLeads: CandidateLead[];
   messages: ConversationMessage[];
 }

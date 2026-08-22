@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { AppConfig } from '../../../../common/config/config.module';
 import { openSecret, parseEncryptionKey } from '../../../../common/crypto/secret-box';
+import type { ChannelSender, SendResult, SendTextInput } from '../channel-sender';
 
 /**
  * The only code that speaks HTTP to Meta for sending.
@@ -17,22 +18,8 @@ import { openSecret, parseEncryptionKey } from '../../../../common/crypto/secret
  * act on.
  */
 
-export type SendResult =
-  | { ok: true; providerMessageId: string }
-  | {
-      ok: false;
-      /** Safe to show a user. Never a provider body. */
-      message: string;
-      /**
-       * Whether the message may have reached the customer despite the error.
-       * A timeout is uncertain; a 400 is not. The caller uses this to decide
-       * whether a retry could duplicate a customer-facing message.
-       */
-      uncertain: boolean;
-    };
-
 @Injectable()
-export class WhatsAppOutboundService {
+export class WhatsAppOutboundService implements ChannelSender {
   private readonly logger = new Logger(WhatsAppOutboundService.name);
 
   constructor(private readonly config: AppConfig) {}
@@ -43,13 +30,7 @@ export class WhatsAppOutboundService {
    * @param encryptedAccessToken as stored. Decrypted here, used once, and
    *   never returned, logged or attached to an error.
    */
-  async sendText(input: {
-    phoneNumberId: string;
-    encryptedAccessToken: string | null;
-    /** E.164 without the plus, as Meta expects. */
-    recipient: string;
-    body: string;
-  }): Promise<SendResult> {
+  async sendText(input: SendTextInput): Promise<SendResult> {
     if (!input.encryptedAccessToken) {
       return {
         ok: false,
@@ -73,7 +54,7 @@ export class WhatsAppOutboundService {
     }
 
     const version = this.config.get('WHATSAPP_API_VERSION');
-    const url = `https://graph.facebook.com/${version}/${encodeURIComponent(input.phoneNumberId)}/messages`;
+    const url = `https://graph.facebook.com/${version}/${encodeURIComponent(input.accountId)}/messages`;
 
     try {
       const response = await fetch(url, {
@@ -85,7 +66,10 @@ export class WhatsAppOutboundService {
         body: JSON.stringify({
           messaging_product: 'whatsapp',
           recipient_type: 'individual',
-          to: input.recipient,
+          // Meta wants E.164 digits with no plus. Normalised HERE rather than
+          // by the caller, because it is a WhatsApp addressing rule and no
+          // other channel shares it.
+          to: input.recipient.replace(/^\+/, ''),
           type: 'text',
           // Link previews off: a preview is generated from whatever the text
           // contains, which is not something to enable by default on messages
