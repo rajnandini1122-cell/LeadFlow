@@ -39,47 +39,141 @@ export function HomePage(): React.JSX.Element {
   );
 }
 
+/**
+ * The decorative backdrop behind the hero.
+ *
+ * Drawn entirely in CSS — a gradient wash, two soft colour glows and a faint
+ * grid. No image, which means nothing extra to download, nothing to host, and
+ * nothing that can 404 or arrive after the text and shift the layout. It also
+ * stays sharp on any screen density, which a raster background would not.
+ *
+ * `aria-hidden` and pointer-events-none throughout: this is atmosphere, and it
+ * should be invisible to a screen reader and incapable of intercepting a click
+ * meant for the buttons above it.
+ */
+function HeroBackdrop(): React.JSX.Element {
+  return (
+    /*
+     * Fills its PARENT, which is a full-width wrapper.
+     *
+     * An earlier version escaped the centred content column with
+     * `left-1/2 w-screen -ml-[50vw]`. That fought the layout twice over: the
+     * section's own `overflow-x-clip` cropped it straight back to the column,
+     * and `100vw` counts the scrollbar so it risked a horizontal scrollbar of
+     * its own. Letting the wrapper be full width and simply filling it needs
+     * no viewport arithmetic and cannot be clipped.
+     */
+    <div aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden">
+      {/* The wash, fading to white so the section below starts cleanly. */}
+      <div className="absolute inset-0 bg-gradient-to-b from-sky-50 via-sky-50/40 to-white" />
+
+      {/*
+        A faint grid, masked so it dissolves before reaching any edge.
+        Squares rather than dots: it reads as graph paper behind a business
+        tool, and stays quiet enough not to compete with the headline.
+      */}
+      <div
+        className="absolute inset-0"
+        style={{
+          backgroundImage:
+            'linear-gradient(to right, rgb(100 116 139 / 0.10) 1px, transparent 1px),' +
+            'linear-gradient(to bottom, rgb(100 116 139 / 0.10) 1px, transparent 1px)',
+          backgroundSize: '64px 64px',
+          maskImage: 'radial-gradient(ellipse 65% 65% at 50% 30%, black 25%, transparent 75%)',
+          WebkitMaskImage:
+            'radial-gradient(ellipse 65% 65% at 50% 30%, black 25%, transparent 75%)',
+        }}
+      />
+
+      {/*
+        Two soft glows in the product's own accent colours rather than a
+        palette chosen for its own sake — the emerald is the same one that
+        marks a healthy pipeline everywhere else in the app.
+      */}
+      <div className="absolute -top-40 left-[10%] h-[34rem] w-[34rem] rounded-full bg-sky-300/30 blur-[110px]" />
+      <div className="absolute -top-32 right-[8%] h-[30rem] w-[30rem] rounded-full bg-emerald-300/25 blur-[110px]" />
+
+      {/*
+        The bottom edge, dissolved. Without this the backdrop ends on a visible
+        horizontal line partway down the page, which looks like a failure to
+        load rather than a design.
+      */}
+      <div className="absolute inset-x-0 bottom-0 h-48 bg-gradient-to-b from-transparent to-white" />
+    </div>
+  );
+}
+
+/** Only channels that are implemented and covered by tests. */
+const CHANNELS = [
+  { label: 'WhatsApp', icon: '💬' },
+  { label: 'Instagram', icon: '📸' },
+  { label: 'Messenger', icon: '📘' },
+];
+
 function Hero(): React.JSX.Element {
   return (
-    <section className="mx-auto max-w-6xl px-4 pt-16 pb-14 sm:px-6 sm:pt-24 sm:pb-20">
-      <div className="mx-auto max-w-3xl text-center">
-        <p className="mb-5 inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
-          <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" aria-hidden />
-          Early access — no card required
-        </p>
+    <section className="relative isolate overflow-hidden">
+      <HeroBackdrop />
 
-        <h1 className="text-4xl font-semibold tracking-tight text-balance text-slate-900 sm:text-5xl">
-          Never lose another lead
-        </h1>
+      <div className="relative mx-auto max-w-6xl px-4 pt-16 pb-14 sm:px-6 sm:pt-24 sm:pb-20">
+        <div className="mx-auto max-w-3xl text-center">
+          <p className="mb-5 inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" aria-hidden />
+            Early access — no card required
+          </p>
 
-        <p className="mx-auto mt-5 max-w-2xl text-lg text-pretty text-slate-600">
-          LeadFlow keeps every enquiry owned, scheduled and visible. Capture leads, assign them to
-          a salesperson, log every call and message, and see exactly what is overdue — before the
-          customer goes quiet.
-        </p>
+          <h1 className="text-4xl font-semibold tracking-tight text-balance text-slate-900 sm:text-5xl">
+            Never lose another lead
+          </h1>
 
-        <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
-          <Link
-            to="/register"
-            className="w-full rounded-lg bg-slate-900 px-6 py-3 text-sm font-medium text-white transition hover:bg-slate-800 sm:w-auto"
-          >
-            Start free
-          </Link>
-          <Link
-            to="/pricing"
-            className="w-full rounded-lg border border-slate-300 px-6 py-3 text-center text-sm font-medium text-slate-700 transition hover:bg-slate-50 sm:w-auto"
-          >
-            View pricing
-          </Link>
+          <p className="mx-auto mt-5 max-w-2xl text-lg text-pretty text-slate-600">
+            LeadFlow keeps every enquiry owned, scheduled and visible. Capture leads, assign them to
+            a salesperson, log every call and message, and see exactly what is overdue — before the
+            customer goes quiet.
+          </p>
+
+          <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
+            <Link
+              to="/register"
+              className="w-full rounded-lg bg-slate-900 px-6 py-3 text-sm font-medium text-white transition hover:bg-slate-800 sm:w-auto"
+            >
+              Start free
+            </Link>
+            <Link
+              to="/pricing"
+              className="w-full rounded-lg border border-slate-300 px-6 py-3 text-center text-sm font-medium text-slate-700 transition hover:bg-slate-50 sm:w-auto"
+            >
+              View pricing
+            </Link>
+          </div>
+
+          <p className="mt-4 text-xs text-slate-400">
+            Free to start · Set up in a couple of minutes
+          </p>
+
+          {/*
+          The channels that are actually built and tested — WhatsApp,
+          Instagram and Messenger. Nothing aspirational: a marketing page is a
+          promise, and the ones that cost a customer are discovered after they
+          have signed up.
+        */}
+          <div className="mt-10 flex flex-wrap items-center justify-center gap-x-6 gap-y-3">
+            <span className="text-xs font-medium text-slate-400">Captures leads from</span>
+            {CHANNELS.map((channel) => (
+              <span
+                key={channel.label}
+                className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white/70 px-3 py-1.5 text-xs font-medium text-slate-600 shadow-sm backdrop-blur"
+              >
+                <span aria-hidden="true">{channel.icon}</span>
+                {channel.label}
+              </span>
+            ))}
+          </div>
         </div>
 
-        <p className="mt-4 text-xs text-slate-400">
-          Free to start · Set up in a couple of minutes
-        </p>
-      </div>
-
-      <div className="mx-auto mt-14 max-w-4xl">
-        <PipelineIllustration />
+        <div className="mx-auto mt-14 max-w-4xl">
+          <PipelineIllustration />
+        </div>
       </div>
     </section>
   );
@@ -231,9 +325,18 @@ function Benefits(): React.JSX.Element {
 
 function FeatureSummary(): React.JSX.Element {
   const groups = [
-    { title: 'Lead management', items: ['Create, edit and archive', 'Status lifecycle', 'Reassignment'] },
-    { title: 'Contacts', items: ['Shared contact records', 'Duplicate detection', 'Reviewed merge'] },
-    { title: 'Follow-ups', items: ['Schedule and complete', 'Reschedule and cancel', 'Overdue visibility'] },
+    {
+      title: 'Lead management',
+      items: ['Create, edit and archive', 'Status lifecycle', 'Reassignment'],
+    },
+    {
+      title: 'Contacts',
+      items: ['Shared contact records', 'Duplicate detection', 'Reviewed merge'],
+    },
+    {
+      title: 'Follow-ups',
+      items: ['Schedule and complete', 'Reschedule and cancel', 'Overdue visibility'],
+    },
     { title: 'Activities', items: ['Notes and call logging', 'WhatsApp logging', 'Full timeline'] },
     { title: 'Team', items: ['Invitations', 'Roles and permissions', 'Safe offboarding'] },
     { title: 'Reporting', items: ['Dashboard', 'Daily report', 'Team performance'] },
@@ -277,11 +380,26 @@ function FeatureSummary(): React.JSX.Element {
 
 function HowItWorks(): React.JSX.Element {
   const steps = [
-    { title: 'Create your organization', body: 'Sign up and your workspace exists. No setup call.' },
-    { title: 'Invite your sales team', body: 'Send invitations and give each person a role that fits what they do.' },
-    { title: 'Add or import leads', body: 'Enter them as they arrive, or bring a CSV across with a preview before anything is created.' },
-    { title: 'Assign and schedule', body: 'Give every lead an owner and a next step. The system will not let an active lead have neither.' },
-    { title: 'Track and review', body: 'Log calls as they happen and read the daily report each morning.' },
+    {
+      title: 'Create your organization',
+      body: 'Sign up and your workspace exists. No setup call.',
+    },
+    {
+      title: 'Invite your sales team',
+      body: 'Send invitations and give each person a role that fits what they do.',
+    },
+    {
+      title: 'Add or import leads',
+      body: 'Enter them as they arrive, or bring a CSV across with a preview before anything is created.',
+    },
+    {
+      title: 'Assign and schedule',
+      body: 'Give every lead an owner and a next step. The system will not let an active lead have neither.',
+    },
+    {
+      title: 'Track and review',
+      body: 'Log calls as they happen and read the daily report each morning.',
+    },
   ];
 
   return (
@@ -322,8 +440,8 @@ function Ownership(): React.JSX.Element {
               When a salesperson leaves, their customers stay
             </h2>
             <p className="mt-4 text-pretty text-slate-300">
-              Customer relationships belong to the business, not to whoever happened to be
-              handling them. LeadFlow makes that true in practice rather than in principle.
+              Customer relationships belong to the business, not to whoever happened to be handling
+              them. LeadFlow makes that true in practice rather than in principle.
             </p>
           </div>
 

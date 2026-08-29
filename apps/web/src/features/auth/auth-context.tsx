@@ -49,6 +49,20 @@ interface AuthState {
   }) => Promise<void>;
   /** Switches tenant without re-entering credentials. Server validates membership. */
   switchOrganization: (organizationId: string) => Promise<void>;
+  /**
+   * Sign in with a Google ID token.
+   *
+   * Returns `{ needsOrganization: true }` when Google verified somebody who has
+   * no LeadFlow account yet — the one thing Google cannot tell us is which
+   * organization they want, and inventing one from their email domain would
+   * create a tenant named after a mail provider.
+   */
+  loginWithGoogle: (
+    idToken: string,
+    organizationId?: string,
+  ) => Promise<{ needsOrganization: boolean; email?: string | null }>;
+  /** Creates the organization for a Google account that has none. */
+  registerWithGoogle: (idToken: string, organizationName: string) => Promise<void>;
   logout: () => Promise<void>;
   /**
    * Re-reads the signed-in user from the server.
@@ -207,6 +221,60 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
     }
   }, []);
 
+  const loginWithGoogle = useCallback(
+    async (
+      idToken: string,
+      organizationId?: string,
+    ): Promise<{ needsOrganization: boolean; email?: string | null }> => {
+      const result = await apiPost<
+        LoginResponse & { requiresRegistration?: boolean; email?: string | null }
+      >('/auth/google', {
+        idToken,
+        platform: clientPlatform(),
+        ...(organizationId ? { organizationId } : {}),
+      });
+
+      // Verified by Google, but no account here yet. The caller collects an
+      // organization name and calls registerWithGoogle.
+      if (result.requiresRegistration) {
+        return { needsOrganization: true, email: result.email ?? null };
+      }
+
+      if (result.requiresOrganizationSelection) {
+        setPendingOrganizations(result.organizations);
+        return { needsOrganization: false };
+      }
+
+      setPendingOrganizations(null);
+      setSignedOut(false);
+      keepRefreshToken(result.tokens);
+      setAccessToken(result.tokens.accessToken);
+      applyOrganizationFormatting(result.user);
+      setUser(result.user);
+      setStatus('authenticated');
+      return { needsOrganization: false };
+    },
+    [],
+  );
+
+  const registerWithGoogle = useCallback(
+    async (idToken: string, organizationName: string): Promise<void> => {
+      const result = await apiPost<RefreshResult>('/auth/google/register', {
+        idToken,
+        organizationName,
+        platform: clientPlatform(),
+      });
+
+      setSignedOut(false);
+      keepRefreshToken(result.tokens);
+      setAccessToken(result.tokens.accessToken);
+      applyOrganizationFormatting(result.user);
+      setUser(result.user);
+      setStatus('authenticated');
+    },
+    [],
+  );
+
   const logout = useCallback(async (): Promise<void> => {
     try {
       await apiPost('/auth/logout');
@@ -255,6 +323,8 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
       login,
       register,
       switchOrganization,
+      loginWithGoogle,
+      registerWithGoogle,
       logout,
       refreshUser,
       signedOut,
@@ -267,6 +337,8 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
       login,
       register,
       switchOrganization,
+      loginWithGoogle,
+      registerWithGoogle,
       logout,
       refreshUser,
       signedOut,

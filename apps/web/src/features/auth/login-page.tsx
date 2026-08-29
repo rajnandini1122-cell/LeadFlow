@@ -4,14 +4,24 @@ import type { OrganizationSummary } from '@leadflow/api-types';
 import { ApiError } from '../../lib/api-client';
 import { useAuth } from './auth-context';
 import { AuthLayout } from './auth-shell';
+import { GoogleSignInButton } from './google-sign-in';
 
 export function LoginPage(): React.JSX.Element {
-  const { login, status, pendingOrganizations } = useAuth();
+  const { login, loginWithGoogle, registerWithGoogle, status, pendingOrganizations } = useAuth();
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  /*
+   * Held only while a brand-new Google user names their organization.
+   *
+   * Google verified who they are, but not which company they are starting.
+   * The token is kept in memory for that one extra call and never stored.
+   */
+  const [googleToken, setGoogleToken] = useState<string | null>(null);
+  const [organizationName, setOrganizationName] = useState('');
 
   if (status === 'authenticated') return <Navigate to="/dashboard" replace />;
 
@@ -31,10 +41,87 @@ export function LoginPage(): React.JSX.Element {
     }
   };
 
+  const onGoogleToken = async (idToken: string): Promise<void> => {
+    setError(null);
+    setSubmitting(true);
+
+    try {
+      const result = await loginWithGoogle(idToken);
+      // No account yet: keep the token and ask for an organization name.
+      if (result.needsOrganization) setGoogleToken(idToken);
+    } catch (caught) {
+      setError(
+        caught instanceof ApiError ? caught.message : 'Google sign-in failed. Please try again.',
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const createFromGoogle = async (event: FormEvent): Promise<void> => {
+    event.preventDefault();
+    if (!googleToken) return;
+
+    setError(null);
+    setSubmitting(true);
+
+    try {
+      await registerWithGoogle(googleToken, organizationName);
+    } catch (caught) {
+      setError(
+        caught instanceof ApiError ? caught.message : 'Could not create the organization.',
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   return (
     <AuthLayout title="LeadFlow" subtitle="No lead left behind.">
       <>
-        {pendingOrganizations ? (
+        {googleToken ? (
+          <form onSubmit={(event) => void createFromGoogle(event)} className="space-y-4">
+            <p className="text-sm text-pretty text-slate-600">
+              You are signed in with Google. Name your organization to finish — you will be its
+              owner and can invite your team next.
+            </p>
+
+            <Field
+              id="organizationName"
+              label="Organization name"
+              type="text"
+              value={organizationName}
+              onChange={setOrganizationName}
+              autoComplete="organization"
+              required
+            />
+
+            {error && (
+              <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-800">
+                {error}
+              </p>
+            )}
+
+            <button
+              type="submit"
+              disabled={submitting || organizationName.trim().length < 2}
+              className="w-full rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-slate-800 disabled:opacity-50"
+            >
+              {submitting ? 'Creating…' : 'Create organization'}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setGoogleToken(null);
+                setError(null);
+              }}
+              className="w-full text-center text-xs text-slate-500 hover:text-slate-700"
+            >
+              Cancel
+            </button>
+          </form>
+        ) : pendingOrganizations ? (
             <OrganizationChooser
               organizations={pendingOrganizations}
               disabled={submitting}
@@ -42,6 +129,12 @@ export function LoginPage(): React.JSX.Element {
             />
           ) : (
             <form onSubmit={(event) => void submit(event)} className="space-y-4">
+              {/* Renders nothing unless the server says Google is configured. */}
+              <GoogleSignInButton
+                onToken={(token) => void onGoogleToken(token)}
+                disabled={submitting}
+              />
+
               <Field
                 id="email"
                 label="Email"

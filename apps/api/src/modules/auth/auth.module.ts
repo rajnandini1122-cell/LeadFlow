@@ -11,6 +11,7 @@ import { SessionService } from './session.service';
 import { RegistrationService } from './registration.service';
 import { RegistrationRepository } from './registration.repository';
 import { PasswordResetService } from './password-reset.service';
+import { GoogleAuthService } from './google-auth.service';
 import { PasswordResetRepository } from './password-reset.repository';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { PermissionsGuard } from './guards/permissions.guard';
@@ -24,6 +25,7 @@ import { PermissionsGuard } from './guards/permissions.guard';
   imports: [JwtModule.register({}), SubscriptionsModule],
   controllers: [AuthController],
   providers: [
+    GoogleAuthService,
     AuthService,
     AuthRepository,
     PasswordService,

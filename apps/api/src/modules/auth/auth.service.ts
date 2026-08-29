@@ -15,6 +15,7 @@ import { PasswordService } from './password.service';
 import { TokenService } from './token.service';
 import { MembershipCacheService } from './membership-cache.service';
 import { SessionService } from './session.service';
+import { GoogleAuthService } from './google-auth.service';
 import type { LoginDto } from './dto/auth.dto';
 
 export interface RequestMetadata {
@@ -39,6 +40,7 @@ export class AuthService {
     private readonly membershipCache: MembershipCacheService,
     private readonly audit: AuditRepository,
     private readonly sessions: SessionService,
+    private readonly google: GoogleAuthService,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -114,6 +116,105 @@ export class AuthService {
       entityType: 'user',
       entityId: user.id,
       after: { platform: dto.platform ?? 'WEB' },
+      ipAddress: meta.ipAddress,
+      userAgent: meta.userAgent,
+    });
+
+    return {
+      response: {
+        requiresOrganizationSelection: false,
+        tokens,
+        user: toAuthenticatedUser(membership, user),
+      },
+      refreshToken,
+    };
+  }
+
+  /**
+   * Signs in with a verified Google account.
+   *
+   * Everything after the credential check is the SAME machinery the password
+   * login uses — the same membership rules, the same organization selection,
+   * the same session issuing, the same audit trail. Only the way the person
+   * proves who they are differs, and duplicating the rest is how the two paths
+   * would drift until one of them let somebody into an organization the other
+   * would have refused.
+   *
+   * An existing password account with the same address is SIGNED IN, not
+   * refused. Google has verified the address, which is the same fact the
+   * password was standing in for; making the user go back and remember a
+   * password they set months ago would be friction with no security to show
+   * for it. What it must never do is work for an UNVERIFIED Google address,
+   * and that is refused in GoogleAuthService before this method is reached.
+   */
+  async loginWithGoogle(
+    idToken: string,
+    options: { organizationId?: string | undefined; platform?: string | undefined },
+    meta: RequestMetadata,
+  ): Promise<LoginResult> {
+    const identity = await this.google.verify(idToken);
+    const user = await this.repository.findUserByEmail(identity.email);
+
+    if (!user) {
+      /*
+       * No account yet. NOT an error — it is the signup path.
+       *
+       * The client is told to collect an organization name and call the
+       * registration endpoint. Creating one here with a guessed name would
+       * make an organization nobody chose, and organizations are not
+       * something a user should acquire by accident.
+       */
+      return {
+        response: {
+          requiresOrganizationSelection: false,
+          requiresRegistration: true,
+          email: identity.email,
+          fullName: identity.fullName,
+        } as never,
+      };
+    }
+
+    if (user.status === 'SUSPENDED') throw AppException.accountSuspended();
+
+    const memberships = await this.repository.findMembershipsForUser(user.id);
+    const usable = memberships.filter(
+      (m) => m.membershipStatus === 'ACTIVE' && m.organizationStatus !== 'SUSPENDED',
+    );
+
+    if (usable.length === 0) {
+      throw AppException.forbidden(
+        'Your account is not active in any organization. Contact your administrator.',
+      );
+    }
+
+    const membership = this.selectMembership(usable, options.organizationId);
+
+    if (!membership) {
+      const organizations: OrganizationSummary[] = usable.map((m) => ({
+        id: m.organizationId,
+        name: m.organizationName,
+        slug: m.organizationSlug,
+        role: m.role,
+      }));
+      return { response: { requiresOrganizationSelection: true, organizations } };
+    }
+
+    const { tokens, refreshToken } = await this.issueSession(
+      membership,
+      { platform: options.platform } as never,
+      meta,
+    );
+    await this.repository.touchLastLogin(user.id);
+
+    await this.audit.record({
+      action: AUDIT_ACTIONS.LOGIN_SUCCESS,
+      organizationId: membership.organizationId,
+      actorUserId: user.id,
+      entityType: 'user',
+      entityId: user.id,
+      // Recorded, because "how did they get in" is the first question asked
+      // when an account is disputed.
+      after: { platform: options.platform ?? 'WEB', method: 'google' },
       ipAddress: meta.ipAddress,
       userAgent: meta.userAgent,
     });

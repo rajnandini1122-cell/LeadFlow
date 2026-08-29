@@ -169,6 +169,24 @@ export const envSchema = z
      */
     CREDENTIAL_ENCRYPTION_KEY: z.string().optional(),
 
+    /**
+     * Google OAuth client id, for "Continue with Google".
+     *
+     * OPTIONAL, and its absence is a supported state rather than a
+     * misconfiguration: a deployment without it simply does not offer Google
+     * sign-in, and the client hides the button rather than showing one that
+     * fails on click.
+     *
+     * A client ID is PUBLIC by design — it is embedded in every browser that
+     * loads the sign-in button. There is deliberately no client SECRET here:
+     * this flow verifies an ID token that Google issued to the browser, which
+     * needs the id and the audience check, not a secret.
+     *
+     * Created at console.cloud.google.com under APIs & Services → Credentials
+     * → OAuth client ID → Web application.
+     */
+    GOOGLE_CLIENT_ID: z.string().optional(),
+
     THROTTLE_TTL: z.coerce.number().int().positive().default(60),
     THROTTLE_LIMIT: z.coerce.number().int().positive().default(100),
     AUTH_THROTTLE_TTL: z.coerce.number().int().positive().default(900),

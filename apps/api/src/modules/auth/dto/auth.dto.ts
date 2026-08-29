@@ -51,3 +51,43 @@ export class RefreshDto {
   @MaxLength(200)
   refreshToken?: string;
 }
+
+/**
+ * Signing in with Google.
+ *
+ * The ID token is the only credential. Email and name are read from INSIDE it
+ * after verification, never from the request body — a body-supplied email
+ * would let a caller present their own valid Google token and be signed in as
+ * somebody else.
+ */
+export class GoogleSignInDto {
+  @IsString()
+  @MaxLength(4096)
+  idToken!: string;
+
+  /** Which organization to enter, when the account belongs to several. */
+  @IsOptional()
+  @IsUUID()
+  organizationId?: string;
+
+  @IsOptional()
+  @IsIn(['WEB', 'ANDROID', 'IOS'])
+  platform?: 'WEB' | 'ANDROID' | 'IOS';
+}
+
+/** Creating an organization for a Google account that has none yet. */
+export class GoogleRegisterDto {
+  @IsString()
+  @MaxLength(4096)
+  idToken!: string;
+
+  @IsString()
+  @MinLength(2)
+  @MaxLength(120)
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  organizationName!: string;
+
+  @IsOptional()
+  @IsIn(['WEB', 'ANDROID', 'IOS'])
+  platform?: 'WEB' | 'ANDROID' | 'IOS';
+}

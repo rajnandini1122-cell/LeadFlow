@@ -19,11 +19,12 @@ import { AppConfig } from '../../common/config/config.module';
 import { AppException } from '../../common/errors/app.exception';
 import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
 import { AuthService, type RequestMetadata } from './auth.service';
-import { LoginDto, RefreshDto } from './dto/auth.dto';
+import { GoogleRegisterDto, GoogleSignInDto, LoginDto, RefreshDto } from './dto/auth.dto';
 import { RegisterDto } from './dto/register.dto';
 import { SwitchOrganizationDto } from './dto/switch-organization.dto';
 import { RegistrationService } from './registration.service';
 import { PasswordResetService } from './password-reset.service';
+import { GoogleAuthService } from './google-auth.service';
 import {
   ChangePasswordDto,
   ForgotPasswordDto,
@@ -53,6 +54,7 @@ export class AuthController {
     private readonly registration: RegistrationService,
     private readonly passwordReset: PasswordResetService,
     private readonly config: AppConfig,
+    private readonly google: GoogleAuthService,
   ) {}
 
   @Public()
@@ -136,6 +138,85 @@ export class AuthController {
     }
 
     return result.response;
+  }
+
+  /**
+   * Whether Google sign-in is available here.
+   *
+   * Public and unauthenticated, because the login page needs it before anybody
+   * has signed in. It exposes one boolean and the CLIENT ID — which is public
+   * by design, embedded in every browser that renders the button. There is no
+   * client secret in this flow at all.
+   *
+   * The button is hidden when this says false. A Google button that fails on
+   * click reads as a broken product rather than an unconfigured one.
+   */
+  @Public()
+  @Get('providers')
+  @ApiOperation({ summary: 'Which sign-in methods this deployment offers' })
+  providers(): { google: { enabled: boolean; clientId: string | null } } {
+    return {
+      google: {
+        enabled: this.google.enabled,
+        clientId: this.config.get('GOOGLE_CLIENT_ID') ?? null,
+      },
+    };
+  }
+
+  /**
+   * Sign in with a Google account.
+   *
+   * Same throttle as the password login: this is a credential-presenting
+   * endpoint, and leaving it unthrottled would make it the cheap way to probe
+   * for accounts once the password route was rate limited.
+   */
+  @Public()
+  @Post('google')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Sign in with Google' })
+  async google_signIn(
+    @Body() dto: GoogleSignInDto,
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<LoginResponse> {
+    const result = await this.auth.loginWithGoogle(
+      dto.idToken,
+      { organizationId: dto.organizationId, platform: dto.platform },
+      metadataFrom(request),
+    );
+
+    if (result.refreshToken) {
+      this.attachRefreshToken(response, result.refreshToken, dto.platform ?? 'WEB', result.response);
+    }
+
+    return result.response;
+  }
+
+  /**
+   * Create an organization for a Google account that has none.
+   *
+   * A separate call because it needs one thing Google cannot supply: the
+   * organization's name. Inventing one from the email domain would create a
+   * tenant nobody chose, named after a mail provider as often as a company.
+   */
+  @Public()
+  @Post('google/register')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: 'Create an organization using a Google account' })
+  async googleRegister(
+    @Body() dto: GoogleRegisterDto,
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const result = await this.registration.registerWithGoogle(
+      { idToken: dto.idToken, organizationName: dto.organizationName, platform: dto.platform },
+      metadataFrom(request),
+    );
+
+    const payload = { requiresOrganizationSelection: false as const, tokens: result.tokens, user: result.user };
+    this.attachRefreshToken(response, result.refreshToken, dto.platform ?? 'WEB', payload);
+
+    return payload;
   }
 
   @Public()
