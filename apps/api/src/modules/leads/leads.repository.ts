@@ -36,12 +36,14 @@ export class LeadsRepository {
   private listWhere(filters: {
     status?: LeadStatus | undefined;
     assignedToId?: string | undefined;
+    productId?: string | undefined;
     search?: string | undefined;
     restrictToUserId?: string | undefined;
   }): Record<string, unknown> {
     const where: Record<string, unknown> = { deletedAt: null };
     if (filters.status) where['status'] = filters.status;
     if (filters.assignedToId) where['assignedToId'] = filters.assignedToId;
+    if (filters.productId) where['productId'] = filters.productId;
     if (filters.restrictToUserId) where['assignedToId'] = filters.restrictToUserId;
 
     if (filters.search) {
@@ -109,6 +111,9 @@ export class LeadsRepository {
       include: {
         assignedTo: { select: { id: true, fullName: true } },
         assignedBy: { select: { id: true, fullName: true } },
+        // Name and SKU only. The detail page shows what the product IS, not
+        // the whole catalogue row.
+        product: { select: { id: true, name: true, sku: true, active: true } },
       },
     });
   }
@@ -195,6 +200,7 @@ export class LeadsRepository {
     companyName?: string | undefined;
     city?: string | undefined;
     source?: string | undefined;
+    productId?: string | undefined;
     productInterest?: string | undefined;
     estimatedValue?: number | undefined;
     status: LeadStatus;
@@ -225,6 +231,7 @@ export class LeadsRepository {
           companyName: input.companyName ?? null,
           city: input.city ?? null,
           source: input.source ?? null,
+          productId: input.productId ?? null,
           productInterest: input.productInterest ?? null,
           estimatedValue: input.estimatedValue ?? null,
           status: input.status,
@@ -317,6 +324,25 @@ export class LeadsRepository {
   // ---------------------------------------------------------------------------
 
   /** The tenant timezone, which is what "today" means for follow-up buckets. */
+  /**
+   * Whether a product id belongs to THIS organization.
+   *
+   * The tenant extension scopes queries; a foreign key does not. Without this
+   * check, Org A could set productId to Org B's product — the insert would
+   * succeed, the FK is satisfied, and Org B's catalogue entry would start
+   * accumulating Org A's leads in its KPIs. Nothing would look wrong until the
+   * numbers were compared.
+   *
+   * Goes through the scoped client, so a foreign id simply is not found.
+   */
+  async productExists(productId: string): Promise<boolean> {
+    const product = await this.prisma.client.product.findFirst({
+      where: { id: productId },
+      select: { id: true },
+    });
+    return product !== null;
+  }
+
   async organizationTimezone(): Promise<string> {
     const organization = await this.prisma.client.organization.findFirst({
       select: { timezone: true },

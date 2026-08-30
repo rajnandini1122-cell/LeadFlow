@@ -17,6 +17,16 @@ export const RANGE_PRESETS = [
   'last_week',
   'this_month',
   'last_month',
+  /*
+   * Rolling windows, added for product demand trends.
+   *
+   * A trend needs a period it can be compared against one of equal length. A
+   * calendar month cannot do that — February against January compares 28 days
+   * with 31, and demand appears to fall for reasons nobody caused.
+   */
+  'last_7_days',
+  'last_30_days',
+  'last_90_days',
   'custom',
 ] as const;
 
@@ -117,6 +127,22 @@ function spanFor(
       const last = addZonedDays(startOfZonedMonth(today), -1);
       return { first, last };
     }
+
+    /*
+     * Ends YESTERDAY, not today.
+     *
+     * Including a partial day would make the most recent bucket smaller than
+     * the rest for no reason other than the hour somebody looked, which is
+     * exactly the artefact a trend must not show.
+     */
+    case 'last_7_days':
+      return { first: addZonedDays(today, -7), last: addZonedDays(today, -1) };
+
+    case 'last_30_days':
+      return { first: addZonedDays(today, -30), last: addZonedDays(today, -1) };
+
+    case 'last_90_days':
+      return { first: addZonedDays(today, -90), last: addZonedDays(today, -1) };
 
     case 'custom': {
       if (!input.from || !input.to) {

@@ -189,6 +189,7 @@ model Organization {
   subscription Subscription?
 
   channelIntegrations ChannelIntegration[]
+  products            Product[]
   whatsappTemplates   WhatsAppTemplate[]
   conversations       Conversation[]
   messages            Message[]
@@ -507,6 +508,20 @@ model Lead {
   companyName     String?  @map("company_name") @db.VarChar(200)
   city            String?  @db.VarChar(80)
   source          String?  @db.VarChar(60)
+  /// The standardised product this enquiry is FOR — the grouping key for every
+  /// product KPI.
+  ///
+  /// Nullable, and permanently so: leads created before the catalogue existed
+  /// have none, an enquiry can legitimately be for something not yet
+  /// catalogued, and forcing a value would mean guessing one.
+  productId String? @map("product_id") @db.Uuid
+
+  /// What the customer actually asked for, in their words.
+  ///
+  /// Kept ALONGSIDE productId, never replaced by it. "White Onion Powder" is
+  /// the grouping key; "500 kg monthly, food manufacturing use" is the enquiry,
+  /// and no catalogue can carry that. Collapsing the two would destroy the only
+  /// record of what was actually wanted.
   productInterest String?  @map("product_interest") @db.VarChar(200)
   estimatedValue  Decimal? @map("estimated_value") @db.Decimal(14, 2)
 
@@ -558,6 +573,10 @@ model Lead {
 
   organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   contact      Contact?       @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  /// SetNull, never Cascade: deleting a catalogue entry must not delete the
+  /// enquiries that referenced it. The free-text productInterest survives too,
+  /// so the lead still records what was wanted.
+  product      Product?       @relation(fields: [productId], references: [id], onDelete: SetNull)
   assignedTo   User?          @relation("LeadAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
   assignedBy   User?          @relation("LeadAssigner", fields: [assignedById], references: [id], onDelete: SetNull)
   activities   LeadActivity[]
@@ -568,6 +587,11 @@ model Lead {
   @@index([organizationId, status])
   @@index([organizationId, assignedToId, status])
   @@index([organizationId, nextFollowUpAt])
+  /// Every product KPI groups by product within a tenant, and most filter by
+  /// status on top of it.
+  @@index([organizationId, productId, status])
+  /// Demand trend and won/lost aggregation are time-bucketed per product.
+  @@index([organizationId, productId, createdAt])
   @@index([organizationId, mobile])
   @@index([organizationId, contactId])
   @@index([organizationId, createdAt(sort: Desc)])
@@ -1374,4 +1398,51 @@ model UserAvatar {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("user_avatars")
+}
+
+/// A product a tenant sells, and the grouping key for product KPIs.
+///
+/// A real table rather than a string on the lead, because a KPI needs
+/// IDENTITY. Free text cannot be grouped — "Packaging line, 500 units/hr" and
+/// "packaging line" are different strings for the same thing — and a
+/// tenant-configurable string array cannot survive a rename without silently
+/// rewriting history.
+///
+/// Deactivated rather than deleted once it has leads: retiring a product must
+/// not remove it from last quarter's numbers. `active` governs whether it is
+/// OFFERED on new leads, never whether it is REPORTED on old ones.
+model Product {
+  id             String @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String @map("organization_id") @db.Uuid
+
+  /// The display name. Free to change — the id is what leads reference, so a
+  /// rename does not move any historical figure.
+  name String @db.VarChar(150)
+
+  /// The tenant's own code for it. Unique within the organization, which is
+  /// what makes it usable as an import key and a human-stable identifier.
+  sku String @db.VarChar(60)
+
+  /// Free-form grouping, deliberately not an enum: every tenant categorises
+  /// differently and an enum would need a migration per customer.
+  category    String? @db.VarChar(80)
+  description String? @db.VarChar(1000)
+
+  /// Offered on new leads. Historical reporting ignores this entirely.
+  active Boolean @default(true)
+
+  createdBy String?  @map("created_by") @db.Uuid
+  updatedBy String?  @map("updated_by") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  leads        Lead[]
+
+  /// One SKU per tenant. Two products sharing a code would make the code
+  /// useless as an identifier and any import ambiguous.
+  @@unique([organizationId, sku])
+  /// The catalogue screen lists active products by name.
+  @@index([organizationId, active, name])
+  @@map("products")
 }

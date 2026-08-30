@@ -102,6 +102,19 @@ export class CreateLeadDto {
   @MaxLength(60)
   source?: string;
 
+  /**
+   * The standardised product this enquiry is for.
+   *
+   * Optional, and separate from productInterest below. This is the grouping key
+   * every product KPI uses; the free text is what the customer actually asked
+   * for. Both are kept — "White Onion Powder" cannot carry "500 kg monthly,
+   * food manufacturing use", and losing that detail would cost more than the
+   * grouping gains.
+   */
+  @IsOptional()
+  @IsUUID('7', { message: 'must be a valid product id' })
+  productId?: string;
+
   @IsOptional()
   @IsString()
   @MaxLength(200)

@@ -47,6 +47,7 @@ export class LeadsService {
     const filters = {
       status: dto.status,
       assignedToId: dto.assignedToId,
+      productId: dto.productId,
       search: dto.search,
       restrictToUserId: restriction?.assignedToId,
     };
@@ -72,7 +73,16 @@ export class LeadsService {
   async findOne(
     id: string,
     principal: TenantPrincipal,
-  ): Promise<LeadSummary & { activities: unknown[] }> {
+  ): Promise<
+    LeadSummary & {
+      activities: unknown[];
+      /* Both the grouping key and the enquiry text — see the return below. */
+      productId: string | null;
+      product: { id: string; name: string; sku: string; active: boolean } | null;
+      productInterest: string | null;
+      source: string | null;
+    }
+  > {
     // A lead outside the caller's visibility is a 404, exactly like one in
     // another tenant — the response must not confirm it exists.
     const lead = await this.repository.findById(id, visibilityFilter(principal)?.assignedToId);
@@ -81,8 +91,29 @@ export class LeadsService {
 
     const activities = await this.repository.listActivities(id, 50);
 
+    /*
+     * The detail view carries more than a list row.
+     *
+     * `LeadSummary` stays lean on purpose — it is what a page of results
+     * returns, and every field added there is paid for on every row. The
+     * detail page is one record, so it can afford the product and the enquiry
+     * text.
+     */
     return {
       ...toSummary(lead),
+      /*
+       * Both, deliberately.
+       *
+       * `product` is the standardised grouping key every KPI uses;
+       * `productInterest` is what the customer actually asked for. A catalogue
+       * entry cannot carry "500 kg monthly, food manufacturing use", so the
+       * detail page shows the two side by side rather than one standing in for
+       * the other.
+       */
+      productId: lead.productId,
+      product: lead.product,
+      productInterest: lead.productInterest,
+      source: lead.source,
       activities: activities.map((activity) => ({
         id: activity.id,
         type: activity.activityType,
@@ -106,6 +137,7 @@ export class LeadsService {
     const nextFollowUpAt = this.resolveFollowUp(dto, status);
 
     await this.assertAssignableTo(dto.assignedToId);
+    await this.assertProductExists(dto.productId);
 
     // Canonicalise BEFORE the duplicate check, so "+91 98200 11001" and
     // "09820011001" are recognised as the same customer. Null when the lead
@@ -222,6 +254,23 @@ export class LeadsService {
    * non-existent id would otherwise be accepted and another organization's
    * user would surface as the owner of this lead.
    */
+  /**
+   * Rejects a product that is not this organization's.
+   *
+   * The tenant extension scopes queries; the foreign key does not. Without
+   * this, Org A could attach Org B's product and Org B's KPIs would silently
+   * include Org A's leads.
+   */
+  private async assertProductExists(productId?: string): Promise<void> {
+    if (!productId) return;
+
+    if (!(await this.repository.productExists(productId))) {
+      throw AppException.validation('That product does not exist.', {
+        productId: ['not found'],
+      });
+    }
+  }
+
   private async assertAssignableTo(assignedToId?: string): Promise<void> {
     if (!assignedToId) return;
 
@@ -290,6 +339,7 @@ export class LeadsService {
         companyName: dto.companyName,
         city: dto.city,
         source: dto.source,
+        productId: dto.productId,
         productInterest: dto.productInterest,
         estimatedValue: dto.estimatedValue,
         status,

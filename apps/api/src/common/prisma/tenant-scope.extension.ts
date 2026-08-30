@@ -52,6 +52,15 @@ export const TENANT_SCOPED_MODELS: Record<string, string> = {
   Conversation: 'organizationId',
   Message: 'organizationId',
   ContactChannelIdentity: 'organizationId',
+  /*
+   * The product catalogue.
+   *
+   * A product id is what a lead references and what every KPI groups by, so an
+   * unscoped read would let one tenant see another's catalogue AND assign a
+   * foreign product to their own lead — which would then appear in the wrong
+   * organization's numbers.
+   */
+  Product: 'organizationId',
   // A template NAME is what the send API takes, so an unscoped read here would
   // be enough to send as another tenant if any single check above it were ever
   // missed. Scoped for the same reason conversations are.

@@ -1,9 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ERROR_CODES } from '@leadflow/api-types';
 import { AppException } from '../../common/errors/app.exception';
-import { PrismaService } from '../../common/prisma/prisma.service';
 import { TenantContextService } from '../../common/tenancy/tenant-context.service';
 import { detectMimeType } from '../omnichannel/message-attachment';
+import { AvatarRepository } from './avatar.repository';
 
 /**
  * Profile pictures.
@@ -52,7 +52,7 @@ export class AvatarService {
   private readonly logger = new Logger(AvatarService.name);
 
   constructor(
-    private readonly prisma: PrismaService,
+    private readonly repository: AvatarRepository,
     private readonly tenantContext: TenantContextService,
   ) {}
 
@@ -90,10 +90,11 @@ export class AvatarService {
     // Prisma 7 takes a Uint8Array for a Bytes column, not a Node Buffer.
     const data = new Uint8Array(file.buffer);
 
-    const avatar = await this.prisma.client.userAvatar.upsert({
-      where: { userId },
-      create: { userId, data, mimeType: detected, sizeBytes: file.size },
-      update: { data, mimeType: detected, sizeBytes: file.size },
+    const avatar = await this.repository.upsert({
+      userId,
+      data,
+      mimeType: detected,
+      sizeBytes: file.size,
     });
 
     /*
@@ -104,15 +105,15 @@ export class AvatarService {
      * silently failed.
      */
     const url = this.urlFor(userId, avatar.updatedAt);
-    await this.prisma.client.user.update({ where: { id: userId }, data: { avatarUrl: url } });
+    await this.repository.setAvatarUrl(userId, url);
 
     return { avatarUrl: url };
   }
 
   /** Removes it, falling the UI back to initials. */
   async remove(userId: string): Promise<void> {
-    await this.prisma.client.userAvatar.deleteMany({ where: { userId } });
-    await this.prisma.client.user.update({ where: { id: userId }, data: { avatarUrl: null } });
+    await this.repository.remove(userId);
+    await this.repository.setAvatarUrl(userId, null);
   }
 
   /**
@@ -134,10 +135,7 @@ export class AvatarService {
      * tenant they belong to — so the tenant extension has nothing to filter on
      * and the check has to be a real query rather than an implied one.
      */
-    const shared = await this.prisma.client.organizationUser.findFirst({
-      where: { organizationId, userId, status: { in: ['ACTIVE', 'INVITED'] } },
-      select: { id: true },
-    });
+    const shared = await this.repository.sharesOrganization(organizationId, userId);
 
     if (!shared) {
       // 404, not 403. Confirming that a user id exists would make this an
@@ -145,7 +143,7 @@ export class AvatarService {
       throw AppException.notFound(ERROR_CODES.NOT_FOUND, 'Profile picture not found.');
     }
 
-    const avatar = await this.prisma.client.userAvatar.findUnique({ where: { userId } });
+    const avatar = await this.repository.find(userId);
 
     if (!avatar) {
       throw AppException.notFound(ERROR_CODES.NOT_FOUND, 'Profile picture not found.');

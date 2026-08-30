@@ -54,6 +54,28 @@ export class LeadMutationsService {
       if (dto[field] !== undefined) data[field] = dto[field];
     }
 
+    /*
+     * The product, checked against THIS tenant's catalogue.
+     *
+     * The tenant extension scopes queries; the foreign key does not. Without
+     * this, a foreign product id would be accepted and another organization's
+     * catalogue entry would start accumulating our leads in its KPIs.
+     *
+     * An explicit null clears it, which is how a mis-mapped lead is corrected.
+     */
+    if (dto.productId !== undefined) {
+      if (dto.productId === null) {
+        data['productId'] = null;
+      } else {
+        if (!(await this.repository.productExists(dto.productId))) {
+          throw AppException.validation('That product does not exist.', {
+            productId: ['not found'],
+          });
+        }
+        data['productId'] = dto.productId;
+      }
+    }
+
     // Re-canonicalised against the TENANT country, exactly as create does, so
     // an edited number stays comparable for duplicate detection.
     if (dto.mobile !== undefined) data['mobile'] = await this.normaliseMobile(dto.mobile);
