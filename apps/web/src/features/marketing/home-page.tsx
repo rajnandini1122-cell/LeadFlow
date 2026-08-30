@@ -4,6 +4,7 @@ import { SectionHeading } from './marketing-layout';
 import { PricingTable } from './pricing-table';
 import { SALES_EMAIL } from './contact-page';
 import { AndroidDownload } from './android-download';
+import { useHeroBackground } from './use-hero-background';
 import { DemoVideo } from './demo-video';
 
 /**
@@ -52,6 +53,8 @@ export function HomePage(): React.JSX.Element {
  * meant for the buttons above it.
  */
 function HeroBackdrop(): React.JSX.Element {
+  const image = useHeroBackground();
+
   return (
     /*
      * Fills its PARENT, which is a full-width wrapper.
@@ -66,6 +69,29 @@ function HeroBackdrop(): React.JSX.Element {
     <div aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden">
       {/* The wash, fading to white so the section below starts cleanly. */}
       <div className="absolute inset-0 bg-gradient-to-b from-sky-50 via-sky-50/40 to-white" />
+
+      {/*
+        An optional photograph, if one has been dropped into public/hero/.
+        See use-hero-background.ts — with no file the gradient above is the
+        whole background, and nothing looks broken or half-loaded.
+      */}
+      {image && (
+        <>
+          <div
+            className="absolute inset-0 bg-cover bg-center"
+            style={{ backgroundImage: `url(${image})` }}
+          />
+          {/*
+            The scrim, and it is not decoration.
+            Dark headline text over an unknown photograph is a contrast
+            failure waiting for the first image somebody chooses — a bright
+            sky behind it and the copy becomes unreadable. Washing the image
+            towards white keeps the text legible whatever the picture is,
+            which is why the image is allowed through at all.
+          */}
+          <div className="absolute inset-0 bg-white/75 backdrop-blur-[2px]" />
+        </>
+      )}
 
       {/*
         A faint grid, masked so it dissolves before reaching any edge.

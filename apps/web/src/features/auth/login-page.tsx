@@ -4,24 +4,14 @@ import type { OrganizationSummary } from '@leadflow/api-types';
 import { ApiError } from '../../lib/api-client';
 import { useAuth } from './auth-context';
 import { AuthLayout } from './auth-shell';
-import { GoogleSignInButton } from './google-sign-in';
 
 export function LoginPage(): React.JSX.Element {
-  const { login, loginWithGoogle, registerWithGoogle, status, pendingOrganizations } = useAuth();
+  const { login, status, pendingOrganizations } = useAuth();
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-
-  /*
-   * Held only while a brand-new Google user names their organization.
-   *
-   * Google verified who they are, but not which company they are starting.
-   * The token is kept in memory for that one extra call and never stored.
-   */
-  const [googleToken, setGoogleToken] = useState<string | null>(null);
-  const [organizationName, setOrganizationName] = useState('');
 
   if (status === 'authenticated') return <Navigate to="/dashboard" replace />;
 
@@ -41,153 +31,64 @@ export function LoginPage(): React.JSX.Element {
     }
   };
 
-  const onGoogleToken = async (idToken: string): Promise<void> => {
-    setError(null);
-    setSubmitting(true);
-
-    try {
-      const result = await loginWithGoogle(idToken);
-      // No account yet: keep the token and ask for an organization name.
-      if (result.needsOrganization) setGoogleToken(idToken);
-    } catch (caught) {
-      setError(
-        caught instanceof ApiError ? caught.message : 'Google sign-in failed. Please try again.',
-      );
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const createFromGoogle = async (event: FormEvent): Promise<void> => {
-    event.preventDefault();
-    if (!googleToken) return;
-
-    setError(null);
-    setSubmitting(true);
-
-    try {
-      await registerWithGoogle(googleToken, organizationName);
-    } catch (caught) {
-      setError(
-        caught instanceof ApiError ? caught.message : 'Could not create the organization.',
-      );
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
   return (
     <AuthLayout title="LeadFlow" subtitle="No lead left behind.">
       <>
-        {googleToken ? (
-          <form onSubmit={(event) => void createFromGoogle(event)} className="space-y-4">
-            <p className="text-sm text-pretty text-slate-600">
-              You are signed in with Google. Name your organization to finish — you will be its
-              owner and can invite your team next.
-            </p>
-
+        {pendingOrganizations ? (
+          <OrganizationChooser
+            organizations={pendingOrganizations}
+            disabled={submitting}
+            onChoose={(id, event) => void submit(event, id)}
+          />
+        ) : (
+          <form onSubmit={(event) => void submit(event)} className="space-y-4">
             <Field
-              id="organizationName"
-              label="Organization name"
-              type="text"
-              value={organizationName}
-              onChange={setOrganizationName}
-              autoComplete="organization"
+              id="email"
+              label="Email"
+              type="email"
+              value={email}
+              onChange={setEmail}
+              autoComplete="username"
+              required
+            />
+            <Field
+              id="password"
+              label="Password"
+              type="password"
+              value={password}
+              onChange={setPassword}
+              autoComplete="current-password"
               required
             />
 
+            <p className="-mt-2 text-right">
+              <Link
+                to="/forgot-password"
+                className="text-xs text-slate-500 transition hover:text-slate-900 hover:underline"
+              >
+                Forgot password?
+              </Link>
+            </p>
+
             {error && (
-              <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-800">
+              <p role="alert" className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
                 {error}
               </p>
             )}
 
             <button
               type="submit"
-              disabled={submitting || organizationName.trim().length < 2}
-              className="w-full rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-slate-800 disabled:opacity-50"
-            >
-              {submitting ? 'Creating…' : 'Create organization'}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                setGoogleToken(null);
-                setError(null);
-              }}
-              className="w-full text-center text-xs text-slate-500 hover:text-slate-700"
-            >
-              Cancel
-            </button>
-          </form>
-        ) : pendingOrganizations ? (
-            <OrganizationChooser
-              organizations={pendingOrganizations}
               disabled={submitting}
-              onChoose={(id, event) => void submit(event, id)}
-            />
-          ) : (
-            <form onSubmit={(event) => void submit(event)} className="space-y-4">
-              {/* Renders nothing unless the server says Google is configured. */}
-              <GoogleSignInButton
-                onToken={(token) => void onGoogleToken(token)}
-                disabled={submitting}
-              />
-
-              <Field
-                id="email"
-                label="Email"
-                type="email"
-                value={email}
-                onChange={setEmail}
-                autoComplete="username"
-                required
-              />
-              <Field
-                id="password"
-                label="Password"
-                type="password"
-                value={password}
-                onChange={setPassword}
-                autoComplete="current-password"
-                required
-              />
-
-              <p className="-mt-2 text-right">
-                <Link
-                  to="/forgot-password"
-                  className="text-xs text-slate-500 transition hover:text-slate-900 hover:underline"
-                >
-                  Forgot password?
-                </Link>
-              </p>
-
-              {error && (
-                <p role="alert" className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
-                  {error}
-                </p>
-              )}
-
-              <button
-                type="submit"
-                disabled={submitting}
-                className="w-full rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:opacity-50"
-              >
-                {submitting ? 'Signing in…' : 'Sign in'}
-              </button>
-              <p className="text-center text-sm text-slate-500">
-
-                New here?{' '}
-
-                <Link to="/register" className="font-medium text-slate-900 hover:underline">
-
-                  Create an organization
-
-                </Link>
-
-              </p>
-
+              className="w-full rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:opacity-50"
+            >
+              {submitting ? 'Signing in…' : 'Sign in'}
+            </button>
+            <p className="text-center text-sm text-slate-500">
+              New here?{' '}
+              <Link to="/register" className="font-medium text-slate-900 hover:underline">
+                Create an organization
+              </Link>
+            </p>
           </form>
         )}
       </>
