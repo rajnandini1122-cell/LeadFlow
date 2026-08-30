@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from './api-client';
+import { apiBaseUrl } from './platform';
 
 /**
  * An image behind an authenticated endpoint.
@@ -23,9 +24,28 @@ import { api } from './api-client';
 /** url -> object URL, or a promise for one still in flight. */
 const cache = new Map<string, string | Promise<string | null> | null>();
 
+/**
+ * Makes a server-supplied URL safe to pass to the API client.
+ *
+ * The server returns a COMPLETE path — `/api/v1/users/…/avatar` — which is
+ * correct: it is what a browser would use directly. But the axios client
+ * already carries `/api/v1` as its baseURL, and axios treats a leading slash
+ * as relative, so handing it over unchanged produced `/api/v1/api/v1/…` and a
+ * 404. The failure was invisible: a missing picture falls back to initials,
+ * which is exactly what somebody with no picture sees.
+ *
+ * Stripping the prefix here rather than shortening it server-side keeps the
+ * stored URL meaningful on its own, and works whether or not a future caller
+ * passes an already-relative path.
+ */
+function toClientPath(url: string): string {
+  const base = apiBaseUrl();
+  return url.startsWith(base) ? url.slice(base.length) : url;
+}
+
 async function load(url: string): Promise<string | null> {
   try {
-    const response = await api.get<Blob>(url, { responseType: 'blob' });
+    const response = await api.get<Blob>(toClientPath(url), { responseType: 'blob' });
     return URL.createObjectURL(response.data);
   } catch {
     /*

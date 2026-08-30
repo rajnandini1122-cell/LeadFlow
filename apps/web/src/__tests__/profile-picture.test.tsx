@@ -55,6 +55,29 @@ describe('Avatar', () => {
 });
 
 describe('UserAvatar', () => {
+  it('strips the API prefix the server already included', async () => {
+    /*
+     * The server returns a complete path, and the client already carries
+     * `/api/v1` as its baseURL — so passing it through unchanged produced
+     * `/api/v1/api/v1/...` and a 404.
+     *
+     * The failure was INVISIBLE: a missing picture falls back to initials,
+     * which is exactly what somebody without a photograph sees. That is why
+     * this assertion is on the requested path rather than on what renders.
+     */
+    const get = vi
+      .spyOn(apiClient.api, 'get')
+      .mockResolvedValue({ data: new Blob(['x']) } as never);
+
+    render(<UserAvatar name="Dana Whitfield" avatarUrl={AVATAR_URL} />);
+
+    await waitFor(() => expect(get).toHaveBeenCalled());
+
+    const requested = get.mock.calls[0]?.[0] as string;
+    expect(requested).toBe('/users/u-1/avatar?v=123');
+    expect(requested).not.toContain('/api/v1/api/v1');
+  });
+
   it('fetches the picture through the authenticated client', async () => {
     /*
      * The whole reason this component exists. The endpoint requires an
@@ -67,7 +90,9 @@ describe('UserAvatar', () => {
 
     render(<UserAvatar name="Dana Whitfield" avatarUrl={AVATAR_URL} />);
 
-    await waitFor(() => expect(get).toHaveBeenCalledWith(AVATAR_URL, { responseType: 'blob' }));
+    await waitFor(() =>
+      expect(get).toHaveBeenCalledWith('/users/u-1/avatar?v=123', { responseType: 'blob' }),
+    );
     expect(await screen.findByRole('img', { name: 'Dana Whitfield' })).toBeInTheDocument();
   });
 
