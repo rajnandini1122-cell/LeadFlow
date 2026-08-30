@@ -22,6 +22,9 @@ import { ChannelIntegrationsPage } from './features/settings/channel-integration
 import { LeadDetailPage } from './features/leads/lead-detail-page';
 import { ImportLeadsPage } from './features/leads/import-leads-page';
 import { ContactsPage } from './features/contacts/contacts-page';
+import { ProductsPage } from './features/products/products-page';
+import { ProductIntelligencePage } from './features/products/product-intelligence-page';
+import { ProductMappingPage } from './features/products/product-mapping-page';
 import { ContactDetailPage } from './features/contacts/contact-detail-page';
 import { FollowUpsPage } from './features/followups/follow-ups-page';
 import { TeamPage } from './features/team/team-page';
@@ -135,6 +138,10 @@ export function App(): React.JSX.Element {
                 <Route path="leads/review" element={<ChannelReviewPage />} />
                 <Route path="leads/import" element={<ImportLeadsPage />} />
                 <Route path="leads/:id" element={<LeadDetailPage />} />
+                <Route path="products" element={<ProductsPage />} />
+                {/* Before ':id'-style routes would matter; both are literal. */}
+                <Route path="products/mapping" element={<ProductMappingPage />} />
+                <Route path="products/intelligence" element={<ProductIntelligencePage />} />
                 <Route path="contacts" element={<ContactsPage />} />
                 <Route path="contacts/:id" element={<ContactDetailPage />} />
                 <Route path="follow-ups" element={<FollowUpsPage />} />

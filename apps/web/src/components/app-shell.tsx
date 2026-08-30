@@ -46,6 +46,20 @@ const NAV_ITEMS: NavItem[] = [
     requiresOmnichannel: true,
   },
   { to: '/contacts', label: 'Contacts', icon: '⚈', permission: PERMISSIONS.CONTACT_VIEW },
+  /*
+   * Products sit beside Leads, not under Settings.
+   *
+   * The catalogue is read by everyone who creates a lead, and the intelligence
+   * view is a reporting screen — neither is configuration the way channel
+   * integrations are.
+   */
+  { to: '/products', label: 'Products', icon: '◈', permission: PERMISSIONS.ORG_VIEW, exact: true },
+  {
+    to: '/products/intelligence',
+    label: 'Product KPIs',
+    icon: '◐',
+    permission: PERMISSIONS.REPORT_VIEW,
+  },
   { to: '/follow-ups', label: 'Follow-ups', icon: '◷', badge: 'overdue' },
   { to: '/team', label: 'Team', icon: '⚇', permission: PERMISSIONS.USER_VIEW },
   { to: '/reports', label: 'Reports', icon: '▤', permission: PERMISSIONS.REPORT_VIEW, exact: true },

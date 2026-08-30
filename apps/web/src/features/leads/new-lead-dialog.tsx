@@ -1,3 +1,4 @@
+import { useActiveProducts } from '../products/use-products';
 import { useEffect, useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
@@ -88,7 +89,9 @@ export function NewLeadDialog({
   const [companyName, setCompanyName] = useState('');
   const [city, setCity] = useState('');
   const [source, setSource] = useState('');
+  const products = useActiveProducts();
   const [productInterest, setProductInterest] = useState('');
+  const [productId, setProductId] = useState('');
   const [estimatedValue, setEstimatedValue] = useState('');
   const [status, setStatus] = useState<LeadStatus>('NEW');
   const [priority, setPriority] = useState<LeadPriority>('MEDIUM');
@@ -174,6 +177,7 @@ export function NewLeadDialog({
         ...(companyName ? { companyName } : {}),
         ...(city ? { city } : {}),
         ...(source ? { source } : {}),
+        ...(productId ? { productId } : {}),
         ...(productInterest ? { productInterest } : {}),
         ...(estimatedValue ? { estimatedValue: Number(estimatedValue) } : {}),
         status,
@@ -337,11 +341,38 @@ export function NewLeadDialog({
             </Field>
           </div>
 
-          <Field label="Product interest">
+          {/*
+            The product and the enquiry, side by side.
+
+            The dropdown is the standardised grouping key every product KPI
+            uses; the text below is what the customer actually said. Neither
+            replaces the other — "White Onion Powder" cannot carry "500 kg
+            monthly, food manufacturing use", and losing that detail would cost
+            more than the grouping gains.
+          */}
+          <Field
+            label="Product"
+            hint="Groups this lead for product reporting. Optional."
+          >
+            <select
+              value={productId}
+              onChange={(event) => setProductId(event.target.value)}
+              className={inputClass}
+            >
+              <option value="">No specific product</option>
+              {(products.data?.items ?? []).map((product) => (
+                <option key={product.id} value={product.id}>
+                  {product.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+
+          <Field label="Requirement details">
             <input
               value={productInterest}
               onChange={(event) => setProductInterest(event.target.value)}
-              placeholder="What are they asking about?"
+              placeholder="e.g. 500 kg monthly, food manufacturing use"
               className={inputClass}
             />
           </Field>
