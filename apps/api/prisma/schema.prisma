@@ -258,6 +258,18 @@ model User {
   fullName     String     @map("full_name") @db.VarChar(150)
   mobile       String?    @db.VarChar(20)
   avatarUrl    String?    @map("avatar_url") @db.VarChar(500)
+
+  /// Google's subject id, set when an account is CREATED through Google.
+  ///
+  /// Its presence is what makes Google a valid way back in. An account created
+  /// with a password has none, so Google cannot be used to enter it — that
+  /// would let anyone who controls the matching Google address take over an
+  /// account they never registered.
+  ///
+  /// Matched on the SUBJECT rather than the email because Google reuses
+  /// neither: an address can be released and re-registered by somebody else,
+  /// a subject id cannot.
+  googleSubject String? @unique @map("google_subject") @db.VarChar(64)
   status       UserStatus @default(INVITED)
 
   lastLoginAt DateTime? @map("last_login_at") @db.Timestamptz(6)

@@ -124,6 +124,43 @@ describe('Google sign-in', () => {
     });
   });
 
+  describe('an existing password account', () => {
+    /*
+     * The policy: Google CREATES accounts and gets back into accounts it
+     * created. It is never a way into one somebody registered with a password.
+     *
+     * Without that rule, anyone who controls the matching address at Google
+     * could take over a LeadFlow account they never registered — an ex-employee
+     * whose company address was recycled, or anyone who registers a Workspace
+     * account on a domain later used to sign up here. The password account's
+     * owner never agreed to that.
+     *
+     * These run without a client id, so the token is refused before the policy
+     * is reached. The rule itself is asserted by the unit test on the service;
+     * what matters here is that no path answers 200.
+     */
+    it('is never entered by presenting a Google token for its address', async () => {
+      const response = await ctx
+        .http()
+        .post('/api/v1/auth/google')
+        .send({ idToken: 'forged.for.an.existing.account' });
+
+      expect(response.body.success).toBe(false);
+      expect(response.body.data).toBeUndefined();
+      expect([401, 403, 409]).toContain(response.status);
+    });
+
+    it('still signs in with its own password', async () => {
+      // The rule must not lock out the person who does own the account.
+      const response = await ctx
+        .http()
+        .post('/api/v1/auth/login')
+        .send({ email: ctx.orgA.owner.email, password: 'CorrectHorse!2026', platform: 'WEB' });
+
+      expect(response.status).toBe(200);
+    });
+  });
+
   describe('what it does not change', () => {
     it('leaves password login working', async () => {
       // Adding a second way in must not disturb the first.

@@ -49,7 +49,24 @@ export class AuthRepository {
         mobile: true,
         avatarUrl: true,
         status: true,
+        // Which Google account created this one, if any. Decides whether
+        // Google is a valid way back in — see AuthService.loginWithGoogle.
+        googleSubject: true,
       },
+    });
+  }
+
+  /**
+   * Adopts an account that has never been used.
+   *
+   * Only ever called for a row with no password and no existing Google link:
+   * an invitation nobody accepted. Anything else would be attaching a Google
+   * identity to an account somebody already owns.
+   */
+  async linkGoogleAccount(userId: string, googleSubject: string): Promise<void> {
+    await this.prisma.client.user.update({
+      where: { id: userId },
+      data: { googleSubject },
     });
   }
 

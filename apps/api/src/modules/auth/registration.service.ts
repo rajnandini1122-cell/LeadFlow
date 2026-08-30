@@ -67,13 +67,22 @@ export class RegistrationService {
         email: identity.email,
         password: randomBytes(32).toString('base64url'),
         platform: input.platform,
-      } as RegisterDto,
+        // From the verified token, never the request body.
+        googleSubject: identity.subject,
+      } as RegisterDto & { googleSubject: string },
       meta,
     );
   }
 
   async register(
-    dto: RegisterDto,
+    /*
+     * `googleSubject` is deliberately NOT on RegisterDto.
+     *
+     * It is set only by registerWithGoogle, from a verified token. Putting it
+     * on the public DTO would let a request body claim any Google identity and
+     * mint an account that Google sign-in would then accept.
+     */
+    dto: RegisterDto & { googleSubject?: string },
     meta: RequestMetadata,
   ): Promise<{ tokens: TokenPair; user: AuthenticatedUser; refreshToken: string }> {
     if (await this.repository.emailExists(dto.email)) {
@@ -113,6 +122,7 @@ export class RegistrationService {
         fullName: `${dto.firstName} ${dto.lastName}`.trim(),
         ownerRoleId,
         leadSources: DEFAULT_LEAD_SOURCES,
+        ...(dto.googleSubject ? { googleSubject: dto.googleSubject } : {}),
       });
     } catch (error) {
       // Two registrations can agree on the same free slug or email between the

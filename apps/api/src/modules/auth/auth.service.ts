@@ -140,12 +140,24 @@ export class AuthService {
    * would drift until one of them let somebody into an organization the other
    * would have refused.
    *
-   * An existing password account with the same address is SIGNED IN, not
-   * refused. Google has verified the address, which is the same fact the
-   * password was standing in for; making the user go back and remember a
-   * password they set months ago would be friction with no security to show
-   * for it. What it must never do is work for an UNVERIFIED Google address,
-   * and that is refused in GoogleAuthService before this method is reached.
+   * Google is a way to CREATE an account, and a way back into an account it
+   * created — never a way into one somebody else registered with a password.
+   *
+   * That distinction is the whole policy. Signing somebody in just because
+   * Google verified a matching address would mean anyone who controls that
+   * address at Google can take over a LeadFlow account they never registered:
+   * an ex-employee whose company address was recycled, or anyone who registers
+   * a Google Workspace account on a domain later used to sign up here. The
+   * password account's owner never chose to allow that.
+   *
+   * So the account must carry the Google SUBJECT it was created with. Matched
+   * on the subject rather than the email because Google reuses neither — an
+   * address can be released and re-registered by somebody else, a subject id
+   * cannot.
+   *
+   * An account with no password and no subject is one that has never been
+   * used: an invitation that was never accepted. Google adopts it, because
+   * there is no prior owner to displace and no other way in.
    */
   async loginWithGoogle(
     idToken: string,
@@ -175,6 +187,39 @@ export class AuthService {
     }
 
     if (user.status === 'SUSPENDED') throw AppException.accountSuspended();
+
+    /*
+     * The gate. An account is enterable by Google only when Google created it.
+     *
+     * Deliberately explicit rather than a generic failure: the person is
+     * holding a valid Google account and needs to know the account exists and
+     * how to get into it, not that "sign-in failed". There is no enumeration
+     * concern here that the registration endpoint does not already have — it
+     * says the same thing.
+     */
+    if (user.googleSubject !== null && user.googleSubject !== identity.subject) {
+      // The address matches an account created from a DIFFERENT Google
+      // account. Almost certainly a recycled address.
+      throw AppException.forbidden(
+        'This email belongs to an account created with a different Google account. ' +
+          'Contact your administrator.',
+      );
+    }
+
+    if (user.googleSubject === null) {
+      if (user.passwordHash) {
+        throw AppException.forbidden(
+          'An account with this email already exists. Sign in with your email and password.',
+        );
+      }
+
+      /*
+       * No password and no Google link: an invitation nobody ever accepted.
+       * Adopting it is safe — there is no prior owner to displace — and is the
+       * only way that person ever gets in.
+       */
+      await this.repository.linkGoogleAccount(user.id, identity.subject);
+    }
 
     const memberships = await this.repository.findMembershipsForUser(user.id);
     const usable = memberships.filter(
