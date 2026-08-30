@@ -73,5 +73,13 @@ export const AUDIT_ACTIONS = {
   ORGANIZATION_UPDATED: 'organization.updated',
   LEAD_ASSIGNED: 'lead.assigned',
   LEAD_DELETED: 'lead.deleted',
+  ACCOUNT_CREATED: 'account.created',
+  ACCOUNT_UPDATED: 'account.updated',
+  /** Irreversible: two customer histories become one. Both ids are recorded. */
+  ACCOUNT_MERGED: 'account.merged',
+  /** What every acquisition and retention figure is counted from. */
+  ACCOUNT_STATUS_CHANGED: 'account.status_changed',
+  ACCOUNT_LEAD_LINKED: 'account.lead_linked',
+  ACCOUNT_CONTACT_LINKED: 'account.contact_linked',
   SUBSCRIPTION_CHANGED: 'subscription.changed',
 } as const;

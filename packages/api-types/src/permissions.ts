@@ -15,6 +15,19 @@ export const PERMISSIONS = {
   LEAD_DELETE: 'lead.delete',
   LEAD_ASSIGN: 'lead.assign',
 
+  ACCOUNT_VIEW: 'account.view',
+  ACCOUNT_CREATE: 'account.create',
+  ACCOUNT_UPDATE: 'account.update',
+  /** Merging is destructive and irreversible, so it is separate from update. */
+  ACCOUNT_MERGE: 'account.merge',
+  /**
+   * Reclassifying a relationship — PROSPECT to CUSTOMER, or a customer to
+   * former. Separate from ACCOUNT_UPDATE because it is what every retention
+   * and acquisition figure is counted from, so changing it rewrites reported
+   * history in a way that editing an address does not.
+   */
+  ACCOUNT_STATUS_CHANGE: 'account.status.change',
+
   CONTACT_VIEW: 'contact.view',
   CONTACT_UPDATE: 'contact.update',
   /** Merging is destructive and irreversible, so it is separate from update. */
@@ -54,6 +67,16 @@ const SALES_REP_PERMISSIONS: Permission[] = [
   PERMISSIONS.LEAD_VIEW_OWN,
   PERMISSIONS.LEAD_CREATE,
   PERMISSIONS.CONTACT_VIEW,
+  PERMISSIONS.ACCOUNT_VIEW,
+  /*
+   * A rep creating a lead for a company nobody has dealt with before must be
+   * able to record that company. Withholding this would mean either a lead
+   * with no customer attached, or a rep waiting on a manager mid-call — and
+   * the first is how the free-text company field became unusable in the first
+   * place. Duplicate candidates are surfaced on create, so the risk this
+   * carries is a suggestion, not a silent second record.
+   */
+  PERMISSIONS.ACCOUNT_CREATE,
   PERMISSIONS.LEAD_UPDATE,
   PERMISSIONS.ACTIVITY_CREATE,
   PERMISSIONS.ACTIVITY_VIEW,
@@ -68,6 +91,8 @@ const MANAGER_PERMISSIONS: Permission[] = [
   PERMISSIONS.LEAD_VIEW_TEAM,
   PERMISSIONS.LEAD_ASSIGN,
   PERMISSIONS.CONTACT_UPDATE,
+  PERMISSIONS.ACCOUNT_UPDATE,
+  PERMISSIONS.ACCOUNT_STATUS_CHANGE,
   PERMISSIONS.FOLLOW_UP_VIEW_TEAM,
   PERMISSIONS.USER_VIEW,
   PERMISSIONS.DASHBOARD_VIEW_TEAM,
@@ -79,6 +104,7 @@ const ADMIN_PERMISSIONS: Permission[] = [
   PERMISSIONS.LEAD_VIEW_ALL,
   PERMISSIONS.LEAD_DELETE,
   PERMISSIONS.CONTACT_MERGE,
+  PERMISSIONS.ACCOUNT_MERGE,
   PERMISSIONS.LEAD_IMPORT,
   PERMISSIONS.USER_INVITE,
   PERMISSIONS.USER_UPDATE,

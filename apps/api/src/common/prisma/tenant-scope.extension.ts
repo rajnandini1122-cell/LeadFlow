@@ -42,6 +42,16 @@ export const TENANT_SCOPED_MODELS: Record<string, string> = {
   Session: 'organizationId',
   Lead: 'organizationId',
   LeadActivity: 'organizationId',
+  /*
+   * The customer relationship.
+   *
+   * An account id is what leads, contacts and follow-ups reference and what
+   * every customer KPI groups by. An unscoped read would expose one tenant's
+   * entire customer list AND let a foreign account be attached to a local
+   * lead, which would file that revenue under the wrong company. Scoped on
+   * exactly the same fail-closed terms as leads.
+   */
+  Account: 'organizationId',
   FollowUp: 'organizationId',
   Contact: 'organizationId',
   Subscription: 'organizationId',

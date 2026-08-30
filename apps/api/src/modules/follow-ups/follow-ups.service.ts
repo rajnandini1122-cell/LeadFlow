@@ -17,13 +17,23 @@ import type {
 
 export interface FollowUpView {
   id: string;
-  leadId: string;
-  leadNumber: string;
-  leadName: string;
+  /**
+   * The opportunity, when there is one.
+   *
+   * Null for an account-level follow-up — "call ABC Foods on Monday about a
+   * repeat order", which is real work with no open enquiry behind it. Every
+   * lead-derived field below is null in that case for the same reason.
+   */
+  leadId: string | null;
+  leadNumber: string | null;
+  leadName: string | null;
+  /** The customer, when the follow-up is on the relationship rather than a deal. */
+  accountId: string | null;
+  accountName: string | null;
   companyName: string | null;
   mobile: string | null;
-  leadStatus: string;
-  leadPriority: string;
+  leadStatus: string | null;
+  leadPriority: string | null;
   /** Already fetched for the row; surfaced so a report can total value at risk. */
   estimatedValue: string | null;
   scheduledAt: string;
@@ -132,13 +142,33 @@ export class FollowUpsService {
     principal: TenantPrincipal,
   ): Promise<{ followUp: FollowUpView; nextFollowUpAt: string | null }> {
     const existing = await this.requireOwnFollowUp(id, principal);
-    const leadStatusAfter = (dto.leadStatus ?? existing.lead.status) as LeadStatus;
-    const leadStaysOpen = !isTerminal(leadStatusAfter);
+
+    /*
+     * The "no lead left behind" rule applies to a LEAD.
+     *
+     * An account-level follow-up has no pipeline behind it, so completing one
+     * without scheduling another leaves nothing forgotten — there is no open
+     * enquiry to forget. Applying the lead rule here would force a rep to
+     * schedule a perpetual call on every customer they ever spoke to.
+     *
+     * For a lead the rule is unchanged and just as strict.
+     */
+    const leadStatusAfter = existing.lead
+      ? ((dto.leadStatus ?? existing.lead.status) as LeadStatus)
+      : null;
+    const leadStaysOpen = leadStatusAfter !== null && !isTerminal(leadStatusAfter);
 
     if (leadStaysOpen && !dto.nextFollowUpAt) {
       throw AppException.validation(
         'Schedule the next follow-up, or mark the lead won or lost.',
         { nextFollowUpAt: ['is required while the lead is still open'] },
+      );
+    }
+
+    if (!existing.lead && dto.leadStatus) {
+      throw AppException.validation(
+        'This follow-up is on a customer, not on a lead, so it has no lead status to set.',
+        { leadStatus: ['not applicable to an account follow-up'] },
       );
     }
 
@@ -159,7 +189,7 @@ export class FollowUpsService {
       );
     }
 
-    if (dto.leadStatus && dto.leadStatus !== existing.lead.status) {
+    if (existing.leadId && dto.leadStatus && dto.leadStatus !== existing.lead?.status) {
       await this.leads.applyStatusChange({
         leadId: existing.leadId,
         status: dto.leadStatus,
@@ -169,9 +199,15 @@ export class FollowUpsService {
       });
     }
 
-    if (dto.nextFollowUpAt && leadStaysOpen) {
+    /*
+     * A next action is scheduled when the lead stays open, and is ALLOWED on an
+     * account follow-up when the caller asks for one — a rep who says "call
+     * them again in a month" should get that, without a lead existing.
+     */
+    if (dto.nextFollowUpAt && (leadStaysOpen || !existing.leadId)) {
       await this.repository.create({
         leadId: existing.leadId,
+        accountId: existing.accountId,
         assignedUserId: existing.assignedUserId,
         scheduledAt: parseWhen(dto.nextFollowUpAt),
         type: (dto.nextType ?? existing.type) as FollowUpType,
@@ -179,16 +215,21 @@ export class FollowUpsService {
       });
     }
 
-    const nextFollowUpAt = await this.repository.syncLeadNextFollowUp(existing.leadId);
+    // Only a lead carries the denormalised next_follow_up_at mirror.
+    const nextFollowUpAt = existing.leadId
+      ? await this.repository.syncLeadNextFollowUp(existing.leadId)
+      : null;
 
-    await this.leads.recordActivity({
-      leadId: existing.leadId,
-      activityType: 'FOLLOW_UP_COMPLETED',
-      description: dto.outcome
-        ? `Follow-up completed: ${dto.outcome}`
-        : 'Follow-up completed',
-      performedById: principal.userId,
-    });
+    if (existing.leadId) {
+      await this.leads.recordActivity({
+        leadId: existing.leadId,
+        activityType: 'FOLLOW_UP_COMPLETED',
+        description: dto.outcome
+          ? `Follow-up completed: ${dto.outcome}`
+          : 'Follow-up completed',
+        performedById: principal.userId,
+      });
+    }
 
     const refreshed = await this.repository.findById(id);
 
@@ -218,7 +259,10 @@ export class FollowUpsService {
     // as an orphan and the lead ended up with two open follow-ups.
     const replacement = await this.repository.cancelAndReplace({
       originalId: id,
+      // Carried through so the replacement keeps the original parent. The
+      // CHECK constraint would reject a row with neither.
       leadId: existing.leadId,
+      accountId: existing.accountId,
       assignedUserId: existing.assignedUserId,
       scheduledAt,
       type: (dto.type ?? existing.type) as FollowUpType,
@@ -234,7 +278,7 @@ export class FollowUpsService {
       );
     }
 
-    await this.repository.syncLeadNextFollowUp(existing.leadId);
+    if (existing.leadId) await this.repository.syncLeadNextFollowUp(existing.leadId);
 
     return toView(replacement);
   }
@@ -254,7 +298,12 @@ export class FollowUpsService {
   ): Promise<void> {
     const existing = await this.requireOwnFollowUp(id, principal);
 
-    if (!isTerminal(existing.lead.status as LeadStatus)) {
+    /*
+     * Refusing to strand an open lead. An account follow-up cannot strand
+     * anything — there is no enquiry behind it — so the check applies only
+     * where a lead is actually at stake.
+     */
+    if (existing.leadId && existing.lead && !isTerminal(existing.lead.status as LeadStatus)) {
       const open = await this.repository.listForLead(existing.leadId);
       const otherOpen = open.filter(
         (row) => row.id !== id && ['UPCOMING', 'DUE', 'OVERDUE'].includes(row.status),
@@ -283,7 +332,7 @@ export class FollowUpsService {
       );
     }
 
-    await this.repository.syncLeadNextFollowUp(existing.leadId);
+    if (existing.leadId) await this.repository.syncLeadNextFollowUp(existing.leadId);
   }
 
   // ---------------------------------------------------------------------------
@@ -347,7 +396,9 @@ function parseWhen(value: string): Date {
 
 type FollowUpRow = {
   id: string;
-  leadId: string;
+  /** Exactly one of these two is set. The CHECK constraint guarantees it. */
+  leadId: string | null;
+  accountId: string | null;
   scheduledAt: Date;
   type: string;
   status: string;
@@ -365,24 +416,39 @@ type FollowUpRow = {
     status: string;
     priority: string;
     estimatedValue: { toString(): string } | null;
-  };
+  } | null;
+  account: { id: string; name: string; status: string } | null;
   assignedUser: { id: string; fullName: string };
 };
 
+/**
+ * One row, for a screen.
+ *
+ * Every lead-derived field is null on an account follow-up rather than being
+ * filled with the account's details. A caller that cannot tell the two apart
+ * would show "ABC Foods" in a lead column and link to a lead that does not
+ * exist; nulls make the difference impossible to miss.
+ */
 function toView(row: FollowUpRow): FollowUpView {
-  const name = [row.lead.firstName, row.lead.lastName].filter(Boolean).join(' ').trim();
+  const name = row.lead
+    ? [row.lead.firstName, row.lead.lastName].filter(Boolean).join(' ').trim()
+    : '';
   const open = ['UPCOMING', 'DUE', 'OVERDUE'].includes(row.status);
 
   return {
     id: row.id,
     leadId: row.leadId,
-    leadNumber: row.lead.leadNumber,
-    leadName: name || '(no name)',
-    companyName: row.lead.companyName,
-    mobile: row.lead.mobile,
-    leadStatus: row.lead.status,
-    leadPriority: row.lead.priority,
-    estimatedValue: row.lead.estimatedValue?.toString() ?? null,
+    leadNumber: row.lead?.leadNumber ?? null,
+    leadName: row.lead ? name || '(no name)' : null,
+    accountId: row.accountId,
+    accountName: row.account?.name ?? null,
+    // The account's own name stands in as the company for an account-level
+    // follow-up: it IS the company, so a list can render one column honestly.
+    companyName: row.lead ? row.lead.companyName : (row.account?.name ?? null),
+    mobile: row.lead?.mobile ?? null,
+    leadStatus: row.lead?.status ?? null,
+    leadPriority: row.lead?.priority ?? null,
+    estimatedValue: row.lead?.estimatedValue?.toString() ?? null,
     scheduledAt: row.scheduledAt.toISOString(),
     type: row.type,
     status: row.status,

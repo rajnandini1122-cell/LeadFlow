@@ -343,6 +343,21 @@ export class LeadsRepository {
     return product !== null;
   }
 
+  /**
+   * Whether an account id belongs to THIS organization.
+   *
+   * Read through the tenant-scoped client, so an id from another organization
+   * simply does not resolve. See assertAccountExists in the service for why
+   * this check has to exist at all.
+   */
+  async accountExists(accountId: string): Promise<boolean> {
+    const account = await this.prisma.client.account.findFirst({
+      where: { id: accountId, deletedAt: null },
+      select: { id: true },
+    });
+    return account !== null;
+  }
+
   async organizationTimezone(): Promise<string> {
     const organization = await this.prisma.client.organization.findFirst({
       select: { timezone: true },

@@ -138,6 +138,7 @@ export class LeadsService {
 
     await this.assertAssignableTo(dto.assignedToId);
     await this.assertProductExists(dto.productId);
+    await this.assertAccountExists(dto.accountId);
 
     // Canonicalise BEFORE the duplicate check, so "+91 98200 11001" and
     // "09820011001" are recognised as the same customer. Null when the lead
@@ -267,6 +268,25 @@ export class LeadsService {
     if (!(await this.repository.productExists(productId))) {
       throw AppException.validation('That product does not exist.', {
         productId: ['not found'],
+      });
+    }
+  }
+
+  /**
+   * Rejects an account that is not this organization's.
+   *
+   * The same gap the product check closes, and it matters more here. The tenant
+   * extension scopes QUERIES; a foreign key assignment is not a query. Without
+   * this, Org A could set accountId to one of Org B's customers — the insert
+   * would succeed, the foreign key would be satisfied, and Org B's Customer 360
+   * would quietly start showing Org A's opportunities and revenue.
+   */
+  private async assertAccountExists(accountId?: string): Promise<void> {
+    if (!accountId) return;
+
+    if (!(await this.repository.accountExists(accountId))) {
+      throw AppException.validation('That customer does not exist.', {
+        accountId: ['not found'],
       });
     }
   }

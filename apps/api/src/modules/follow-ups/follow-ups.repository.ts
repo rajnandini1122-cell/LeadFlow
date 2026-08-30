@@ -35,6 +35,10 @@ export class FollowUpsRepository {
         estimatedValue: true,
       },
     },
+    /// A follow-up hangs off EITHER a lead or an account, never both, so one
+    /// of these two is always null. The CHECK constraint guarantees exactly
+    /// one is present.
+    account: { select: { id: true, name: true, status: true } },
     assignedUser: { select: { id: true, fullName: true } },
   };
 
@@ -88,8 +92,26 @@ export class FollowUpsRepository {
     });
   }
 
+  /**
+   * Follow-ups owed on an account itself.
+   *
+   * Deliberately does NOT roll up the account's leads. Customer 360 shows those
+   * under their own opportunities, and merging the two here would make it
+   * impossible to tell "we owe this customer a call" from "we owe this deal a
+   * call" — which is the whole reason account-level follow-ups exist.
+   */
+  async listForAccount(accountId: string) {
+    return this.prisma.client.followUp.findMany({
+      where: { accountId },
+      include: this.include,
+      orderBy: { scheduledAt: 'desc' },
+    });
+  }
+
   async create(input: {
-    leadId: string;
+    /** Exactly one of leadId and accountId. The CHECK constraint enforces it. */
+    leadId?: string | null | undefined;
+    accountId?: string | null | undefined;
     assignedUserId: string;
     scheduledAt: Date;
     type: FollowUpType;
@@ -102,7 +124,8 @@ export class FollowUpsRepository {
     return this.prisma.client.followUp.create({
       data: {
         organizationId,
-        leadId: input.leadId,
+        leadId: input.leadId ?? null,
+        accountId: input.accountId ?? null,
         assignedUserId: input.assignedUserId,
         scheduledAt: input.scheduledAt,
         type: input.type,
@@ -168,7 +191,9 @@ export class FollowUpsRepository {
    */
   async cancelAndReplace(input: {
     originalId: string;
-    leadId: string;
+    /** Carried from the original, so a replacement keeps the same parent. */
+    leadId?: string | null | undefined;
+    accountId?: string | null | undefined;
     assignedUserId: string;
     scheduledAt: Date;
     type: FollowUpType;
@@ -195,7 +220,8 @@ export class FollowUpsRepository {
       const replacement = await tx.followUp.create({
         data: {
           organizationId,
-          leadId: input.leadId,
+          leadId: input.leadId ?? null,
+          accountId: input.accountId ?? null,
           assignedUserId: input.assignedUserId,
           scheduledAt: input.scheduledAt,
           type: input.type,
@@ -214,15 +240,21 @@ export class FollowUpsRepository {
 
       // The chain of attempts is the signal a manager reads, so the timeline
       // entry commits with the reschedule rather than after it.
-      await tx.leadActivity.create({
-        data: {
-          organizationId,
-          leadId: input.leadId,
-          activityType: 'FOLLOW_UP_RESCHEDULED',
-          description: `Rescheduled to ${input.scheduledAt.toISOString()}`,
-          performedById: input.actorId,
-        },
-      });
+      //
+      // Only for a lead: LeadActivity requires a lead, and an account-level
+      // follow-up has none. Its history is the follow-up chain itself, which
+      // rescheduledToId already records.
+      if (input.leadId) {
+        await tx.leadActivity.create({
+          data: {
+            organizationId,
+            leadId: input.leadId,
+            activityType: 'FOLLOW_UP_RESCHEDULED',
+            description: `Rescheduled to ${input.scheduledAt.toISOString()}`,
+            performedById: input.actorId,
+          },
+        });
+      }
 
       return replacement;
     });

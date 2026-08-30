@@ -115,6 +115,18 @@ export class CreateLeadDto {
   @IsUUID('7', { message: 'must be a valid product id' })
   productId?: string;
 
+  /**
+   * The customer this opportunity belongs to.
+   *
+   * Optional and permanently so: an enquiry can legitimately come from a
+   * private individual, or from a company nobody has recorded yet. Attaching
+   * one is what makes a repeat customer's second enquiry show up as repeat
+   * business rather than as a new customer.
+   */
+  @IsOptional()
+  @IsUUID('7', { message: 'must be a valid account id' })
+  accountId?: string;
+
   @IsOptional()
   @IsString()
   @MaxLength(200)
