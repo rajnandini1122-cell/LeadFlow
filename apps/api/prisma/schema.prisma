@@ -174,6 +174,17 @@ model Organization {
   country  String             @default("US") @db.VarChar(2)
   status   OrganizationStatus @default(TRIAL)
 
+  /// Soft delete, for recovery.
+  ///
+  /// Every tenant table cascades from this row, so a hard DELETE destroys an
+  /// entire customer in one statement with no undo. There is deliberately no
+  /// API that deletes an organization; this column exists so the day one is
+  /// needed the safe implementation is the obvious one, and so a manual
+  /// database operation has a reversible alternative beside it.
+  ///
+  /// A soft-deleted organization cannot authenticate.
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -190,6 +201,7 @@ model Organization {
 
   channelIntegrations ChannelIntegration[]
   accounts            Account[]
+  notifications       Notification[]
   products            Product[]
   whatsappTemplates   WhatsAppTemplate[]
   conversations       Conversation[]
@@ -299,6 +311,7 @@ model User {
   leadsAssignedByMe Lead[]               @relation("LeadAssigner")
   followUps         FollowUp[]           @relation("FollowUpAssignee")
   ownedAccounts     Account[]            @relation("AccountOwner")
+  notifications     Notification[]
   activities        LeadActivity[]
 
   connectedIntegrations ChannelIntegration[]
@@ -781,6 +794,9 @@ model FollowUp {
   /// already fired must not fire again when a job is retried.
   reminderSentAt    DateTime? @map("reminder_sent_at") @db.Timestamptz(6)
   overdueNotifiedAt DateTime? @map("overdue_notified_at") @db.Timestamptz(6)
+  /// Raised to a manager. The third idempotency marker — without it a retried
+  /// escalation would notify the manager again on every sweep.
+  escalatedAt       DateTime? @map("escalated_at") @db.Timestamptz(6)
 
   createdBy String?  @map("created_by") @db.Uuid
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -1646,4 +1662,76 @@ enum OpportunityKind {
   EXPANSION
 
   @@map("opportunity_kind")
+}
+
+// -----------------------------------------------------------------------------
+// Notifications
+// -----------------------------------------------------------------------------
+
+/// What a notification is about.
+///
+/// Deliberately small and CLOSED. Every value here corresponds to a hard-coded
+/// workflow in the follow-up worker, because a generic workflow engine is
+/// explicitly out of scope — an open-ended type would invite one to be built by
+/// accident, one enum value at a time.
+enum NotificationType {
+  /// A scheduled follow-up has reached its reminder window.
+  FOLLOW_UP_DUE
+  /// A follow-up passed its time and nobody completed it.
+  FOLLOW_UP_OVERDUE
+  /// Overdue past the tenant threshold — raised to a manager.
+  FOLLOW_UP_ESCALATED
+  /// A customer who bought before may be ready to buy again.
+  REPEAT_BUSINESS_CANDIDATE
+
+  @@map("notification_type")
+}
+
+/// Something a person needs to know, delivered in-app.
+///
+/// The reason this is a TABLE rather than a transient push: a notification is
+/// evidence that the system did its job. "No lead left behind" is only a real
+/// property if there is a record that somebody was told — a push that failed to
+/// deliver leaves nothing behind, and nobody can tell afterwards whether the
+/// reminder happened or the rep ignored it.
+///
+/// Push delivery is a separate concern layered on top of this row, never a
+/// replacement for it.
+model Notification {
+  id             String @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String @map("organization_id") @db.Uuid
+  /// The recipient. Always a person, never a role or a broadcast.
+  userId         String @map("user_id") @db.Uuid
+
+  type  NotificationType
+  title String           @db.VarChar(200)
+  body  String?          @db.VarChar(1000)
+
+  /// What it is about, so the UI can deep-link without a second lookup.
+  entityType String? @map("entity_type") @db.VarChar(40)
+  entityId   String? @map("entity_id") @db.Uuid
+
+  /**
+   * THE idempotency mechanism, and the reason a retried job is safe.
+   * A deterministic key — "followup:<id>:DUE" — with a unique index behind it.
+   * A worker that runs twice attempts the same insert twice; the second one
+   * violates the constraint, which is caught and ignored. That is a far
+   * stronger guarantee than checking-then-inserting, which loses the race
+   * between the check and the insert.
+   * Scoped to the organization rather than globally unique, because two tenants
+   * may legitimately generate the same key shape for their own records.
+   */
+  dedupeKey String @map("dedupe_key") @db.VarChar(200)
+
+  readAt    DateTime? @map("read_at") @db.Timestamptz(6)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// What makes a retry a no-op instead of a second alert.
+  @@unique([organizationId, dedupeKey])
+  /// The bell: this user's unread notifications, newest first.
+  @@index([organizationId, userId, readAt, createdAt(sort: Desc)])
+  @@map("notifications")
 }

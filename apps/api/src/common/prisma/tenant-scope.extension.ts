@@ -52,6 +52,15 @@ export const TENANT_SCOPED_MODELS: Record<string, string> = {
    * exactly the same fail-closed terms as leads.
    */
   Account: 'organizationId',
+  /*
+   * Notifications.
+   *
+   * A notification body quotes customer names and deal values, so a leak here
+   * is a leak of exactly what a competitor would want. Scoped on the same
+   * fail-closed terms as everything else — and the background worker reaches
+   * them through runWithTenant, never through system scope.
+   */
+  Notification: 'organizationId',
   FollowUp: 'organizationId',
   Contact: 'organizationId',
   Subscription: 'organizationId',

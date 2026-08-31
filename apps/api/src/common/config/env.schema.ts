@@ -142,6 +142,31 @@ export const envSchema = z
      * directly so a background timer cannot race the assertions or keep the
      * process alive after the suite finishes.
      */
+    /**
+     * Whether THIS process runs queue processors.
+     *
+     * The API and the worker are built from the same image, so without this
+     * every API replica would also sweep — three replicas meaning three
+     * concurrent sweeps. The idempotency markers would hold, but the wasted
+     * queries would not, and the point of a separate process is that
+     * background work does not compete with request latency.
+     *
+     * Default FALSE. A process runs processors only when deliberately told to,
+     * which is the safe default when the same image serves both roles.
+     */
+    WORKER_ENABLED: z
+      .string()
+      .default('false')
+      .transform((value) => value === 'true'),
+    /**
+     * How often the follow-up sweep runs, in seconds.
+     *
+     * Sixty seconds. The sweep is cheap — bounded queries against an index
+     * built for it — and a reminder that arrives up to a minute late is
+     * indistinguishable from one that arrives on time. Anything longer starts
+     * to be visible to a rep watching for a due follow-up.
+     */
+    FOLLOW_UP_SWEEP_INTERVAL_SECONDS: z.coerce.number().int().positive().default(60),
     OUTBOUND_RECOVERY_ENABLED: z
       .string()
       .default('true')

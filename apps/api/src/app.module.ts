@@ -22,6 +22,8 @@ import { OrganizationsModule } from './modules/organizations/organizations.modul
 import { LeadsModule } from './modules/leads/leads.module';
 import { ProductsModule } from './modules/products/products.module';
 import { AccountsModule } from './modules/accounts/accounts.module';
+import { NotificationsModule } from './modules/notifications/notifications.module';
+import { QueuesModule } from './queues/queues.module';
 import { ContactsModule } from './modules/contacts/contacts.module';
 import { OmnichannelModule } from './modules/omnichannel/omnichannel.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
@@ -101,6 +103,8 @@ import { HealthModule } from './modules/health/health.module';
     LeadsModule,
     ProductsModule,
     AccountsModule,
+    NotificationsModule,
+    QueuesModule,
     ContactsModule,
     OmnichannelModule,
     FollowUpsModule,
