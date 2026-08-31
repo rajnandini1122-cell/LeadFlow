@@ -28,7 +28,10 @@ import { MetricsService } from './metrics.service';
            * are different builds. Falls back to 'unknown', which is honest —
            * better than a version string that is the same for every deploy.
            */
-          process.env['RELEASE_SHA'] ?? 'unknown',
+          // Now a validated config key rather than a raw env read, and
+          // REQUIRED in production — errors that cannot be grouped by deploy
+          // make a regression indistinguishable from three-month-old noise.
+          config.get('RELEASE_SHA') ?? 'unknown',
         ),
     },
   ],

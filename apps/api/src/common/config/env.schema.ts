@@ -217,6 +217,15 @@ export const envSchema = z
     AUTH_THROTTLE_TTL: z.coerce.number().int().positive().default(900),
     AUTH_THROTTLE_LIMIT: z.coerce.number().int().positive().default(5),
 
+    /**
+     * The build this process is running.
+     *
+     * Read from the environment rather than package.json: what matters is
+     * which BUILD is deployed, and two deploys of the same version number are
+     * different builds. Required in production — see the check below.
+     */
+    RELEASE_SHA: z.string().optional(),
+
     LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
     CORS_ORIGINS: csv,
   })
@@ -236,6 +245,73 @@ export const envSchema = z
         path: ['CORS_ORIGINS'],
         message: 'must be set explicitly in production',
       });
+    }
+
+    /*
+     * A HALF-CONFIGURED push provider is always a mistake.
+     *
+     * FCM needs all three values. With one or two set, the provider reports
+     * itself unconfigured and every notification is created, persisted, and
+     * silently never delivered — while the process looks entirely healthy.
+     * That is the failure mode this whole class of check exists to prevent, so
+     * it fails at boot in every environment rather than only in production.
+     */
+    const fcmParts = [
+      env.FIREBASE_PROJECT_ID,
+      env.FIREBASE_CLIENT_EMAIL,
+      env.FIREBASE_PRIVATE_KEY,
+    ];
+    const fcmSet = fcmParts.filter(Boolean).length;
+
+    if (fcmSet > 0 && fcmSet < fcmParts.length) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['FIREBASE_PRIVATE_KEY'],
+        message:
+          'FCM needs FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL and ' +
+          'FIREBASE_PRIVATE_KEY together. Partially configured, push is ' +
+          'silently disabled while everything reports healthy.',
+      });
+    }
+
+    if (env.NODE_ENV === 'production') {
+      /*
+       * A WORKER whose entire job is to notify people, deployed with no way to
+       * notify anyone.
+       *
+       * The sweep would run, follow-ups would advance, notifications would be
+       * written — and no phone would ever ring, with every health check green.
+       * A salesperson would learn about it by missing a customer. Refusing to
+       * boot is the only signal that arrives before the damage.
+       *
+       * Only the worker: an API replica has WORKER_ENABLED=false and does not
+       * deliver anything, so push credentials are none of its business.
+       */
+      if (env.WORKER_ENABLED && fcmSet === 0) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['FIREBASE_PROJECT_ID'],
+          message:
+            'a production worker with WORKER_ENABLED=true must have FCM ' +
+            'configured — otherwise it generates notifications nobody can ' +
+            'receive while reporting healthy',
+        });
+      }
+
+      /*
+       * Without a release identifier every deploy looks like the same deploy
+       * in the error tracker, so a regression introduced today groups with
+       * errors from three months ago and nobody can tell what changed.
+       */
+      if (!env.RELEASE_SHA) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['RELEASE_SHA'],
+          message:
+            'must be set in production so errors group by deploy — ' +
+            'see docs/production.md',
+        });
+      }
     }
   });
 

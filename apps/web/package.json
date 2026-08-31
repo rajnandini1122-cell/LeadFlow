@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "LeadFlow web management console — owners, admins and managers",
+  "description": "LeadFlow web management console \u00e2\u20ac\u201d owners, admins and managers",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
@@ -13,7 +13,8 @@
     "test": "vitest run",
     "android:sync": "npm run build && node ../../scripts/strip-apk-from-bundle.mjs && cap sync android",
     "android:open": "cap open android",
-    "android:build": "npm run android:sync && cd android && gradlew.bat assembleDebug"
+    "android:build": "npm run android:sync && cd android && gradlew.bat assembleDebug",
+    "android:release": "node ../../scripts/check-release-config.mjs && npm run build && node ../../scripts/strip-apk-from-bundle.mjs && cap sync android && cd android && gradlew.bat assembleRelease"
   },
   "dependencies": {
     "@capacitor/android": "^7.6.8",

@@ -68,6 +68,20 @@ Beyond the existing `.env.example`, production needs:
 | `DIRECT_DATABASE_URL` | **unpooled** endpoint | Migrations take advisory locks and run DDL, which fails against a transaction-mode pooler |
 | `REDIS_URL` | managed Redis, TLS | Sessions, token deny-list, queue |
 
+### The process refuses to start when these are wrong
+
+Three checks fail at boot rather than letting a process look healthy while a
+capability it exists to provide is silently off:
+
+| Condition | Why it refuses |
+|---|---|
+| FCM partially configured | With one or two of the three values set, the provider reports itself unconfigured. Notifications are created, persisted, and never delivered — every probe green. |
+| `WORKER_ENABLED=true` in production with no FCM | A worker whose entire job is reaching salespeople, deployed with no way to reach them. Somebody finds out by missing a customer. |
+| `RELEASE_SHA` unset in production | Every deploy groups as one deploy in the error tracker, so today's regression is indistinguishable from three-month-old noise. |
+
+An API replica (`WORKER_ENABLED=false`) does NOT need FCM credentials — it
+delivers nothing, and requiring them would put a secret on every web pod.
+
 Secrets come from the platform's secret store. Nothing is baked into the image.
 `.env` and `.env.*` are already git-ignored, and no secret has ever been
 committed — verified with `git ls-files`.
@@ -224,3 +238,20 @@ Before serving a paying customer:
 - [ ] Both alerts configured, and tested by deliberately breaking readiness
 - [ ] Tenant isolation and FK-ownership suites green against the deployed build
 - [ ] Android refresh token moved off `localStorage` (open — see debt D-07)
+
+---
+
+## 8. Android release builds
+
+```bash
+VITE_API_BASE_URL=https://api.your-domain.example npm run android:release -w apps/web
+```
+
+The build REFUSES to produce an artefact that cannot work — no URL, a
+`localhost` or private-network address, or plaintext http. The P2 audit built a
+release APK with no API URL at all: correct at runtime (it throws loudly rather
+than guessing) but only discoverable after signing, uploading and installing it.
+The check now happens before the build.
+
+Debug builds are deliberately exempt: pointing one at a LAN address is exactly
+what testing on a real handset requires.
