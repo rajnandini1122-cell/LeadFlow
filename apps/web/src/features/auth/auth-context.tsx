@@ -17,6 +17,7 @@ import {
 } from '../../lib/api-client';
 import { setFormattingContext } from '../../lib/format';
 import { clientPlatform, storeRefreshToken } from '../../lib/platform';
+import { registerForPush, unregisterFromPush } from '../../lib/push';
 
 interface RefreshResult {
   tokens: TokenPair;
@@ -32,6 +33,31 @@ interface RefreshResult {
  */
 function keepRefreshToken(tokens: TokenPair): void {
   if (tokens.refreshToken) storeRefreshToken(tokens.refreshToken);
+}
+
+/**
+ * Registers this device for push, after sign-in.
+ *
+ * AFTER, deliberately. A push token is meaningless without knowing whose it is,
+ * and asking for notification permission before someone has even logged in is
+ * the prompt everybody declines — and Android only asks once.
+ *
+ * A no-op in a browser, and best-effort everywhere: push failing must never
+ * block a sign-in. The bell keeps working either way, because the notification
+ * is a database row and the push is only a faster copy of it.
+ */
+function enablePush(): void {
+  void registerForPush((route) => {
+    /*
+     * A tap on a cold start arrives before the router exists. Assigning the
+     * location is what makes it work from every app state — background, cold
+     * start and foreground alike — rather than only the one that happens to be
+     * mounted.
+     */
+    window.location.assign(route);
+  }).catch(() => {
+    // Push is unavailable. The app is not.
+  });
 }
 
 interface AuthState {
@@ -120,6 +146,7 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
 
         if (cancelled) return;
         keepRefreshToken(result.tokens);
+        enablePush();
         setSignedOut(false);
         setAccessToken(result.tokens.accessToken);
         applyOrganizationFormatting(result.user);
@@ -163,6 +190,7 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
       setPendingOrganizations(null);
       setSignedOut(false);
       keepRefreshToken(result.tokens);
+      enablePush();
       setAccessToken(result.tokens.accessToken);
       applyOrganizationFormatting(result.user);
         setUser(result.user);
@@ -187,6 +215,7 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
 
       setSignedOut(false);
       keepRefreshToken(result.tokens);
+      enablePush();
       setAccessToken(result.tokens.accessToken);
       applyOrganizationFormatting(result.user);
       setUser(result.user);
@@ -204,6 +233,7 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
     });
 
     keepRefreshToken(result.tokens);
+    enablePush();
     setAccessToken(result.tokens.accessToken);
     applyOrganizationFormatting(result.user);
     setUser(result.user);
@@ -248,6 +278,7 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
       setPendingOrganizations(null);
       setSignedOut(false);
       keepRefreshToken(result.tokens);
+      enablePush();
       setAccessToken(result.tokens.accessToken);
       applyOrganizationFormatting(result.user);
       setUser(result.user);
@@ -267,6 +298,7 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
 
       setSignedOut(false);
       keepRefreshToken(result.tokens);
+      enablePush();
       setAccessToken(result.tokens.accessToken);
       applyOrganizationFormatting(result.user);
       setUser(result.user);
@@ -294,6 +326,11 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
        * trying to win that race, both redirects are made to agree: the guard
        * reads this flag and sends a deliberate sign-out to the front door.
        */
+      // Stops push to THIS device only. By token, so signing out on a phone
+      // does not silence the same person's tablet. Best-effort: a sign-out
+      // must complete even if the call fails.
+      void unregisterFromPush();
+
       setSignedOut(true);
       // Clear local state even if the call failed — the user asked to leave,
       // and the refresh cookie is cleared server-side on the next attempt.

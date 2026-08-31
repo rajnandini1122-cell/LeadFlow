@@ -61,6 +61,15 @@ export const TENANT_SCOPED_MODELS: Record<string, string> = {
    * them through runWithTenant, never through system scope.
    */
   Notification: 'organizationId',
+  /*
+   * Device registrations.
+   *
+   * A row here holds a PUSH TOKEN, which is a credential: anyone with it can
+   * send a notification that appears to come from LeadFlow. Unscoped reads
+   * would expose every tenant's tokens, and unscoped writes would let one
+   * tenant deactivate another's phones.
+   */
+  UserDevice: 'organizationId',
   FollowUp: 'organizationId',
   Contact: 'organizationId',
   Subscription: 'organizationId',

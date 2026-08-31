@@ -202,6 +202,7 @@ model Organization {
   channelIntegrations ChannelIntegration[]
   accounts            Account[]
   notifications       Notification[]
+  userDevices         UserDevice[]
   products            Product[]
   whatsappTemplates   WhatsAppTemplate[]
   conversations       Conversation[]
@@ -312,6 +313,7 @@ model User {
   followUps         FollowUp[]           @relation("FollowUpAssignee")
   ownedAccounts     Account[]            @relation("AccountOwner")
   notifications     Notification[]
+  devices           UserDevice[]
   activities        LeadActivity[]
 
   connectedIntegrations ChannelIntegration[]
@@ -1734,4 +1736,86 @@ model Notification {
   /// The bell: this user's unread notifications, newest first.
   @@index([organizationId, userId, readAt, createdAt(sort: Desc)])
   @@map("notifications")
+}
+
+// -----------------------------------------------------------------------------
+// Push delivery
+// -----------------------------------------------------------------------------
+
+/// Who carries a push token. Kept separate from DevicePlatform, which describes
+/// how a SESSION authenticates — a delivery endpoint and an auth channel are
+/// different things and conflating them is how push tokens end up on a row that
+/// rotates every fifteen minutes.
+enum PushProvider {
+  /// Firebase Cloud Messaging. The only provider today; the enum exists so
+  /// adding a second one is a migration rather than a redesign.
+  FCM
+
+  @@map("push_provider")
+}
+
+/// A device that can receive a push notification.
+///
+/// Deliberately NOT a column on Session, even though `Session.fcmToken` exists
+/// and looks like the obvious home. Refresh rotation REVOKES the old session
+/// row and creates a replacement, so a token stored there would be destroyed on
+/// every refresh — roughly every fifteen minutes. (That column is dead
+/// scaffolding: nothing in the codebase has ever written to it.)
+///
+/// A device outlives sessions, outlives logins, and belongs to a person rather
+/// than to an authentication event. One user legitimately has several: a phone,
+/// a tablet, an old handset they still carry.
+model UserDevice {
+  id             String @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String @map("organization_id") @db.Uuid
+  userId         String @map("user_id") @db.Uuid
+
+  platform DevicePlatform @default(ANDROID)
+  provider PushProvider   @default(FCM)
+
+  /**
+   * The provider's push token.
+   * A CREDENTIAL, and treated as one: never returned by any API, never logged,
+   * never placed in a notification payload or a metric label. Anyone holding it
+   * can send a notification that appears to come from LeadFlow.
+   * Unique per organization rather than globally: the same physical handset can
+   * legitimately be registered by two people in two tenants, and a global
+   * constraint would let one tenant's registration silently deny another's.
+   */
+  token String @db.VarChar(500)
+
+  /// A human label for the device list. Supplied by the client, so treated as
+  /// untrusted display text and length-capped.
+  label String? @db.VarChar(120)
+
+  /**
+   * Whether this device should still receive notifications.
+   * Deactivated rather than deleted when the provider reports the token is
+   * permanently invalid, so the history of what was registered survives and a
+   * re-registration is an update rather than a resurrection.
+   */
+  active Boolean @default(true)
+
+  /// Why it was deactivated, for anyone wondering why a phone stopped buzzing.
+  deactivatedAt     DateTime? @map("deactivated_at") @db.Timestamptz(6)
+  deactivatedReason String?   @map("deactivated_reason") @db.VarChar(120)
+
+  /// Refreshed on every registration. A device that has not been seen for
+  /// months is a candidate for cleanup, not an error.
+  lastSeenAt DateTime @default(now()) @map("last_seen_at") @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Re-registering the same token updates the existing row rather than adding
+  /// a second one. FCM refreshes tokens on reinstall and on some upgrades, and
+  /// without this every refresh would leave a dead row behind that the fan-out
+  /// keeps trying.
+  @@unique([organizationId, token])
+  /// The fan-out query: this user's active devices.
+  @@index([organizationId, userId, active])
+  @@map("user_devices")
 }

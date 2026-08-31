@@ -9,6 +9,7 @@ import { UserAvatar } from './user-avatar';
 import { Copyright, LogoMark } from './brand';
 import { OrganizationSwitcher } from './organization-switcher';
 import { NotificationsMenu, type AttentionItem } from './notifications-menu';
+import { useNotifications } from '../features/notifications/use-notifications';
 import { formatApkSize, useApkManifest } from '../lib/use-apk-manifest';
 
 interface NavItem {
@@ -146,7 +147,24 @@ export function AppShell(): React.JSX.Element {
    * organization without omnichannel simply has fewer rows rather than a list
    * of noughts.
    */
+  /*
+   * Persisted notifications, alongside the derived counts below.
+   *
+   * Both belong. The derived items say what the current data needs; these say
+   * what the system has already told you — and they are the same rows the
+   * Android app shows, so a reminder read on a phone is read here too.
+   */
+  const notifications = useNotifications();
+  const unreadNotifications = notifications.data?.unread ?? 0;
+
   const attention: AttentionItem[] = [
+    {
+      id: 'notifications',
+      count: unreadNotifications,
+      label: `Unread notification${unreadNotifications === 1 ? '' : 's'}`,
+      to: '/follow-ups',
+      tone: 'urgent',
+    },
     {
       id: 'overdue',
       count: overdueCount,

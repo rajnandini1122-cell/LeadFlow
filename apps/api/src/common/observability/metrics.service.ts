@@ -64,6 +64,29 @@ export class MetricsService {
     return sorted[index] ?? null;
   }
 
+  private readonly pushLatencies: number[] = [];
+
+  /**
+   * Push round-trip time, in its own window.
+   *
+   * Kept separate from request latency: a slow provider and a slow API are
+   * different problems with different owners, and averaging them together
+   * hides both.
+   */
+  observePushLatency(milliseconds: number): void {
+    this.pushLatencies.push(milliseconds);
+    if (this.pushLatencies.length > MetricsService.LATENCY_WINDOW) {
+      this.pushLatencies.shift();
+    }
+  }
+
+  pushP95(): number | null {
+    if (this.pushLatencies.length === 0) return null;
+    const sorted = [...this.pushLatencies].sort((a, b) => a - b);
+    const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(0.95 * sorted.length) - 1));
+    return sorted[index] ?? null;
+  }
+
   counter(name: string): number {
     return this.counters.get(name) ?? 0;
   }
@@ -74,6 +97,14 @@ export class MetricsService {
     api: { requests: number; errors: number; errorRate: number | null; p95Ms: number | null };
     database: { queryFailures: number };
     worker: { sweeps: number; failures: number; lastSweepAt: string | null };
+    push: {
+      attempts: number;
+      delivered: number;
+      failed: number;
+      invalidTokens: number;
+      registrations: number;
+      p95Ms: number | null;
+    };
     notifications: { created: number; suppressed: number };
   } {
     const requests = this.counter(METRIC.API_REQUESTS);
@@ -93,6 +124,16 @@ export class MetricsService {
         sweeps: this.counter(METRIC.WORKER_SWEEPS),
         failures: this.counter(METRIC.WORKER_FAILURES),
         lastSweepAt: this.lastSweepAt,
+      },
+      push: {
+        attempts: this.counter('push.attempt'),
+        delivered: this.counter('push.success'),
+        failed: this.counter('push.failure'),
+        // Rising steadily means devices are going stale faster than they are
+        // re-registering, which is a client problem rather than a push one.
+        invalidTokens: this.counter('push.invalid_token'),
+        registrations: this.counter('push.registrations'),
+        p95Ms: this.pushP95(),
       },
       notifications: {
         created: this.counter(METRIC.NOTIFICATIONS_CREATED),

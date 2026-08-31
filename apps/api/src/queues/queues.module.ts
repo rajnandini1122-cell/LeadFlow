@@ -134,6 +134,9 @@ export class FollowUpQueue implements OnApplicationBootstrap, OnModuleDestroy {
 }
 
 @Module({
+  // NotificationsModule exports both the repository (to create) and the
+  // dispatch service (to deliver). The worker uses the same tenant-scoped
+  // paths an HTTP request would.
   imports: [NotificationsModule],
   providers: [FollowUpQueue, FollowUpSweepService, FollowUpSweepRepository],
   exports: [FollowUpSweepService],

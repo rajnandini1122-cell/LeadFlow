@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { TenantContextService } from '../common/tenancy/tenant-context.service';
 import { NotificationsRepository } from '../modules/notifications/notifications.repository';
 import { MetricsService, METRIC } from '../common/observability/metrics.service';
+import { PushDispatchService } from '../modules/notifications/push/push-dispatch.service';
 import { FollowUpSweepRepository } from './follow-up-sweep.repository';
 import { jobPrincipal } from './job-context';
 import {
@@ -56,6 +57,7 @@ export class FollowUpSweepService {
     private readonly notifications: NotificationsRepository,
     private readonly tenantContext: TenantContextService,
     private readonly metrics: MetricsService,
+    private readonly push: PushDispatchService,
   ) {}
 
   /**
@@ -167,7 +169,16 @@ export class FollowUpSweepService {
         dedupeKey: notificationKey(followUp.id, 'REMINDER'),
       });
 
-      if (created) reminders += 1;
+      if (created) {
+        reminders += 1;
+        await this.deliver({
+          userId: followUp.assignedUserId,
+          type: 'FOLLOW_UP_DUE',
+          title: `Follow-up soon: ${describe(followUp)}`,
+          body: followUp.title ?? 'Due shortly',
+          entityId: followUp.id,
+        });
+      }
     }
 
     // --- status transitions, overdue alerts, escalation ---------------------
@@ -214,7 +225,16 @@ export class FollowUpSweepService {
             entityId: followUp.id,
             dedupeKey: notificationKey(followUp.id, 'OVERDUE'),
           });
-          if (created) overdueAlerts += 1;
+          if (created) {
+            overdueAlerts += 1;
+            await this.deliver({
+              userId: followUp.assignedUserId,
+              type: 'FOLLOW_UP_OVERDUE',
+              title: `Overdue: ${describe(followUp)}`,
+              body: followUp.title ?? 'This follow-up is past its time',
+              entityId: followUp.id,
+            });
+          }
         }
       }
 
@@ -249,7 +269,16 @@ export class FollowUpSweepService {
               // key would let the first insert silence the second.
               dedupeKey: notificationKey(followUp.id, `ESCALATED:${managerId}`),
             });
-            if (created) escalations += 1;
+            if (created) {
+              escalations += 1;
+              await this.deliver({
+                userId: managerId,
+                type: 'FOLLOW_UP_ESCALATED',
+                title: `Still overdue: ${describe(followUp)}`,
+                body: followUp.title ?? 'A follow-up has gone unanswered',
+                entityId: followUp.id,
+              });
+            }
           }
         }
       }
@@ -257,10 +286,64 @@ export class FollowUpSweepService {
 
     return { transitioned, reminders, overdueAlerts, escalations };
   }
+
+  /**
+   * Pushes a notification that has ALREADY been persisted.
+   *
+   * Called only when createIfAbsent actually created a row, so the existing
+   * deduplication is what prevents a retry from pushing twice — there is no
+   * second dedupe layer on the delivery side and there does not need to be.
+   *
+   * Runs OUTSIDE any database transaction, and its failure is swallowed. Both
+   * are deliberate:
+   *
+   *   A provider call is a network round trip to a third party with a
+   *   ten-second timeout. Holding a transaction across it would pin a
+   *   connection per notification and exhaust the pool under a slow provider
+   *   while the database was perfectly healthy.
+   *
+   *   A failed push must never fail the sweep. The notification is already
+   *   saved and already visible in the bell; losing the reminder entirely
+   *   because a phone was unreachable is strictly worse than delivering it
+   *   in-app only.
+   */
+  private async deliver(input: {
+    userId: string;
+    type: string;
+    title: string;
+    body: string;
+    entityId: string;
+  }): Promise<void> {
+    try {
+      await this.push.dispatch({
+        userId: input.userId,
+        /*
+         * The persisted notification's id is not threaded through here.
+         * createIfAbsent returns only whether it created a row, and widening it
+         * to return the row would add a RETURNING clause to the hot path for a
+         * field the client can look up from entityId anyway. The client opens
+         * the entity, not the notification.
+         */
+        notificationId: input.entityId,
+        type: input.type,
+        title: input.title,
+        body: input.body,
+        entityType: 'FollowUp',
+        entityId: input.entityId,
+      });
+    } catch (error) {
+      this.logger.warn(
+        { err: error, type: input.type },
+        'Push delivery failed — the notification is saved and still in the bell',
+      );
+    }
+  }
 }
 
 /**
  * What to call this follow-up in a notification.
+ *
+ * (Helper below; `deliver` lives on the class above.)
  *
  * A person reading a phone lock screen needs to know WHO, not which record.
  * Falls back through the identifiers that actually mean something, and never
