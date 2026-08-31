@@ -111,6 +111,56 @@ jobs:
         env:
           CI_USE_EXTERNAL_DB: '1'
 
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Scans TRACKED files only. An untracked local .env is not a leak; a
+      # committed one is, and that distinction is the whole point of the check.
+      - name: Scan tracked files for credentials
+        run: |
+          set -euo pipefail
+
+          echo "--- committed .env files ---"
+          if git ls-files | grep -E '(^|/)\.env($|\.)' | grep -v '\.env\.example$'; then
+            echo "FAIL: a .env file is committed"
+            exit 1
+          fi
+          echo "none"
+
+          echo "--- private keys and provider credentials ---"
+          if git ls-files -z \
+            | xargs -0 grep -lIE 'BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|"type": *"service_account"|AIza[0-9A-Za-z_-]{30}|sk_live_[0-9a-zA-Z]{20}|xox[baprs]-[0-9A-Za-z-]{10}|ghp_[A-Za-z0-9]{36}' 2>/dev/null; then
+            echo "FAIL: a credential pattern is committed"
+            exit 1
+          fi
+          echo "none"
+
+          echo "--- debugging statements in shipped source ---"
+          if git ls-files 'apps/api/src/**/*.ts' 'apps/web/src/**/*.ts' 'apps/web/src/**/*.tsx' \
+            | grep -v '\.spec\.ts$' | grep -v '\.test\.tsx\?$' \
+            | xargs grep -nE '\bdebugger\b|console\.log\(' 2>/dev/null; then
+            echo "FAIL: debugger or console.log in shipped source"
+            exit 1
+          fi
+          echo "none"
+
+      # The redaction rules are a security control, and the previous phase
+      # caught a defect in them where the keyword rule fired before the Bearer
+      # rule and left the token in place. Run them on their own so a failure
+      # here is unmistakable rather than buried in the unit output.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run build -w packages/api-types
+      - run: npm run db:generate -w apps/api
+      - name: Log redaction and error masking
+        run: npm run test -w apps/api -- error-reporter all-exceptions
+
   web:
     name: Web build
     runs-on: ubuntu-latest
