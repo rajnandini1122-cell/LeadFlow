@@ -130,6 +130,33 @@ describe('production configuration', () => {
     });
   });
 
+  it('REJECTS object-storage variables that no longer have a consumer', () => {
+    /*
+     * The five S3_* variables were accepted by the schema and read by nothing:
+     * no SDK, no service, no reference outside the schema and .env.example.
+     * Avatars store bytes in Postgres, and omnichannel media deliberately
+     * stores nothing at all.
+     *
+     * Dead configuration is not harmless. It invites an operator to paste a
+     * real object-storage credential into a production secret store for a
+     * feature that does not exist, where it sits unused and unrotated until
+     * somebody finds it.
+     *
+     * The schema STRIPS rather than rejects, and that is correct: process.env
+     * always carries variables that are none of our business — PATH, HOME, the
+     * platform's own RAILWAY_* — so a strict schema would refuse to boot
+     * anywhere real. What this asserts is the guarantee that matters: even if
+     * somebody sets them, the value never reaches the application, so no code
+     * can quietly start depending on one again.
+     */
+    const parsed = validateEnv(
+      baseEnv({ S3_BUCKET: 'leadflow-uploads', S3_SECRET_ACCESS_KEY: 'x' }),
+    ) as Record<string, unknown>;
+
+    expect(parsed['S3_BUCKET']).toBeUndefined();
+    expect(parsed['S3_SECRET_ACCESS_KEY']).toBeUndefined();
+  });
+
   describe('auth secrets', () => {
     it('REFUSES identical access and refresh secrets', () => {
       // Sharing them lets a refresh token be presented as an access token.

@@ -92,12 +92,6 @@ export const envSchema = z
     ARGON2_TIME_COST: z.coerce.number().int().min(2).default(2),
     ARGON2_PARALLELISM: z.coerce.number().int().min(1).default(1),
 
-    S3_ENDPOINT: z.string().optional(),
-    S3_BUCKET: z.string().optional(),
-    S3_ACCESS_KEY_ID: z.string().optional(),
-    S3_SECRET_ACCESS_KEY: z.string().optional(),
-    S3_REGION: z.string().default('ap-south-1'),
-
     FIREBASE_PROJECT_ID: z.string().optional(),
     FIREBASE_CLIENT_EMAIL: z.string().optional(),
     FIREBASE_PRIVATE_KEY: z.string().optional(),
