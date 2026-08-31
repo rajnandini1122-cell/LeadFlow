@@ -1,3 +1,5 @@
+import type { SecureStorage as SecureStorageType } from '@aparajita/capacitor-secure-storage';
+
 /**
  * Where the app is running, and what that changes.
  *
@@ -80,37 +82,115 @@ export function apiBaseUrl(): string {
 /**
  * The refresh token, when this client is the one holding it.
  *
- * Android only. On the web this is never called: the token is in a cookie the
+ * Android only. On the web this is never called: the token sits in a cookie the
  * browser attaches and this code cannot read, which is the stronger position
  * and stays the default.
  *
- * `localStorage` inside the WebView is not as strong as Android's
- * `EncryptedSharedPreferences`, and this is an honest trade rather than a
- * claim of equivalence. What makes it acceptable here: the WebView loads a
- * fixed bundle from the APK with no remote script origin and no user-supplied
- * HTML, so the XSS surface a browser tab has is largely absent. Moving to
- * encrypted native storage is a plugin swap behind this function, which is why
- * every caller goes through it.
+ * Stored in Android's `EncryptedSharedPreferences` rather than `localStorage`.
+ *
+ * WHAT THAT DOES AND DOES NOT FIX, stated plainly because the distinction is
+ * easy to get wrong:
+ *
+ *   It DOES protect a token at rest. A lost, stolen or rooted handset, an ADB
+ *   backup, another app reading shared storage — in every one of those the
+ *   value is now ciphertext keyed to the device keystore. For a phone carried
+ *   around a market or a warehouse that is the realistic threat.
+ *
+ *   It does NOT stop cross-site scripting. Script running inside the WebView
+ *   holds the app's own bridge privileges, so it can call this plugin and read
+ *   the value back exactly as it could read localStorage. Nothing reachable
+ *   from JavaScript can defend against JavaScript.
+ *
+ * What actually contains that second risk is elsewhere and already in place:
+ * the bundle is local to the APK with no remote script origin, the CSP admits
+ * no third-party script, and refresh rotation with reuse detection means a
+ * stolen token is single-use and its theft is detectable.
  */
 const REFRESH_KEY = 'leadflow.refresh';
 
-export function readStoredRefreshToken(): string | null {
+/**
+ * The synchronous view of the token.
+ *
+ * Native secure storage is asynchronous; `readStoredRefreshToken` is called
+ * from the middle of a request-retry path that cannot await. So the durable
+ * store is encrypted and this cache is what callers read — hydrated once at
+ * startup, written through on every change.
+ *
+ * Memory-only, and deliberately: a copy that outlives the process would defeat
+ * the point of encrypting the durable one.
+ */
+let cachedRefreshToken: string | null = null;
+
+type SecureStorage = typeof SecureStorageType;
+
+/*
+ * Wrapped in an object, and that is load-bearing rather than stylistic.
+ *
+ * A Capacitor plugin is a Proxy that forwards ANY property access to a native
+ * call — including `.then`. Returning it straight out of an async function
+ * makes JavaScript treat it as a thenable and invoke `then()`, which the
+ * bridge forwards to a method no platform implements; the promise then never
+ * settles and every caller hangs. Boxing it means the await sees a plain
+ * object.
+ */
+async function secureStorage(): Promise<{ storage: SecureStorage } | null> {
   if (!isNativeApp()) return null;
+
   try {
-    return globalThis.localStorage?.getItem(REFRESH_KEY) ?? null;
+    const module = await import('@aparajita/capacitor-secure-storage');
+    return { storage: module.SecureStorage };
   } catch {
-    // Storage can be unavailable or throw. A missing token means "sign in
-    // again", which is correct and safe.
+    // Absent in a browser build. Not an error — the web path never stores a
+    // token in the first place.
     return null;
   }
 }
 
+/**
+ * Loads the stored token into memory. Call once, before restoring a session.
+ *
+ * Returns whether a token was found, so the caller can skip a restore attempt
+ * that has nothing to restore from.
+ */
+export async function hydrateRefreshToken(): Promise<boolean> {
+  const box = await secureStorage();
+  if (!box) return false;
+
+  try {
+    const value = await box.storage.get(REFRESH_KEY);
+    cachedRefreshToken = typeof value === 'string' ? value : null;
+  } catch {
+    // A missing or unreadable token means "sign in again", which is correct
+    // and safe. A keystore that has been invalidated — by a factory reset or a
+    // changed screen lock — lands here too.
+    cachedRefreshToken = null;
+  }
+
+  return cachedRefreshToken !== null;
+}
+
+export function readStoredRefreshToken(): string | null {
+  if (!isNativeApp()) return null;
+  return cachedRefreshToken;
+}
+
 export function storeRefreshToken(token: string | null): void {
   if (!isNativeApp()) return;
-  try {
-    if (token) globalThis.localStorage?.setItem(REFRESH_KEY, token);
-    else globalThis.localStorage?.removeItem(REFRESH_KEY);
-  } catch {
-    // Not fatal: the session still works until the access token expires.
-  }
+
+  // The cache updates synchronously so the very next read is correct even
+  // though the durable write is still in flight.
+  cachedRefreshToken = token;
+
+  void (async () => {
+    const box = await secureStorage();
+    if (!box) return;
+
+    try {
+      if (token) await box.storage.set(REFRESH_KEY, token);
+      else await box.storage.remove(REFRESH_KEY);
+    } catch {
+      // Not fatal. The session still works from the cache until the access
+      // token expires; the cost is having to sign in again after a restart.
+    }
+  })();
 }

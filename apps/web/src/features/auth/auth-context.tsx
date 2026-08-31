@@ -16,7 +16,7 @@ import {
   setSessionExpiredHandler,
 } from '../../lib/api-client';
 import { setFormattingContext } from '../../lib/format';
-import { clientPlatform, storeRefreshToken } from '../../lib/platform';
+import { clientPlatform, hydrateRefreshToken, storeRefreshToken } from '../../lib/platform';
 import { registerForPush, unregisterFromPush } from '../../lib/push';
 
 interface RefreshResult {
@@ -134,6 +134,17 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
     let cancelled = false;
 
     const restore = async (): Promise<void> => {
+      /*
+       * Load the stored token into memory FIRST.
+       *
+       * On Android the refresh token now lives in encrypted native storage,
+       * which is asynchronous — and mayHaveSession() below reads it
+       * synchronously. Without this the check would run against an empty cache
+       * on every cold start and sign the user out of a session that was
+       * perfectly valid. A no-op in a browser, where the cookie does this job.
+       */
+      await hydrateRefreshToken();
+
       if (!mayHaveSession()) {
         // App, first launch, nothing stored. Saves a request guaranteed to
         // 401 and the brief "loading" flash that comes with it.

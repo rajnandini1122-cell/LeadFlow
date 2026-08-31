@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "LeadFlow web management console \u00e2\u20ac\u201d owners, admins and managers",
+  "description": "LeadFlow web management console â€” owners, admins and managers",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
@@ -17,6 +17,7 @@
     "android:release": "node ../../scripts/check-release-config.mjs && npm run build && node ../../scripts/strip-apk-from-bundle.mjs && cap sync android && cd android && gradlew.bat assembleRelease"
   },
   "dependencies": {
+    "@aparajita/capacitor-secure-storage": "^7.1.6",
     "@capacitor/android": "^7.6.8",
     "@capacitor/core": "^7.6.8",
     "@capacitor/push-notifications": "^7.0.7",

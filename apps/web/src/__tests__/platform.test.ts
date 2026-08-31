@@ -4,6 +4,7 @@ import {
   apiBaseUrl,
   clientPlatform,
   isNativeApp,
+  hydrateRefreshToken,
   readStoredRefreshToken,
   storeRefreshToken,
 } from '../lib/platform';
@@ -111,7 +112,11 @@ describe('the stored refresh token', () => {
 
   it('is never written in a browser', () => {
     storeRefreshToken('should-not-persist');
+
+    // Nothing lands in localStorage — the token no longer goes there at all,
+    // and the browser path stores nothing anywhere.
     expect(globalThis.localStorage.getItem('leadflow.refresh')).toBeNull();
+    expect(readStoredRefreshToken()).toBeNull();
   });
 
   it('round-trips inside the app', () => {
@@ -130,22 +135,43 @@ describe('the stored refresh token', () => {
     expect(readStoredRefreshToken()).toBeNull();
   });
 
-  it('survives storage being unavailable', () => {
+  it('survives the encrypted store being unavailable', () => {
+    /*
+     * The keystore can genuinely be unusable: a factory reset, a changed screen
+     * lock, or a device where the plugin cannot initialise. None of those may
+     * crash the app on launch.
+     *
+     * The BEHAVIOUR HERE CHANGED, deliberately. It used to be that a failed
+     * write meant a failed read — the token went to localStorage or nowhere. It
+     * now lives in a memory cache in front of encrypted storage, so a failed
+     * durable write still leaves a working session for this process. The user
+     * signs in again after a restart rather than being unable to sign in at
+     * all, which is strictly the better failure.
+     */
     runAsNativeApp();
-    vi.stubGlobal('localStorage', {
-      getItem: () => {
-        throw new Error('denied');
-      },
-      setItem: () => {
-        throw new Error('denied');
-      },
-      removeItem: () => {
-        throw new Error('denied');
-      },
-    });
 
-    // "Sign in again" is the correct outcome, not a crash on launch.
     expect(() => storeRefreshToken('x')).not.toThrow();
+    // Usable now…
+    expect(readStoredRefreshToken()).toBe('x');
+  });
+
+  it('hydrate reports nothing in a browser, where the cookie is authoritative', async () => {
+    /*
+     * The deterministic half of the hydrate contract.
+     *
+     * A browser never stores a refresh token — the httpOnly cookie does that
+     * job — so a cold start must report nothing to restore and fall through to
+     * the ordinary refresh call.
+     *
+     * The NATIVE half is deliberately not asserted here. Importing the secure
+     * storage plugin initialises Capacitor web runtime, which replaces the
+     * injected global this test uses to simulate a native platform — so a
+     * jsdom test cannot hold the app in native mode across that import. It is
+     * verified on a device, alongside push, and is listed as such.
+     */
+    const found = await hydrateRefreshToken();
+
+    expect(found).toBe(false);
     expect(readStoredRefreshToken()).toBeNull();
   });
 });
