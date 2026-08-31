@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { TenantContextService } from '../common/tenancy/tenant-context.service';
 import { NotificationsRepository } from '../modules/notifications/notifications.repository';
+import { MetricsService, METRIC } from '../common/observability/metrics.service';
 import { FollowUpSweepRepository } from './follow-up-sweep.repository';
 import { jobPrincipal } from './job-context';
 import {
@@ -54,6 +55,7 @@ export class FollowUpSweepService {
     private readonly repository: FollowUpSweepRepository,
     private readonly notifications: NotificationsRepository,
     private readonly tenantContext: TenantContextService,
+    private readonly metrics: MetricsService,
   ) {}
 
   /**
@@ -103,6 +105,20 @@ export class FollowUpSweepService {
         );
       }
     }
+
+    /*
+     * Recorded every run, including the quiet ones.
+     *
+     * `lastSweepAt` is what makes a DEAD worker visible: a sweep that stopped
+     * running produces no errors and no logs, so the only evidence is a
+     * timestamp that stops moving. That is the failure this whole feature
+     * exists to prevent, so it is the one most worth monitoring.
+     */
+    this.metrics.recordSweep(result);
+    this.metrics.increment(
+      METRIC.NOTIFICATIONS_CREATED,
+      result.reminders + result.overdueAlerts + result.escalations,
+    );
 
     if (result.transitioned || result.reminders || result.overdueAlerts || result.escalations) {
       this.logger.log(result, 'Follow-up sweep completed');

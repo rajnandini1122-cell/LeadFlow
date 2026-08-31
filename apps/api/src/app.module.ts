@@ -24,6 +24,7 @@ import { ProductsModule } from './modules/products/products.module';
 import { AccountsModule } from './modules/accounts/accounts.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { QueuesModule } from './queues/queues.module';
+import { ObservabilityModule } from './common/observability/observability.module';
 import { ContactsModule } from './modules/contacts/contacts.module';
 import { OmnichannelModule } from './modules/omnichannel/omnichannel.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
@@ -104,6 +105,7 @@ import { HealthModule } from './modules/health/health.module';
     ProductsModule,
     AccountsModule,
     NotificationsModule,
+    ObservabilityModule,
     QueuesModule,
     ContactsModule,
     OmnichannelModule,
