@@ -91,7 +91,7 @@ and broke every subsequent query in the same process. It is now
 `INSERT ... ON CONFLICT DO NOTHING`, which is better on both databases.
 
 Connection pool: start at `DATABASE_POOL_MAX=10` per API replica. Saturation
-shows up in `database.query_failures` on `/metrics` before it shows up as
+shows up in `database.query_failures` on `/api/metrics` before it shows up as
 latency.
 
 ---
@@ -174,7 +174,7 @@ retained.
 
 ### Alert on two things
 
-1. **Error-rate spike** — `api.errorRate` on `/metrics`, thresholded against a
+1. **Error-rate spike** — `api.errorRate` on `/api/metrics`, thresholded against a
    week of real traffic.
 2. **Health-check failure** — `/readiness` non-200 twice consecutively.
 
@@ -182,7 +182,7 @@ More alerts than this get muted, and a muted alert is worse than none.
 
 ### Watch, but do not page on
 
-- `worker.lastSweepAt` — **the most important single value here.** A sweep that
+- `worker.lastSweepAt` (on `/api/metrics`) — **the most important single value here.** A sweep that
   stops running produces no errors and no logs. A timestamp that stops moving is
   the only evidence, and a dead sweep means nobody is being reminded of
   anything: the exact failure the worker exists to prevent.
