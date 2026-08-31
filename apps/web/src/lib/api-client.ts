@@ -184,8 +184,25 @@ export async function apiGet<T>(url: string, params?: Record<string, unknown>): 
   return unwrap(response.data);
 }
 
-export async function apiPost<T>(url: string, body?: unknown): Promise<T> {
-  const response = await api.post<ApiResponse<T>>(url, body ?? {}, formDataConfig(body));
+export async function apiPost<T>(
+  url: string,
+  body?: unknown,
+  /**
+   * Extra request options, for the rare call that needs a header.
+   *
+   * Merged AFTER formDataConfig rather than replacing it, so a caller adding a
+   * header to a file upload cannot accidentally undo the Content-Type handling
+   * below and send a multipart body labelled as JSON.
+   */
+  options?: { headers?: Record<string, string> },
+): Promise<T> {
+  const config = formDataConfig(body);
+
+  const merged = options?.headers
+    ? { ...config, headers: { ...(config?.headers ?? {}), ...options.headers } }
+    : config;
+
+  const response = await api.post<ApiResponse<T>>(url, body ?? {}, merged);
   return unwrap(response.data);
 }
 

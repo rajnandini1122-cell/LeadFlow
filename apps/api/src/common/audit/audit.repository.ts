@@ -80,6 +80,9 @@ export const AUDIT_ACTIONS = {
   /** What every acquisition and retention figure is counted from. */
   ACCOUNT_STATUS_CHANGED: 'account.status_changed',
   ACCOUNT_LEAD_LINKED: 'account.lead_linked',
+  /** A new opportunity raised against an existing customer, with its origin. */
+  REPEAT_OPPORTUNITY_CREATED: 'account.repeat_opportunity_created',
+  ACCOUNT_FOLLOW_UP_CREATED: 'account.follow_up_created',
   ACCOUNT_CONTACT_LINKED: 'account.contact_linked',
   SUBSCRIPTION_CHANGED: 'subscription.changed',
 } as const;

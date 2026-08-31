@@ -78,6 +78,50 @@ export class FollowUpsService {
     return rows.map(toView);
   }
 
+  /**
+   * Follow-ups owed on a CUSTOMER rather than on any one enquiry.
+   *
+   * No lead visibility filter applies, because there is no lead: access is
+   * governed by the caller holding account.view, which the controller checks.
+   */
+  async listForAccount(accountId: string): Promise<FollowUpView[]> {
+    return (await this.repository.listForAccount(accountId)).map(toView);
+  }
+
+  /**
+   * Schedules a follow-up on a customer, with no lead involved.
+   *
+   * Deliberately does NOT apply the "no lead left behind" rule: there is no
+   * enquiry behind this, so nothing can be left behind. Forcing a lead into
+   * existence to record "call them next Monday" is exactly what corrupted the
+   * pipeline before account follow-ups existed.
+   *
+   * The caller has already verified the account belongs to this tenant.
+   */
+  async createForAccount(
+    accountId: string,
+    dto: CreateFollowUpDto,
+    principal: TenantPrincipal,
+  ): Promise<FollowUpView> {
+    const assignedUserId = await this.resolveAssignee(
+      dto.assignedUserId,
+      { assignedToId: null },
+      principal,
+    );
+
+    const followUp = await this.repository.create({
+      accountId,
+      assignedUserId,
+      scheduledAt: parseWhen(dto.scheduledAt),
+      type: (dto.type ?? 'CALL') as FollowUpType,
+      title: dto.title,
+      notes: dto.notes,
+      actorId: principal.userId,
+    });
+
+    return toView(followUp);
+  }
+
   async listForLead(leadId: string, principal: TenantPrincipal): Promise<FollowUpView[]> {
     // Reading the lead first applies the caller's lead visibility, so a rep
     // cannot see follow-ups on a colleague's lead by asking for them here.

@@ -29,6 +29,7 @@ import { CustomersPage } from './features/accounts/customers-page';
 import { Customer360Page } from './features/accounts/customer-360-page';
 import { CustomerKpiPage } from './features/accounts/customer-kpi-page';
 import { CustomerMappingPage } from './features/accounts/customer-mapping-page';
+import { RetentionPage } from './features/accounts/retention-page';
 import { ContactDetailPage } from './features/contacts/contact-detail-page';
 import { FollowUpsPage } from './features/followups/follow-ups-page';
 import { TeamPage } from './features/team/team-page';
@@ -154,6 +155,7 @@ export function App(): React.JSX.Element {
                 <Route path="customers" element={<CustomersPage />} />
                 <Route path="customers/mapping" element={<CustomerMappingPage />} />
                 <Route path="customers/kpi" element={<CustomerKpiPage />} />
+                <Route path="customers/retention" element={<RetentionPage />} />
                 <Route path="customers/:id" element={<Customer360Page />} />
                 <Route path="contacts" element={<ContactsPage />} />
                 <Route path="contacts/:id" element={<ContactDetailPage />} />

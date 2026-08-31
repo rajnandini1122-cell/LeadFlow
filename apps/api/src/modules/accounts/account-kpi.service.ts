@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { AccountKpiRepository } from './account-kpi.repository';
+import { RetentionRepository } from './retention.repository';
 import {
   averageCustomerValue,
   averageWinsPerCustomer,
@@ -29,7 +30,131 @@ import {
  */
 @Injectable()
 export class AccountKpiService {
-  constructor(private readonly repository: AccountKpiRepository) {}
+  constructor(
+    private readonly repository: AccountKpiRepository,
+    private readonly retention: RetentionRepository,
+  ) {}
+
+  /**
+   * Product demand split by what kind of business each opportunity was.
+   *
+   * Reads the classification recorded AT CREATION rather than re-deriving it,
+   * so correcting an old deal months later cannot silently turn last quarter's
+   * acquisition into this quarter's retention.
+   *
+   * Every opportunity is counted exactly once. `unclassified` is reported
+   * rather than folded into FIRST: leads captured before this existed have no
+   * record of what the customer had bought at the time, and calling them first
+   * business would invent an acquisition figure.
+   */
+  async demandByKind(range?: { from: Date; to: Date }): Promise<{
+    items: {
+      productId: string;
+      name: string;
+      sku: string | null;
+      category: string | null;
+      first: number;
+      repeatProduct: number;
+      expansion: number;
+      unclassified: number;
+      total: number;
+      wonValue: number;
+    }[];
+    totals: {
+      first: number;
+      repeatProduct: number;
+      expansion: number;
+      unclassified: number;
+      total: number;
+    };
+    revenue: {
+      firstWonValue: number;
+      repeatWonValue: number;
+      expansionWonValue: number;
+    };
+    coverage: { unclassifiedLeads: number };
+  }> {
+    const [grouped, firstRevenue, repeatRevenue, expansionRevenue, unclassifiedLeads] =
+      await Promise.all([
+        this.retention.demandByKind(range),
+        this.retention.wonValueByKind('FIRST', range),
+        this.retention.wonValueByKind('REPEAT_PRODUCT', range),
+        this.retention.wonValueByKind('EXPANSION', range),
+        this.retention.unclassifiedLeads(),
+      ]);
+
+    const perProduct = new Map<
+      string,
+      { first: number; repeatProduct: number; expansion: number; unclassified: number; wonValue: number }
+    >();
+
+    for (const row of grouped) {
+      if (!row.productId) continue;
+
+      const entry = perProduct.get(row.productId) ?? {
+        first: 0,
+        repeatProduct: 0,
+        expansion: 0,
+        unclassified: 0,
+        wonValue: 0,
+      };
+
+      const count = row._count._all;
+      if (row.opportunityKind === 'FIRST') entry.first += count;
+      else if (row.opportunityKind === 'REPEAT_PRODUCT') entry.repeatProduct += count;
+      else if (row.opportunityKind === 'EXPANSION') entry.expansion += count;
+      else entry.unclassified += count;
+
+      entry.wonValue += Number(row._sum.wonValue ?? 0);
+      perProduct.set(row.productId, entry);
+    }
+
+    const products = await this.repository.productsByIds([...perProduct.keys()]);
+    const byId = new Map(products.map((product) => [product.id, product]));
+
+    const items = [...perProduct.entries()]
+      .map(([productId, entry]) => {
+        const product = byId.get(productId);
+        if (!product) return null;
+
+        return {
+          productId,
+          name: product.name,
+          sku: product.sku,
+          category: product.category,
+          ...entry,
+          total: entry.first + entry.repeatProduct + entry.expansion + entry.unclassified,
+        };
+      })
+      .filter((row): row is NonNullable<typeof row> => row !== null)
+      .sort((a, b) => b.total - a.total);
+
+    const totals = items.reduce(
+      (accumulator, row) => ({
+        first: accumulator.first + row.first,
+        repeatProduct: accumulator.repeatProduct + row.repeatProduct,
+        expansion: accumulator.expansion + row.expansion,
+        unclassified: accumulator.unclassified + row.unclassified,
+      }),
+      { first: 0, repeatProduct: 0, expansion: 0, unclassified: 0 },
+    );
+
+    return {
+      items,
+      totals: {
+        ...totals,
+        total: totals.first + totals.repeatProduct + totals.expansion + totals.unclassified,
+      },
+      revenue: {
+        firstWonValue: Number(firstRevenue._sum.wonValue ?? 0),
+        repeatWonValue: Number(repeatRevenue._sum.wonValue ?? 0),
+        // Revenue from products new to an existing customer — the expansion
+        // figure §16 asks for, and only where it is genuinely attributable.
+        expansionWonValue: Number(expansionRevenue._sum.wonValue ?? 0),
+      },
+      coverage: { unclassifiedLeads },
+    };
+  }
 
   /** The customer funnel: how many of each kind of relationship there are. */
   async overview(range?: { from: Date; to: Date }): Promise<{

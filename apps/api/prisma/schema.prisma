@@ -535,8 +535,15 @@ model Lead {
   /// the grouping key; "500 kg monthly, food manufacturing use" is the enquiry,
   /// and no catalogue can carry that. Collapsing the two would destroy the only
   /// record of what was actually wanted.
-  productInterest String?  @map("product_interest") @db.VarChar(200)
-  estimatedValue  Decimal? @map("estimated_value") @db.Decimal(14, 2)
+  productInterest String? @map("product_interest") @db.VarChar(200)
+
+  /// Whether this was first business, repeat business or expansion.
+  ///
+  /// Set once when the opportunity is created and never revised. NULL for
+  /// leads captured before this existed, and for leads with no account —
+  /// unknown, which is a different thing from FIRST.
+  opportunityKind OpportunityKind? @map("opportunity_kind")
+  estimatedValue  Decimal?         @map("estimated_value") @db.Decimal(14, 2)
 
   status   LeadStatus   @default(NEW)
   priority LeadPriority @default(MEDIUM)
@@ -614,6 +621,9 @@ model Lead {
   @@index([organizationId, productId, status])
   /// Demand trend and won/lost aggregation are time-bucketed per product.
   @@index([organizationId, productId, createdAt])
+  /// Repeat and expansion demand group on this within a tenant. Mostly NULL
+  /// until the backfill runs, so the btree stays small.
+  @@index([organizationId, opportunityKind])
   @@index([organizationId, mobile])
   @@index([organizationId, contactId])
   /// Customer 360 lists an account's opportunities by status.
@@ -1614,4 +1624,26 @@ model Account {
   /// Customer acquisition trend buckets on the first won date.
   @@index([organizationId, firstWonAt])
   @@map("accounts")
+}
+
+/// What kind of business an opportunity represents for its customer.
+///
+/// Recorded AT CREATION as a historical fact, never recomputed. "Repeat" means
+/// the account had already won business when this enquiry was captured — a fact
+/// about that moment, which is why correcting an old deal later must not
+/// silently reclassify it.
+///
+/// Deliberately not derived on read: the honest derivation is
+/// `lead.createdAt > account.firstWonAt`, a column-to-column comparison Prisma
+/// cannot express without raw SQL, and classifying per lead in Node would mean
+/// reading a row per lead on every report.
+enum OpportunityKind {
+  /// No prior won business with this customer. Acquisition.
+  FIRST
+  /// They have bought THIS product before. Repeat business.
+  REPEAT_PRODUCT
+  /// They are a customer, but this product is new to them. Expansion.
+  EXPANSION
+
+  @@map("opportunity_kind")
 }

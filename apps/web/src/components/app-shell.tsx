@@ -57,6 +57,17 @@ const NAV_ITEMS: NavItem[] = [
     permission: PERMISSIONS.ACCOUNT_VIEW,
     exact: true,
   },
+  /*
+   * Retention sits directly under Customers because it IS a customer view —
+   * a work queue rather than a report, which is why it comes before the KPI
+   * page rather than after it.
+   */
+  {
+    to: '/customers/retention',
+    label: 'Retention',
+    icon: '↻',
+    permission: PERMISSIONS.REPORT_VIEW,
+  },
   {
     to: '/customers/kpi',
     label: 'Customer KPIs',

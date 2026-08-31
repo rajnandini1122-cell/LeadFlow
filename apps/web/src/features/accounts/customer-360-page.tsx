@@ -4,6 +4,8 @@ import { PERMISSIONS } from '@leadflow/api-types';
 import { ApiError } from '../../lib/api-client';
 import { Card, CardHeader, ErrorNotice, PageHeader, SkeletonRows } from '../../components/ui';
 import { useAuth } from '../auth/auth-context';
+import { RepeatBusinessDialog } from './repeat-business-dialog';
+import { CustomerFollowUpDialog } from './customer-followup-dialog';
 import {
   ACCOUNT_STATUS_PRESENTATION,
   formatCustomerKpi,
@@ -79,6 +81,17 @@ export function Customer360Page(): React.JSX.Element {
 
       <Header data={data} canChangeStatus={can(PERMISSIONS.ACCOUNT_STATUS_CHANGE)} accountId={id} />
 
+      <ActionBar
+        accountId={id}
+        accountName={data.account.name}
+        wonCount={data.commercial.wonCount}
+        lastProduct={data.products.items[0]?.name ?? null}
+        lastWonValue={data.commercial.wonValue}
+        lastWonAt={data.commercial.lastWonAt}
+        canCreateLead={can(PERMISSIONS.LEAD_CREATE)}
+        canFollowUp={can(PERMISSIONS.FOLLOW_UP_CREATE)}
+      />
+
       <div className="grid gap-4 lg:grid-cols-3">
         <div className="space-y-4 lg:col-span-2">
           <Opportunities
@@ -104,6 +117,113 @@ export function Customer360Page(): React.JSX.Element {
           <CrossSell data={data} />
         </div>
       </div>
+    </>
+  );
+}
+
+/**
+ * What to do about this customer, right now.
+ *
+ * The primary action is repeat business, and it appears only where there is
+ * history to repeat — offering it to someone who has never bought would be a
+ * button that means nothing. The last purchase is stated beside it, because
+ * that is the fact the salesperson needs before picking up the phone.
+ *
+ * Nothing here fires on its own. Each button opens a form a person fills in.
+ */
+function ActionBar({
+  accountId,
+  accountName,
+  wonCount,
+  lastProduct,
+  lastWonValue,
+  lastWonAt,
+  canCreateLead,
+  canFollowUp,
+}: {
+  accountId: string;
+  accountName: string;
+  wonCount: number;
+  lastProduct: string | null;
+  lastWonValue: number;
+  lastWonAt: string | null;
+  canCreateLead: boolean;
+  canFollowUp: boolean;
+}): React.JSX.Element {
+  const [repeat, setRepeat] = useState(false);
+  const [followUp, setFollowUp] = useState(false);
+
+  return (
+    <>
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-4">
+        <div className="min-w-0">
+          <p className="text-xs text-slate-500">Last business</p>
+          <p className="text-sm font-medium text-slate-900">
+            {wonCount === 0 ? (
+              'Nothing bought yet'
+            ) : (
+              <>
+                {lastProduct ?? 'Won opportunity'}
+                {lastWonValue > 0 ? ` — ${formatCustomerKpi(lastWonValue, 'currency')}` : ''}
+                {lastWonAt ? (
+                  <span className="font-normal text-slate-500">
+                    {' '}
+                    · {new Date(lastWonAt).toLocaleDateString()}
+                  </span>
+                ) : null}
+              </>
+            )}
+          </p>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          {canCreateLead && wonCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setRepeat(true)}
+              className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800"
+            >
+              🔄 Repeat business
+            </button>
+          )}
+
+          {canFollowUp && (
+            <button
+              type="button"
+              onClick={() => setFollowUp(true)}
+              className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+            >
+              📞 Follow-up
+            </button>
+          )}
+
+          {canCreateLead && (
+            <button
+              type="button"
+              onClick={() => setRepeat(true)}
+              className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+            >
+              + New opportunity
+            </button>
+          )}
+        </div>
+      </div>
+
+      {repeat && (
+        <RepeatBusinessDialog
+          accountId={accountId}
+          accountName={accountName}
+          onClose={() => setRepeat(false)}
+        />
+      )}
+
+      {followUp && (
+        <CustomerFollowUpDialog
+          accountId={accountId}
+          accountName={accountName}
+          onClose={() => setFollowUp(false)}
+        />
+      )}
     </>
   );
 }

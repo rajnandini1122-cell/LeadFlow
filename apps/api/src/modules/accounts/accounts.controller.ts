@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Headers,
   Param,
   ParseUUIDPipe,
   Patch,
@@ -20,6 +21,12 @@ import { AccountsService } from './accounts.service';
 import { Account360Service } from './account-360.service';
 import { AccountKpiService } from './account-kpi.service';
 import { AccountMappingService } from './account-mapping.service';
+import { RetentionService } from './retention.service';
+import {
+  ActionQueueDto,
+  CreateAccountFollowUpDto,
+  CreateRepeatOpportunityDto,
+} from './dto/retention.dto';
 import type { AccountStatus } from '../../generated/prisma/enums';
 import {
   AccountRangeDto,
@@ -65,8 +72,38 @@ export class AccountsController {
     private readonly threeSixty: Account360Service,
     private readonly kpi: AccountKpiService,
     private readonly mapping: AccountMappingService,
+    private readonly retention: RetentionService,
     private readonly leads: LeadsRepository,
   ) {}
+
+  // --- retention -------------------------------------------------------------
+
+  /**
+   * Customers who need attention, and why.
+   *
+   * Observations, never instructions. Nothing here creates an opportunity,
+   * schedules a follow-up or sends a message — a person reads the reason and
+   * decides. `report.view` because it summarises the customer base.
+   */
+  @Get('retention/queue')
+  @RequirePermissions(PERMISSIONS.REPORT_VIEW)
+  @ApiOperation({
+    summary: 'The customer action queue',
+    description:
+      'Customers with at least one retention signal, strongest first. Signals ' +
+      'are computed from history, so filtering happens after scanning a page ' +
+      'of customers — `scanned` reports how many were actually examined.',
+  })
+  async actionQueue(@Query() query: ActionQueueDto) {
+    return this.retention.actionQueue(query);
+  }
+
+  @Get('retention/summary')
+  @RequirePermissions(PERMISSIONS.REPORT_VIEW)
+  @ApiOperation({ summary: 'Compact retention counts for the dashboard' })
+  async retentionSummary() {
+    return this.retention.summary();
+  }
 
   // --- customers -------------------------------------------------------------
 
@@ -144,6 +181,21 @@ export class AccountsController {
   async productDemand(@Query() query: AccountRangeDto) {
     const range = await this.range(query);
     return this.kpi.demandByCustomerType(range);
+  }
+
+  @Get('kpi/demand-by-kind')
+  @RequirePermissions(PERMISSIONS.REPORT_VIEW)
+  @ApiOperation({
+    summary: 'Product demand split into first, repeat and expansion business',
+    description:
+      'Reads the classification recorded when each opportunity was created, ' +
+      'so correcting an old deal cannot retrospectively reclassify it. Leads ' +
+      'captured before this existed are reported as unclassified rather than ' +
+      'counted as first business.',
+  })
+  async demandByKind(@Query() query: AccountRangeDto) {
+    const range = await this.range(query);
+    return this.kpi.demandByKind(range);
   }
 
   // --- backfill --------------------------------------------------------------
@@ -268,6 +320,78 @@ export class AccountsController {
     @CurrentUser() principal: TenantPrincipal,
   ) {
     return this.accounts.changeStatus(id, dto.status as AccountStatus, dto.reason, principal);
+  }
+
+  // --- repeat business -------------------------------------------------------
+
+  /**
+   * What this customer has bought, for the repeat picker.
+   *
+   * The previous won value is returned as CONTEXT. It is never written into a
+   * new opportunity unless the salesperson sends it.
+   */
+  @Get(':id/repeat-options')
+  @RequirePermissions(PERMISSIONS.ACCOUNT_VIEW)
+  @ApiOperation({ summary: 'Products this customer has bought, for repeat business' })
+  async repeatOptions(@Param('id', ParseUUIDPipe) id: string) {
+    return this.retention.repeatOptions(id);
+  }
+
+  /**
+   * Raises the next opportunity for an existing customer.
+   *
+   * Creates an ORDINARY lead attached to this account — never a second
+   * customer, contact or product, and never anything called an order. The
+   * customer's status is untouched: winning a repeat deal does not re-acquire
+   * a customer.
+   *
+   * `lead.create` is the permission, because that is exactly what this is.
+   * Inventing a repeat-business permission would add a boundary where no new
+   * one exists.
+   */
+  @Post(':id/repeat-opportunity')
+  @RequirePermissions(PERMISSIONS.LEAD_CREATE)
+  @ApiOperation({
+    summary: 'Raise the next opportunity for this customer',
+    description:
+      'Send an Idempotency-Key header to make a double submission safe: a ' +
+      'replay returns the SAME opportunity rather than creating a second one. ' +
+      'Two genuinely separate enquiries for one product remain possible.',
+  })
+  async repeatOpportunity(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: CreateRepeatOpportunityDto,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @CurrentUser() principal: TenantPrincipal,
+  ) {
+    return this.retention.createRepeatOpportunity(id, dto, principal, idempotencyKey ?? null);
+  }
+
+  // --- customer-level follow-ups ---------------------------------------------
+
+  @Get(':id/follow-ups')
+  @RequirePermissions(PERMISSIONS.ACCOUNT_VIEW)
+  @ApiOperation({ summary: 'Follow-ups owed on this customer, not on any one deal' })
+  async accountFollowUps(@Param('id', ParseUUIDPipe) id: string) {
+    return this.retention.accountFollowUps(id);
+  }
+
+  /**
+   * Schedules an action on the CUSTOMER, with no lead involved.
+   *
+   * "Call ABC Foods on Monday about a repeat order" is real work. Before this
+   * the only way to record it was to invent a lead, which put a fake enquiry
+   * in the pipeline and corrupted every conversion figure that counted it.
+   */
+  @Post(':id/follow-ups')
+  @RequirePermissions(PERMISSIONS.FOLLOW_UP_CREATE)
+  @ApiOperation({ summary: 'Schedule a follow-up on this customer' })
+  async createAccountFollowUp(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: CreateAccountFollowUpDto,
+    @CurrentUser() principal: TenantPrincipal,
+  ) {
+    return this.retention.createAccountFollowUp(id, dto, principal);
   }
 
   @Post(':id/merge')

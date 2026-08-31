@@ -11,6 +11,9 @@ import { AccountLifecycleService } from './account-lifecycle.service';
 import { AccountLifecycleRepository } from './account-lifecycle.repository';
 import { AccountMappingService } from './account-mapping.service';
 import { AccountMappingRepository } from './account-mapping.repository';
+import { RetentionService } from './retention.service';
+import { RetentionRepository } from './retention.repository';
+import { FollowUpsModule } from '../follow-ups/follow-ups.module';
 
 /**
  * Customers, Customer 360, and the relationship lifecycle.
@@ -27,7 +30,13 @@ import { AccountMappingRepository } from './account-mapping.repository';
  * validated explicitly.
  */
 @Module({
-  imports: [LeadsModule],
+  /*
+   * FollowUpsModule for customer-level follow-ups, and LeadsModule for lead
+   * creation — the repeat-business workflow delegates to LeadsService rather
+   * than writing its own insert, so a repeat opportunity is an ORDINARY lead
+   * with the same validation, timeline and follow-up rule as any other.
+   */
+  imports: [LeadsModule, FollowUpsModule],
   controllers: [AccountsController],
   providers: [
     AccountsService,
@@ -40,6 +49,8 @@ import { AccountMappingRepository } from './account-mapping.repository';
     AccountLifecycleRepository,
     AccountMappingService,
     AccountMappingRepository,
+    RetentionService,
+    RetentionRepository,
   ],
   exports: [AccountsRepository, AccountLifecycleService],
 })
