@@ -48,6 +48,7 @@ export class LeadsService {
       status: dto.status,
       assignedToId: dto.assignedToId,
       productId: dto.productId,
+      accountId: dto.accountId,
       search: dto.search,
       restrictToUserId: restriction?.assignedToId,
     };
@@ -80,6 +81,8 @@ export class LeadsService {
       productId: string | null;
       product: { id: string; name: string; sku: string; active: boolean } | null;
       productInterest: string | null;
+      accountId: string | null;
+      account: { id: string; name: string; status: string } | null;
       source: string | null;
     }
   > {
@@ -113,6 +116,16 @@ export class LeadsService {
       productId: lead.productId,
       product: lead.product,
       productInterest: lead.productInterest,
+      /*
+       * The customer this opportunity belongs to.
+       *
+       * `companyName` above is kept beside it, unchanged. That free text is
+       * what was captured at the time and it is the evidence the mapping screen
+       * shows; the account is a grouping key placed beside it, not a
+       * replacement for it.
+       */
+      accountId: lead.accountId,
+      account: lead.account,
       source: lead.source,
       activities: activities.map((activity) => ({
         id: activity.id,
@@ -360,6 +373,7 @@ export class LeadsService {
         city: dto.city,
         source: dto.source,
         productId: dto.productId,
+        accountId: dto.accountId,
         productInterest: dto.productInterest,
         estimatedValue: dto.estimatedValue,
         status,

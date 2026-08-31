@@ -27,12 +27,19 @@ export class Account360Service {
   async load(accountId: string) {
     const account = await this.accounts.findById(accountId);
 
-    if (!account) {
-      /*
-       * A merged account is not gone — it IS another account now. Following the
-       * chain and saying so beats a 404 for a company whose history is sitting
-       * right there under a different id.
-       */
+    /*
+     * A merged account is not gone — it IS another account now, and it must
+     * NOT serve its own 360.
+     *
+     * `findById` filters on deletedAt, and a merged account is not deleted, so
+     * this check has to be explicit. Without it one customer stayed readable as
+     * two records, the merged one showing a history that had already moved to
+     * the survivor — the precise outcome this feature exists to prevent.
+     *
+     * Following the chain and naming the survivor beats a bare 404 for a
+     * company whose history is sitting right there under a different id.
+     */
+    if (!account || account.mergedIntoId) {
       const survivor = await this.accounts.resolveSurvivor(accountId);
       if (survivor && survivor.id !== accountId) {
         throw AppException.notFound(

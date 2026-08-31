@@ -5,6 +5,7 @@ import { AuditRepository, AUDIT_ACTIONS } from '../../common/audit/audit.reposit
 import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
 import type { AccountStatus } from '../../generated/prisma/enums';
 import { AccountsRepository } from './accounts.repository';
+import { AccountLifecycleService } from './account-lifecycle.service';
 import {
   extractDomain,
   findDuplicateCandidates,
@@ -62,6 +63,7 @@ const ALLOWED_MANUAL_TRANSITIONS: Record<AccountStatus, AccountStatus[]> = {
 export class AccountsService {
   constructor(
     private readonly repository: AccountsRepository,
+    private readonly lifecycle: AccountLifecycleService,
     private readonly audit: AuditRepository,
   ) {}
 
@@ -353,9 +355,16 @@ export class AccountsService {
       actorId: principal.userId,
     });
 
-    // The survivor's first-won date may now be the loser's, which is the date
-    // every acquisition figure counts from.
-    await this.repository.recomputeMilestones(survivorId);
+    /*
+     * The survivor may have just inherited won deals, which makes it a customer
+     * and moves the date every acquisition figure counts from.
+     *
+     * Through the lifecycle service, not the repository's date-only recompute:
+     * rebuilding the milestones without the STATUS left a prospect holding
+     * revenue, absent from every retention figure. recomputeFromLeads sets
+     * both, and never demotes an account a person deliberately reclassified.
+     */
+    await this.lifecycle.recomputeFromLeads(survivorId);
 
     await this.audit.record({
       action: AUDIT_ACTIONS.ACCOUNT_MERGED,

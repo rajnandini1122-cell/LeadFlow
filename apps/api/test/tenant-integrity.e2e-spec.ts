@@ -70,8 +70,102 @@ describe('Same-tenant relationship integrity', () => {
           select: { id: true, organizationId: true, lead: { select: { organizationId: true } } },
         });
 
+        // A follow-up may hang off an ACCOUNT instead of a lead, in which case
+        // there is no lead to compare — that case is covered below.
         return followUps.filter(
-          (followUp) => followUp.lead.organizationId !== followUp.organizationId,
+          (followUp) => followUp.lead !== null && followUp.lead.organizationId !== followUp.organizationId,
+        );
+      });
+
+      expect(offenders).toEqual([]);
+    });
+
+    it('every follow-up has exactly one parent', async () => {
+      /*
+       * The CHECK constraint enforces this, so a violation here means the
+       * constraint is missing rather than that a write slipped through. A
+       * follow-up attached to neither a lead nor an account would appear on no
+       * screen at all — the one outcome the product promise cannot tolerate.
+       */
+      const offenders = await asSystem(async (prisma) => {
+        const followUps = await prisma.followUp.findMany({
+          select: { id: true, leadId: true, accountId: true },
+        });
+
+        return followUps.filter(
+          (followUp) => (followUp.leadId === null) === (followUp.accountId === null),
+        );
+      });
+
+      expect(offenders).toEqual([]);
+    });
+
+    it('no follow-up references an account from another organization', async () => {
+      const offenders = await asSystem(async (prisma) => {
+        const followUps = await prisma.followUp.findMany({
+          where: { accountId: { not: null } },
+          select: { id: true, organizationId: true, account: { select: { organizationId: true } } },
+        });
+
+        return followUps.filter(
+          (followUp) => followUp.account && followUp.account.organizationId !== followUp.organizationId,
+        );
+      });
+
+      expect(offenders).toEqual([]);
+    });
+
+    it('no lead references an account from another organization', async () => {
+      /*
+       * The gap the Prisma extension cannot close: it scopes QUERIES, and a
+       * foreign key assignment is not a query. A violation here would mean one
+       * organization's Customer 360 is showing another's opportunities and
+       * revenue, with nothing on either screen to indicate it.
+       */
+      const offenders = await asSystem(async (prisma) => {
+        const leads = await prisma.lead.findMany({
+          where: { accountId: { not: null } },
+          select: { id: true, organizationId: true, account: { select: { organizationId: true } } },
+        });
+
+        return leads.filter(
+          (lead) => lead.account && lead.account.organizationId !== lead.organizationId,
+        );
+      });
+
+      expect(offenders).toEqual([]);
+    });
+
+    it('no contact references an account from another organization', async () => {
+      const offenders = await asSystem(async (prisma) => {
+        const contacts = await prisma.contact.findMany({
+          where: { accountId: { not: null } },
+          select: { id: true, organizationId: true, account: { select: { organizationId: true } } },
+        });
+
+        return contacts.filter(
+          (contact) => contact.account && contact.account.organizationId !== contact.organizationId,
+        );
+      });
+
+      expect(offenders).toEqual([]);
+    });
+
+    it('no account is merged into one from another organization', async () => {
+      // A cross-tenant merge would fuse two businesses' customer histories.
+      const offenders = await asSystem(async (prisma) => {
+        const accounts = await prisma.account.findMany({
+          where: { mergedIntoId: { not: null } },
+          select: {
+            id: true,
+            organizationId: true,
+            mergedInto: { select: { organizationId: true } },
+          },
+        });
+
+        return accounts.filter(
+          (account) =>
+            account.mergedInto && account.mergedInto.organizationId !== account.organizationId,
         );
       });
 

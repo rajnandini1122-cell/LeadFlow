@@ -37,6 +37,7 @@ export class LeadsRepository {
     status?: LeadStatus | undefined;
     assignedToId?: string | undefined;
     productId?: string | undefined;
+    accountId?: string | undefined;
     search?: string | undefined;
     restrictToUserId?: string | undefined;
   }): Record<string, unknown> {
@@ -44,6 +45,7 @@ export class LeadsRepository {
     if (filters.status) where['status'] = filters.status;
     if (filters.assignedToId) where['assignedToId'] = filters.assignedToId;
     if (filters.productId) where['productId'] = filters.productId;
+    if (filters.accountId) where['accountId'] = filters.accountId;
     if (filters.restrictToUserId) where['assignedToId'] = filters.restrictToUserId;
 
     if (filters.search) {
@@ -114,6 +116,9 @@ export class LeadsRepository {
         // Name and SKU only. The detail page shows what the product IS, not
         // the whole catalogue row.
         product: { select: { id: true, name: true, sku: true, active: true } },
+        // Name and status only. Whether this is an existing customer is the
+        // single most useful thing to know when opening a lead.
+        account: { select: { id: true, name: true, status: true } },
       },
     });
   }
@@ -201,6 +206,8 @@ export class LeadsRepository {
     city?: string | undefined;
     source?: string | undefined;
     productId?: string | undefined;
+    /** Verified to belong to this tenant by the service before it reaches here. */
+    accountId?: string | undefined;
     productInterest?: string | undefined;
     estimatedValue?: number | undefined;
     status: LeadStatus;
@@ -232,6 +239,7 @@ export class LeadsRepository {
           city: input.city ?? null,
           source: input.source ?? null,
           productId: input.productId ?? null,
+          accountId: input.accountId ?? null,
           productInterest: input.productInterest ?? null,
           estimatedValue: input.estimatedValue ?? null,
           status: input.status,
@@ -393,6 +401,16 @@ export class LeadsRepository {
     data: Record<string, unknown>;
     /** True when the lead is becoming WON, LOST or archived. */
     closesLead: boolean;
+    /**
+     * True only for WON.
+     *
+     * Promotes the lead's account to CUSTOMER inside this same transaction. It
+     * belongs here rather than in a service because the promotion must be
+     * ATOMIC with the win: a separate call could fail after the win committed,
+     * leaving a paying customer recorded as a prospect and absent from every
+     * retention figure, with nothing to indicate it had happened.
+     */
+    winsLead?: boolean | undefined;
     activityType: ActivityType;
     description: string;
     actorId: string;
@@ -423,6 +441,51 @@ export class LeadsRepository {
           },
         });
         followUpsCancelled = cancelled.count;
+      }
+
+      /*
+       * Winning a deal PROMOTES the customer that is already there. It never
+       * creates one.
+       *
+       * Before accounts existed, "customer" was a company name typed onto a
+       * lead, so a repeat customer's second win produced a second record that
+       * looked exactly like a new customer — double-counting acquisition and
+       * making retention impossible to measure. Here the account is found, and
+       * a lead with none does nothing at all: inventing a company from a
+       * free-text field is precisely the mistake this feature exists to undo.
+       */
+      if (input.winsLead) {
+        const lead = await tx.lead.findFirst({
+          where: { id: input.leadId },
+          select: { accountId: true, wonAt: true },
+        });
+
+        if (lead?.accountId) {
+          const account = await tx.account.findFirst({
+            where: { id: lead.accountId },
+            select: { firstWonAt: true },
+          });
+
+          if (account) {
+            const wonAt = lead.wonAt ?? new Date();
+
+            await tx.account.updateMany({
+              where: { id: lead.accountId },
+              data: {
+                // DORMANT and FORMER_CUSTOMER are promoted back too: someone
+                // who buys again is a customer again.
+                status: 'CUSTOMER',
+                // Set once, never overwritten. Moving it forward on every
+                // repeat purchase would make a five-year customer look like
+                // this month's new business.
+                ...(account.firstWonAt ? {} : { firstWonAt: wonAt }),
+                lastWonAt: wonAt,
+                lastActivityAt: wonAt,
+                updatedBy: input.actorId,
+              },
+            });
+          }
+        }
       }
 
       // In the same transaction, so a lead can never end up in a state its own
@@ -511,6 +574,7 @@ export class LeadsRepository {
         updatedBy: input.actorId,
       },
       closesLead,
+      winsLead: input.status === 'WON',
       activityType:
         input.status === 'WON' ? 'LEAD_WON' : input.status === 'LOST' ? 'LEAD_LOST' : 'STATUS_CHANGED',
       description:
