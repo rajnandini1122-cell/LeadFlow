@@ -1,4 +1,5 @@
 import { useActiveProducts } from '../products/use-products';
+import { useAccountOptions, ACCOUNT_STATUS_PRESENTATION } from '../accounts/use-accounts';
 import { useEffect, useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
@@ -90,8 +91,10 @@ export function NewLeadDialog({
   const [city, setCity] = useState('');
   const [source, setSource] = useState('');
   const products = useActiveProducts();
+  const accounts = useAccountOptions('');
   const [productInterest, setProductInterest] = useState('');
   const [productId, setProductId] = useState('');
+  const [accountId, setAccountId] = useState('');
   const [estimatedValue, setEstimatedValue] = useState('');
   const [status, setStatus] = useState<LeadStatus>('NEW');
   const [priority, setPriority] = useState<LeadPriority>('MEDIUM');
@@ -178,6 +181,7 @@ export function NewLeadDialog({
         ...(city ? { city } : {}),
         ...(source ? { source } : {}),
         ...(productId ? { productId } : {}),
+        ...(accountId ? { accountId } : {}),
         ...(productInterest ? { productInterest } : {}),
         ...(estimatedValue ? { estimatedValue: Number(estimatedValue) } : {}),
         status,
@@ -340,6 +344,37 @@ export function NewLeadDialog({
               />
             </Field>
           </div>
+
+          {/*
+            Which customer this enquiry belongs to.
+
+            Asked BEFORE the product, because it is the question that prevents
+            a duplicate: attaching to the company already on file is what makes
+            a repeat customer's second enquiry read as repeat business instead
+            of as a new customer. The company name typed above is kept exactly
+            as entered either way.
+
+            Optional on purpose — an enquiry can genuinely come from a private
+            individual, or from a company nobody has recorded yet, and forcing a
+            choice would mean guessing one.
+          */}
+          <Field
+            label="Customer"
+            hint="Attach to a company already on file, so their history stays in one place. Optional."
+          >
+            <select
+              value={accountId}
+              onChange={(event) => setAccountId(event.target.value)}
+              className={inputClass}
+            >
+              <option value="">Not linked to a customer</option>
+              {(accounts.data?.items ?? []).map((account) => (
+                <option key={account.id} value={account.id}>
+                  {account.name} · {ACCOUNT_STATUS_PRESENTATION[account.status].label}
+                </option>
+              ))}
+            </select>
+          </Field>
 
           {/*
             The product and the enquiry, side by side.

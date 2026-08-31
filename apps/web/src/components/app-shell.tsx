@@ -45,6 +45,24 @@ const NAV_ITEMS: NavItem[] = [
     badge: 'review',
     requiresOmnichannel: true,
   },
+  /*
+   * Customers, then Contacts. A customer is the COMPANY and the long-lived
+   * relationship; a contact is a person at one. Putting the company first is
+   * what makes the distinction obvious without explaining it.
+   */
+  {
+    to: '/customers',
+    label: 'Customers',
+    icon: '⌂',
+    permission: PERMISSIONS.ACCOUNT_VIEW,
+    exact: true,
+  },
+  {
+    to: '/customers/kpi',
+    label: 'Customer KPIs',
+    icon: '◱',
+    permission: PERMISSIONS.REPORT_VIEW,
+  },
   { to: '/contacts', label: 'Contacts', icon: '⚈', permission: PERMISSIONS.CONTACT_VIEW },
   /*
    * Products sit beside Leads, not under Settings.
