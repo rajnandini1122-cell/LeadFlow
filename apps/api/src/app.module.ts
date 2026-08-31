@@ -25,6 +25,8 @@ import { AccountsModule } from './modules/accounts/accounts.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { QueuesModule } from './queues/queues.module';
 import { ObservabilityModule } from './common/observability/observability.module';
+import { PermissionSyncService } from './common/auth/permission-sync.service';
+import { PermissionSyncRepository } from './common/auth/permission-sync.repository';
 import { ContactsModule } from './modules/contacts/contacts.module';
 import { OmnichannelModule } from './modules/omnichannel/omnichannel.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
@@ -122,6 +124,8 @@ import { HealthModule } from './modules/health/health.module';
     //   2. authentication — establishes tenant context
     //   3. authorization  — needs the context from step 2
     { provide: APP_GUARD, useClass: ThrottlerGuard },
+    PermissionSyncService,
+    PermissionSyncRepository,
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: PermissionsGuard },
 

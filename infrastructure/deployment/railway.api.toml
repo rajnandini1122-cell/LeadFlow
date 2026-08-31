@@ -1,0 +1,35 @@
+# LeadFlow — API service (Railway)
+#
+# Copy this into the API service's settings, or point the service at this file
+# via Settings → Config-as-code. The worker uses railway.worker.toml, which is
+# the SAME image with a different start command.
+#
+# Build context is the repository root, which is what the Dockerfile's COPY
+# paths assume.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "infrastructure/deployment/Dockerfile"
+
+[deploy]
+startCommand = "node apps/api/dist/main.js"
+
+# LIVENESS, deliberately — not /readiness.
+#
+# Railway restarts a container that fails its healthcheck. /readiness reports
+# unhealthy when Redis or the database is briefly unavailable, so pointing the
+# healthcheck at it would turn a thirty-second Redis blip into a restart loop,
+# converting a degraded dependency into an outage.
+#
+# /readiness is still the right thing to ALERT on. It is just the wrong thing to
+# restart on. See docs/production.md §6.
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5
+
+# Start with one. The API is stateless — sessions live in Redis, not in memory —
+# so scaling out is a slider, not a project. Scale when p95 latency moves, not
+# in anticipation.
+numReplicas = 1
