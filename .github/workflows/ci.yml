@@ -17,6 +17,26 @@ jobs:
   quality:
     name: Lint, typecheck, unit tests
     runs-on: ubuntu-latest
+
+    # The unit suite imports the config module, and @nestjs/config validates the
+    # environment the moment that module is loaded — before any test runs. A
+    # developer machine hides the dependency, because Jest's working directory
+    # is apps/api and apps/api/.env is picked up from there. CI has no .env, so
+    # the suite failed to initialise on four undefined variables.
+    #
+    # EPHEMERAL CI-ONLY VALUES. None of these is a secret and none is
+    # reachable: this job starts no database, no Redis and no provider, and the
+    # unit tests mock Prisma. They exist solely to satisfy the schema so that
+    # the validation itself stays strict.
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://ci-not-a-real-user:ci-not-a-real-password@127.0.0.1:5432/leadflow_unit_ci
+      DIRECT_DATABASE_URL: postgresql://ci-not-a-real-user:ci-not-a-real-password@127.0.0.1:5432/leadflow_unit_ci
+      REDIS_URL: redis://127.0.0.1:6379
+      JWT_ACCESS_SECRET: ci-only-ephemeral-access-secret-not-a-real-secret
+      JWT_REFRESH_SECRET: ci-only-ephemeral-refresh-secret-not-a-real-secret
+      CORS_ORIGINS: http://localhost:5173
+
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -100,8 +120,17 @@ jobs:
       - run: npm run db:migrate:deploy -w apps/api
 
       # The schema Prisma expects must match what the migrations produced.
+      #
+      # Run from the API workspace. Prisma 7 loads prisma.config.ts from the
+      # working directory, and that file is what supplies datasource.url —
+      # which `migrate status` requires. Invoked from the repository root with
+      # only --schema, the config was never loaded and the command failed with
+      # "datasource.url property is required", before the suite could start.
+      # The deploy step above already runs in the workspace, which is why it
+      # succeeded where this one did not.
       - name: Verify migrations are complete
-        run: npx prisma migrate status --schema apps/api/prisma/schema.prisma
+        working-directory: apps/api
+        run: npx prisma migrate status
 
       # CI_USE_EXTERNAL_DB tells the Jest global setup to use the service
       # containers above instead of booting the in-process PGlite fallback that
