@@ -20,6 +20,18 @@ const secret = z
     message: 'is still the placeholder from .env.example — generate a real secret',
   });
 
+/**
+ * Accepts "user@example.com" and "Display Name <user@example.com>".
+ *
+ * Deliberately narrow: this exists to catch a mistyped From before it becomes
+ * mail that no receiving server will accept, not to re-implement RFC 5322.
+ */
+function isMailbox(value: string): boolean {
+  const address = /^\s*[^<>]*<([^<>]+)>\s*$/.exec(value)?.[1] ?? value.trim();
+
+  return z.string().email().safeParse(address).success;
+}
+
 const csv = z
   .string()
   .default('')
@@ -42,10 +54,65 @@ export const envSchema = z
     PRODUCT_LOGO_URL: z.string().default(''),
 
     // --- email --------------------------------------------------------------
-    // Which transport carries password resets and invitations. 'console' logs
-    // instead of sending and is refused in production — see createEmailProvider.
+    /**
+     * Which transport carries password resets and invitations.
+     *
+     * 'console' logs instead of sending and is refused in production; 'smtp'
+     * delivers through any standards-compliant server. Deliberately a plain
+     * string rather than an enum: an unrecognised value must fail loudly at
+     * boot in production and merely warn in development, which is a decision
+     * createEmailProvider makes with more context than the schema has.
+     */
     EMAIL_PROVIDER: z.string().default('console'),
-    EMAIL_FROM: z.string().default('LeadFlow <no-reply@example.com>'),
+    /**
+     * The envelope sender. Either a bare address or a display name with one:
+     *
+     *   no-reply@example.com
+     *   LeadFlow <no-reply@example.com>
+     *
+     * Validated because a malformed From is rejected by the receiving server,
+     * not by us — the failure would surface as mail that silently never
+     * arrives, which is the class of problem this whole schema exists to catch.
+     */
+    EMAIL_FROM: z
+      .string()
+      .default('LeadFlow <no-reply@example.com>')
+      .refine((value) => isMailbox(value), {
+        message:
+          'must be an email address, optionally with a display name: ' +
+          '"no-reply@example.com" or "LeadFlow <no-reply@example.com>"',
+      }),
+
+    /**
+     * SMTP transport. Required together when EMAIL_PROVIDER=smtp, ignored
+     * otherwise — see the conditional check below.
+     *
+     * No defaults, deliberately. A default host or port would let a
+     * half-configured production deployment boot and send nowhere, and a
+     * default credential is worse than none.
+     */
+    SMTP_HOST: z.string().min(1).optional(),
+    SMTP_PORT: z.coerce.number().int().min(1).max(65535).optional(),
+    /**
+     * TLS mode, stated rather than inferred from the port.
+     *
+     * 'true' means implicit TLS from the first byte (usually port 465).
+     * 'false' means the connection starts in cleartext and is upgraded with
+     * STARTTLS (usually 587) — which this application requires rather than
+     * merely attempts, so credentials never cross an unencrypted socket.
+     *
+     * Strict about its spelling on purpose: the house style elsewhere treats
+     * anything that is not 'true' as false, and here that would turn
+     * SMTP_SECURE=1 or =TRUE into a silent downgrade to the other mode.
+     */
+    SMTP_SECURE: z
+      .enum(['true', 'false'], {
+        message: "must be exactly 'true' or 'false'",
+      })
+      .transform((value) => value === 'true')
+      .optional(),
+    SMTP_USER: z.string().min(1).optional(),
+    SMTP_PASSWORD: z.string().min(1).optional(),
     // Where emailed links point. The WEB app, not the API.
     WEB_BASE_URL: z.string().url().default('http://localhost:5173'),
     // Where public contact-form enquiries are delivered. Configuration rather
@@ -282,6 +349,42 @@ export const envSchema = z
         path: ['CORS_ORIGINS'],
         message: 'must be set explicitly in production',
       });
+    }
+
+    /*
+     * SMTP is all-or-nothing, in every environment.
+     *
+     * The failure this prevents is the familiar one: with a host but no
+     * password the provider constructs, the process boots, every send is
+     * attempted and refused, and password resets disappear while the
+     * application reports itself healthy. Checked everywhere rather than only
+     * in production so a staging deployment finds the gap first.
+     *
+     * Nothing is required when the provider is not smtp — a developer running
+     * the console provider must not need mail credentials to start the app.
+     */
+    if (env.EMAIL_PROVIDER === 'smtp') {
+      const required = {
+        SMTP_HOST: env.SMTP_HOST,
+        SMTP_PORT: env.SMTP_PORT,
+        SMTP_USER: env.SMTP_USER,
+        SMTP_PASSWORD: env.SMTP_PASSWORD,
+        // A boolean, so absence is the only thing to test: `false` is a
+        // perfectly good value and must not read as "missing".
+        SMTP_SECURE: env.SMTP_SECURE,
+      };
+
+      for (const [name, value] of Object.entries(required)) {
+        if (value === undefined) {
+          ctx.addIssue({
+            code: 'custom',
+            path: [name],
+            message:
+              'is required when EMAIL_PROVIDER=smtp — a partially configured ' +
+              'transport accepts every message and delivers none',
+          });
+        }
+      }
     }
 
     /*

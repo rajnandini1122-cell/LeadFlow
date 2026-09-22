@@ -157,6 +157,91 @@ describe('production configuration', () => {
     expect(parsed['S3_SECRET_ACCESS_KEY']).toBeUndefined();
   });
 
+  describe('email', () => {
+    /** A complete SMTP configuration, so each case removes exactly one thing. */
+    const smtp = {
+      EMAIL_PROVIDER: 'smtp',
+      SMTP_HOST: 'smtp.example.test',
+      SMTP_PORT: '587',
+      SMTP_SECURE: 'false',
+      SMTP_USER: 'no-reply@example.test',
+      SMTP_PASSWORD: 'a-placeholder-password',
+    };
+
+    it('needs no mail credentials when the provider is console', () => {
+      // A developer must be able to start the application without a mailbox.
+      expect(() => validateEnv(baseEnv({ EMAIL_PROVIDER: 'console' }))).not.toThrow();
+    });
+
+    it('accepts a complete SMTP configuration', () => {
+      expect(() => validateEnv(baseEnv(smtp))).not.toThrow();
+    });
+
+    it.each(['SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASSWORD', 'SMTP_SECURE'])(
+      'REFUSES EMAIL_PROVIDER=smtp with %s missing',
+      (missing) => {
+        /*
+         * Half-configured is the dangerous state: with a host but no password
+         * the transport constructs, the process boots, and every password
+         * reset is attempted and refused while health checks stay green.
+         */
+        const env = baseEnv(smtp);
+        delete env[missing];
+
+        expect(() => validateEnv(env)).toThrow(new RegExp(missing));
+      },
+    );
+
+    it('REFUSES an unusable port', () => {
+      expect(() => validateEnv(baseEnv({ ...smtp, SMTP_PORT: '0' }))).toThrow(/SMTP_PORT/);
+      expect(() => validateEnv(baseEnv({ ...smtp, SMTP_PORT: 'submission' }))).toThrow(
+        /SMTP_PORT/,
+      );
+      expect(() => validateEnv(baseEnv({ ...smtp, SMTP_PORT: '70000' }))).toThrow(/SMTP_PORT/);
+    });
+
+    it.each([
+      ['true', true],
+      ['false', false],
+    ])('reads SMTP_SECURE=%s as %s', (raw, expected) => {
+      const parsed = validateEnv(baseEnv({ ...smtp, SMTP_SECURE: raw })) as Record<
+        string,
+        unknown
+      >;
+
+      expect(parsed['SMTP_SECURE']).toBe(expected);
+    });
+
+    it.each(['1', '0', 'TRUE', 'yes', 'on', ''])(
+      'REFUSES the ambiguous SMTP_SECURE value "%s"',
+      (raw) => {
+        /*
+         * The house style elsewhere treats anything that is not 'true' as
+         * false. Here that would read SMTP_SECURE=1 as cleartext and quietly
+         * pick the other TLS mode, so this one variable is strict.
+         */
+        expect(() => validateEnv(baseEnv({ ...smtp, SMTP_SECURE: raw }))).toThrow(/SMTP_SECURE/);
+      },
+    );
+
+    it.each([
+      'no-reply@example.test',
+      'LeadFlow <no-reply@example.test>',
+      'CRAVION LeadFlow <no-reply@example.test>',
+    ])('accepts the sender identity "%s"', (from) => {
+      expect(() => validateEnv(baseEnv({ ...smtp, EMAIL_FROM: from }))).not.toThrow();
+    });
+
+    it.each(['no-reply', 'no-reply@', '<no-reply@example.test', 'LeadFlow <not-an-address>', ''])(
+      'REFUSES the malformed sender identity "%s"',
+      (from) => {
+        // A malformed From is rejected by the RECEIVING server, so the symptom
+        // is mail that silently never arrives.
+        expect(() => validateEnv(baseEnv({ ...smtp, EMAIL_FROM: from }))).toThrow(/EMAIL_FROM/);
+      },
+    );
+  });
+
   describe('auth secrets', () => {
     it('REFUSES identical access and refresh secrets', () => {
       // Sharing them lets a refresh token be presented as an access token.

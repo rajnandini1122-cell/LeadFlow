@@ -68,6 +68,9 @@ Beyond the existing `.env.example`, production needs:
 | `DIRECT_DATABASE_URL` | **unpooled** endpoint | Migrations take advisory locks and run DDL, which fails against a transaction-mode pooler |
 | `REDIS_URL` | managed Redis, TLS | Sessions, token deny-list, queue, **rate-limit counters** |
 | `TRUST_PROXY_HOPS` | the real number of proxies in front of the API | See below. Wrong in either direction is a security bug |
+| `EMAIL_PROVIDER` | `smtp` | `console` only logs and is refused in production |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_SECURE` / `SMTP_USER` / `SMTP_PASSWORD` | the real mailbox | Required together; a partial set refuses to boot |
+| `EMAIL_FROM` | a mailbox the SMTP server may send as | Most servers reject a `From` they do not own |
 
 ### Getting `TRUST_PROXY_HOPS` right
 
@@ -85,6 +88,28 @@ balancer, `2` behind a CDN in front of one. The default is `0` — trust nothing
 which is correct until the topology is known, and is the value the tests run
 under. Verify after a deploy by comparing the `ip` on an audit row against the
 address the client really used.
+
+### Mail
+
+`EMAIL_PROVIDER=smtp` talks to any standards-compliant server; there is no
+vendor in the code. Two things are worth knowing before the first deploy:
+
+* **Boot does not touch the network.** The configuration is validated and the
+  transport is built, but no SMTP connection is opened and no test message is
+  sent. A mail server having a bad morning must not stop every API replica from
+  serving requests that have nothing to do with email — and a startup probe
+  that sends real mail is a side effect nobody asked for. The cost of that
+  choice is that a wrong password is discovered by the first password reset,
+  in the log, rather than at deploy time. Send one reset to a mailbox you
+  control as the last step of a deploy.
+* **Delivery failures are deliberately invisible to callers.** `forgot-password`
+  answers identically whether the address exists, the send succeeded, or SMTP
+  is down; an operator reads `SMTP delivery failed` in the log, with the tag
+  and the recipient's domain, never the address, the link or the credential.
+
+Set `SMTP_SECURE` to match the port the server actually offers — `true` for
+implicit TLS (465), `false` for a STARTTLS upgrade (587). It is never inferred,
+and `false` still requires the upgrade to succeed.
 
 Rate-limit counters live in Redis so that every replica enforces one shared
 limit rather than its own copy of it. If Redis is unreachable the limiter fails
@@ -262,6 +287,9 @@ Before serving a paying customer:
 - [ ] Tenant isolation and FK-ownership suites green against the deployed build
 - [ ] `TRUST_PROXY_HOPS` set to the real hop count, and an audit row checked to
       confirm it records the client's address rather than the proxy's
+- [ ] `EMAIL_PROVIDER=smtp` with real credentials, and **one password reset
+      actually delivered** to a mailbox you control — boot does not prove mail
+      works, only that it is configured
 - [ ] Android refresh token moved off `localStorage` (open — see debt D-07)
 
 ---
