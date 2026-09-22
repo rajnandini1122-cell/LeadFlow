@@ -66,7 +66,30 @@ Beyond the existing `.env.example`, production needs:
 | `RELEASE_SHA` | the git SHA of the build | Groups errors by deploy; without it every deploy looks the same |
 | `DATABASE_URL` | pooled endpoint | Application traffic |
 | `DIRECT_DATABASE_URL` | **unpooled** endpoint | Migrations take advisory locks and run DDL, which fails against a transaction-mode pooler |
-| `REDIS_URL` | managed Redis, TLS | Sessions, token deny-list, queue |
+| `REDIS_URL` | managed Redis, TLS | Sessions, token deny-list, queue, **rate-limit counters** |
+| `TRUST_PROXY_HOPS` | the real number of proxies in front of the API | See below. Wrong in either direction is a security bug |
+
+### Getting `TRUST_PROXY_HOPS` right
+
+`req.ip` is what every rate limit and audit row is keyed on, and Express derives
+it by walking `X-Forwarded-For` from the right through this many hops.
+
+* **Too high** (or `true`) — any caller invents a fresh identity per request by
+  sending the header, and the limiter stops existing. This is the failure that
+  matters: it is silent, and it looks exactly like a working limiter.
+* **Too low** — every customer behind the load balancer shares one bucket, so
+  one noisy client locks out the rest.
+
+Count the hops that actually append to the header: `1` behind a single load
+balancer, `2` behind a CDN in front of one. The default is `0` — trust nothing —
+which is correct until the topology is known, and is the value the tests run
+under. Verify after a deploy by comparing the `ip` on an audit row against the
+address the client really used.
+
+Rate-limit counters live in Redis so that every replica enforces one shared
+limit rather than its own copy of it. If Redis is unreachable the limiter fails
+**open** and says so in the log (`Rate-limit storage is unreachable`) — requests
+pass unthrottled until it returns, and `/readiness` reports the outage.
 
 ### The process refuses to start when these are wrong
 
@@ -237,6 +260,8 @@ Before serving a paying customer:
 - [ ] Error aggregation ingesting `err_event`
 - [ ] Both alerts configured, and tested by deliberately breaking readiness
 - [ ] Tenant isolation and FK-ownership suites green against the deployed build
+- [ ] `TRUST_PROXY_HOPS` set to the real hop count, and an audit row checked to
+      confirm it records the client's address rather than the proxy's
 - [ ] Android refresh token moved off `localStorage` (open — see debt D-07)
 
 ---

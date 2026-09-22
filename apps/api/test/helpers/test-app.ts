@@ -1,4 +1,5 @@
 import { ValidationPipe, VersioningType, type INestApplication } from '@nestjs/common';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { Test } from '@nestjs/testing';
 import cookieParser from 'cookie-parser';
 import * as argon2 from 'argon2';
@@ -12,6 +13,7 @@ import {
 } from '@leadflow/api-types';
 import { PLAN_CATALOGUE } from '../../src/modules/subscriptions/plan-catalogue';
 import { AppModule } from '../../src/app.module';
+import { AppConfig } from '../../src/common/config/config.module';
 import { RedisService } from '../../src/common/redis/redis.service';
 import { PrismaClient } from '../../src/generated/prisma/client';
 import { InMemoryRedis, asRedisService } from './in-memory-redis';
@@ -312,7 +314,7 @@ export async function createTestContext(): Promise<TestContext> {
 
   // Silent by default so the suite output stays readable. Run with
   // TEST_LOGS=1 to see server-side stacks when diagnosing a 500.
-  const app = moduleRef.createNestApplication({
+  const app = moduleRef.createNestApplication<NestExpressApplication>({
     logger: process.env['TEST_LOGS'] ? ['error', 'warn'] : false,
     /*
      * Must match main.ts.
@@ -325,6 +327,18 @@ export async function createTestContext(): Promise<TestContext> {
     rawBody: true,
   });
   app.use(cookieParser());
+
+  /*
+   * Also must match main.ts.
+   *
+   * req.ip is what every rate limit is keyed on, and how far Express trusts
+   * X-Forwarded-For decides what req.ip is. Defaulting to 0 changes nothing for
+   * the other suites — loopback is loopback either way — but it means the
+   * rate-limit suite exercises the real derivation rather than a harness that
+   * happens to be configured differently from production.
+   */
+  app.set('trust proxy', moduleRef.get(AppConfig).get('TRUST_PROXY_HOPS'));
+
   app.setGlobalPrefix('api', { exclude: ['health', 'readiness'] });
   app.enableVersioning({ type: VersioningType.URI, defaultVersion: '1' });
   app.useGlobalPipes(

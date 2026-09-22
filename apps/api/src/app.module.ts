@@ -9,6 +9,9 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { CommonModule } from './common/common.module';
 import { EmailModule } from './common/email/email.module';
 import { AppConfig } from './common/config/config.module';
+import { RedisService } from './common/redis/redis.service';
+import { RedisThrottlerStorage } from './common/throttler/redis-throttler.storage';
+import { isCredentialEndpoint } from './common/throttler/credential-throttle.decorator';
 import { AllExceptionsFilter } from './common/errors/all-exceptions.filter';
 import { ResponseEnvelopeInterceptor } from './common/interceptors/response-envelope.interceptor';
 import { StripTenantFieldsInterceptor } from './common/tenancy/strip-tenant-fields.interceptor';
@@ -89,12 +92,33 @@ import { HealthModule } from './modules/health/health.module';
       }),
     }),
 
+    /*
+     * Two abuse domains, deliberately separate, and counted in Redis.
+     *
+     *   default    — every route. Generous: it exists to stop a runaway
+     *                client or a scraper, not to police normal work.
+     *   credential — login, registration, password reset and the other
+     *                endpoints where guessing is the attack. Strict, and
+     *                applied ONLY to handlers carrying @CredentialThrottle().
+     *
+     * The `skipIf` is what makes the second policy narrow. @nestjs/throttler
+     * applies every named limiter to every route unless a name is skipped, so
+     * before this the login policy also governed CRM traffic, the refresh
+     * endpoint and Meta's webhooks — five requests per IP per fifteen minutes
+     * across a whole sales office (blocker B2).
+     */
     ThrottlerModule.forRootAsync({
-      inject: [AppConfig],
-      useFactory: (config: AppConfig) => ({
+      inject: [AppConfig, RedisService],
+      useFactory: (config: AppConfig, redis: RedisService) => ({
+        storage: new RedisThrottlerStorage(redis),
         throttlers: [
           { name: 'default', ttl: config.get('THROTTLE_TTL') * 1000, limit: config.get('THROTTLE_LIMIT') },
-          { name: 'auth', ttl: config.get('AUTH_THROTTLE_TTL') * 1000, limit: config.get('AUTH_THROTTLE_LIMIT') },
+          {
+            name: 'credential',
+            ttl: config.get('AUTH_THROTTLE_TTL') * 1000,
+            limit: config.get('AUTH_THROTTLE_LIMIT'),
+            skipIf: (context) => !isCredentialEndpoint(context),
+          },
         ],
       }),
     }),

@@ -223,10 +223,36 @@ export const envSchema = z
      */
     GOOGLE_CLIENT_ID: z.string().optional(),
 
+    /** The general API limit. Applies to every route. */
     THROTTLE_TTL: z.coerce.number().int().positive().default(60),
     THROTTLE_LIMIT: z.coerce.number().int().positive().default(100),
+    /**
+     * The credential limit: login, registration, password reset and the rest
+     * of the endpoints where guessing is the attack.
+     *
+     * It reaches ONLY handlers marked with @CredentialThrottle(). It used to
+     * reach everything, which is what made an ordinary sales team behind one
+     * office IP share five requests per fifteen minutes.
+     */
     AUTH_THROTTLE_TTL: z.coerce.number().int().positive().default(900),
     AUTH_THROTTLE_LIMIT: z.coerce.number().int().positive().default(5),
+
+    /**
+     * How many reverse proxies sit in front of this process.
+     *
+     * Express derives `req.ip` — which is what every rate limit and audit row
+     * is keyed on — by walking `X-Forwarded-For` from the right, trusting
+     * this many hops. Getting it wrong is a security bug in both directions:
+     * trust too many and any caller invents a fresh identity per request by
+     * setting a header, closing the limiter entirely; trust too few and every
+     * customer behind the load balancer shares the proxy's address.
+     *
+     * Defaults to 0 — trust nothing — because that is the only value that is
+     * safe without knowing the topology. Set it to the real number of hops
+     * when the deployment is fixed (1 for a single load balancer; 2 behind a
+     * CDN in front of it). See docs/production.md.
+     */
+    TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(0),
 
     /**
      * The build this process is running.

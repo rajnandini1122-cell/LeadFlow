@@ -43,11 +43,19 @@ async function bootstrap(): Promise<void> {
   // request and an arbitrarily large allocation.
   app.useBodyParser('json', { limit: '3mb' });
 
-  // Behind a load balancer, req.ip must come from X-Forwarded-For or every
-  // rate limit and audit entry records the proxy's address instead of the
-  // client's. `1` trusts exactly one hop — trusting all would let a client
-  // spoof its own IP by setting the header.
-  app.set('trust proxy', 1);
+  /*
+   * How far to trust X-Forwarded-For when deriving req.ip — the value every
+   * rate limit and audit row is keyed on.
+   *
+   * Configuration rather than a constant, because the correct number is a
+   * property of the deployment and being wrong is a security bug either way:
+   * trusting more hops than exist lets any caller mint a fresh identity per
+   * request by sending a header, which defeats the limiter completely;
+   * trusting fewer puts every customer behind the load balancer into one
+   * bucket. The default is 0 — trust nothing — which is the only safe value
+   * before the topology is fixed. See TRUST_PROXY_HOPS in .env.example.
+   */
+  app.set('trust proxy', config.get('TRUST_PROXY_HOPS'));
 
   app.setGlobalPrefix('api', { exclude: ['health', 'readiness'] });
   app.enableVersioning({ type: VersioningType.URI, defaultVersion: '1' });

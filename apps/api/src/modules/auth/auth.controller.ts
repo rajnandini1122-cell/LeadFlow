@@ -11,7 +11,7 @@ import {
   Req,
   Res,
 } from '@nestjs/common';
-import { SkipThrottle } from '@nestjs/throttler';
+import { CredentialThrottle } from '../../common/throttler/credential-throttle.decorator';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { Request, Response } from 'express';
 import type { AuthenticatedUser, LoginResponse, TokenPair } from '@leadflow/api-types';
@@ -37,16 +37,17 @@ import type { AccessTokenClaims } from './token.service';
 const REFRESH_COOKIE = 'leadflow_rt';
 
 /**
- * Credential endpoints are governed by the strict `auth` throttler rather than
- * the general one — brute-force protection per spec §19.
+ * Credential endpoints carry @CredentialThrottle(): the strict limiter reaches
+ * them and nothing else. Its numbers come from AUTH_THROTTLE_LIMIT /
+ * AUTH_THROTTLE_TTL so a deployment can tune them.
  *
- * Skipping `default` leaves the named `auth` limiter as the only one in force.
- * Its limits come from AUTH_THROTTLE_LIMIT / AUTH_THROTTLE_TTL, so they can be
- * tuned per environment; hardcoding them in a decorator here would make them
- * unconfigurable and would silently override the deployment's own settings.
+ * The rest of this controller — refresh, logout, the session list, `me` — is
+ * ordinary authenticated traffic and is governed by the general API limit.
+ * Refresh in particular must NOT sit in the credential bucket: several tabs,
+ * a shared office IP and rotation every fifteen minutes make a handful of
+ * attempts per quarter hour an outage rather than a protection.
  */
 @ApiTags('auth')
-@SkipThrottle({ default: true })
 @Controller('auth')
 export class AuthController {
   constructor(
@@ -58,6 +59,7 @@ export class AuthController {
   ) {}
 
   @Public()
+  @CredentialThrottle()
   @Post('register')
   @ApiOperation({
     summary: 'Register a new organization and its first owner',
@@ -123,6 +125,7 @@ export class AuthController {
   }
 
   @Public()
+  @CredentialThrottle()
   @Post('login')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Sign in and receive an access/refresh token pair' })
@@ -171,6 +174,7 @@ export class AuthController {
    * for accounts once the password route was rate limited.
    */
   @Public()
+  @CredentialThrottle()
   @Post('google')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Sign in with Google' })
@@ -200,6 +204,7 @@ export class AuthController {
    * tenant nobody chose, named after a mail provider as often as a company.
    */
   @Public()
+  @CredentialThrottle()
   @Post('google/register')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'Create an organization using a Google account' })
@@ -262,6 +267,7 @@ export class AuthController {
   // --- password reset -------------------------------------------------------
 
   @Public()
+  @CredentialThrottle()
   @Post('forgot-password')
   @HttpCode(HttpStatus.ACCEPTED)
   @ApiOperation({
@@ -276,6 +282,7 @@ export class AuthController {
   }
 
   @Public()
+  @CredentialThrottle()
   @Post('reset-password/:token')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
@@ -293,6 +300,7 @@ export class AuthController {
     return { reset: true };
   }
 
+  @CredentialThrottle()
   @Post('change-password')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
