@@ -2,6 +2,7 @@ import { createHmac } from 'node:crypto';
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import { TenantContextService } from '../src/common/tenancy/tenant-context.service';
 import { createTestContext, type TestContext } from './helpers/test-app';
+import { fixtureProviderDigits } from './helpers/phone-fixtures';
 
 /**
  * Media on conversations.
@@ -222,7 +223,7 @@ describe('Conversation media', () => {
 
   describe('inbound WhatsApp media', () => {
     it('records an image with its real type and provider metadata', async () => {
-      const from = `4477${unique().slice(-9)}`;
+      const from = fixtureProviderDigits();
       await deliverWhatsApp(whatsAppMedia({ from, kind: 'image' }));
 
       const conversation = await conversationFor(`${waNumbers.a}:${from}`);
@@ -240,7 +241,7 @@ describe('Conversation media', () => {
     });
 
     it('keeps the caption as the message text', async () => {
-      const from = `4477${unique().slice(-9)}`;
+      const from = fixtureProviderDigits();
       await deliverWhatsApp(
         whatsAppMedia({ from, kind: 'image', caption: 'Is this the one you meant?' }),
       );
@@ -253,7 +254,7 @@ describe('Conversation media', () => {
     });
 
     it('keeps a document filename the provider supplied', async () => {
-      const from = `4477${unique().slice(-9)}`;
+      const from = fixtureProviderDigits();
       await deliverWhatsApp(
         whatsAppMedia({ from, kind: 'document', filename: 'purchase-order.pdf' }),
       );
@@ -266,7 +267,7 @@ describe('Conversation media', () => {
     });
 
     it('NEVER exposes the provider media id to the browser', async () => {
-      const from = `4477${unique().slice(-9)}`;
+      const from = fixtureProviderDigits();
       const mediaId = `wamedia.secret.${unique()}`;
       await deliverWhatsApp(whatsAppMedia({ from, kind: 'image', mediaId }));
 
@@ -279,7 +280,7 @@ describe('Conversation media', () => {
     });
 
     it('creates no duplicate attachment on a redelivered webhook', async () => {
-      const from = `4477${unique().slice(-9)}`;
+      const from = fixtureProviderDigits();
       const payload = whatsAppMedia({ from, kind: 'image' });
 
       await deliverWhatsApp(payload);
@@ -370,7 +371,7 @@ describe('Conversation media', () => {
 
   describe('downloading an attachment', () => {
     async function anImage() {
-      const from = `4477${unique().slice(-9)}`;
+      const from = fixtureProviderDigits();
       await deliverWhatsApp(whatsAppMedia({ from, kind: 'image' }));
       const conversation = await conversationFor(`${waNumbers.a}:${from}`);
       const message = (await detail(conversation.id)).body.data.messages[0];
@@ -426,7 +427,7 @@ describe('Conversation media', () => {
     });
 
     it('refuses a user who cannot see the conversation', async () => {
-      const digits = `4477${unique().slice(-9)}`;
+      const digits = fixtureProviderDigits();
       const lead = await ctx
         .http()
         .post('/api/v1/leads')
@@ -500,7 +501,7 @@ describe('Conversation media', () => {
 
   describe('sending an attachment', () => {
     async function openWhatsApp() {
-      const from = `4477${unique().slice(-9)}`;
+      const from = fixtureProviderDigits();
       await deliverWhatsApp(whatsAppMedia({ from, kind: 'image' }));
       return conversationFor(`${waNumbers.a}:${from}`);
     }
@@ -711,7 +712,7 @@ describe('Conversation media', () => {
 
   describe('text messaging is untouched', () => {
     it('still accepts a plain JSON body with no file', async () => {
-      const from = `4477${unique().slice(-9)}`;
+      const from = fixtureProviderDigits();
       await deliverWhatsApp(whatsAppMedia({ from, kind: 'image' }));
       const conversation = await conversationFor(`${waNumbers.a}:${from}`);
 

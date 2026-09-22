@@ -2,6 +2,7 @@ import { createHmac } from 'node:crypto';
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import { TenantContextService } from '../src/common/tenancy/tenant-context.service';
 import { createTestContext, type TestContext } from './helpers/test-app';
+import { fixtureProviderDigits } from './helpers/phone-fixtures';
 
 /**
  * Instagram Direct Messages, end to end.
@@ -333,7 +334,7 @@ describe('Instagram webhook', () => {
     });
 
     it('does NOT merge an Instagram sender with an existing WhatsApp contact', async () => {
-      const digits = `4477${unique().slice(-9)}`;
+      const digits = fixtureProviderDigits();
       const lead = await ctx
         .http()
         .post('/api/v1/leads')

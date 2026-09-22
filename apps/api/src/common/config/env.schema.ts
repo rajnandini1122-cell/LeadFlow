@@ -1,4 +1,10 @@
 import { z } from 'zod';
+import {
+  isValidCountry,
+  isValidCurrency,
+  isValidLocale,
+  isValidTimezone,
+} from '../utils/locale';
 
 /**
  * Environment schema.
@@ -120,13 +126,40 @@ export const envSchema = z
     // can be changed without a release.
     SALES_EMAIL: z.string().email().default('sales@cravionventures.com'),
 
-    // --- defaults for newly created organizations ---------------------------
-    // Fallbacks only. Each organization stores its own, and every
-    // tenant-visible figure is formatted from the tenant value, never these.
-    DEFAULT_TIMEZONE: z.string().default('UTC'),
-    DEFAULT_CURRENCY: z.string().length(3).default('USD'),
-    DEFAULT_LOCALE: z.string().default('en-US'),
-    DEFAULT_COUNTRY: z.string().length(2).default('US'),
+    /*
+     * --- defaults for newly created organizations ---------------------------
+     *
+     * Fallbacks only, and only at creation. Each organization stores its own
+     * four values and every tenant-visible figure is formatted from THOSE,
+     * never from these — changing one of these settings does not reach a
+     * single existing tenant, which is what makes it safe to change.
+     *
+     * India, because that is the market this deployment opens in. They remain
+     * configuration rather than constants so the next deployment is a variable
+     * change and not a release, and they are validated below so a typo cannot
+     * create tenants whose own settings screen would refuse their values.
+     *
+     * The Prisma column defaults still say US/UTC/USD/en-US. They are not the
+     * source of truth and are never relied on: the application always passes
+     * all four explicitly when it creates an organization.
+     */
+    DEFAULT_TIMEZONE: z.string().trim().default('Asia/Kolkata'),
+    // Upper-cased on the way in, so DEFAULT_CURRENCY=inr is accepted and
+    // stored as INR rather than creating tenants whose currency compares
+    // unequal to everybody else's.
+    DEFAULT_CURRENCY: z
+      .string()
+      .trim()
+      .length(3)
+      .default('INR')
+      .transform((value) => value.toUpperCase()),
+    DEFAULT_LOCALE: z.string().trim().default('en-IN'),
+    DEFAULT_COUNTRY: z
+      .string()
+      .trim()
+      .length(2)
+      .default('IN')
+      .transform((value) => value.toUpperCase()),
 
     // --- platform operations ------------------------------------------------
     // Contact number for the PLATFORM operator, not for any tenant. Read in
@@ -349,6 +382,35 @@ export const envSchema = z
         path: ['CORS_ORIGINS'],
         message: 'must be set explicitly in production',
       });
+    }
+
+    /*
+     * The tenant defaults must be values a tenant could have chosen.
+     *
+     * They are written into every organization created from now on, and the
+     * settings screen validates the same four against the same ICU data — so
+     * an unchecked typo here would create tenants that cannot save their own
+     * settings until someone corrects a field they never filled in. The
+     * country is worse than cosmetic: it decides how every local phone number
+     * that tenant ever enters is read into E.164.
+     */
+    const defaults: [string, string, (value: string) => boolean][] = [
+      ['DEFAULT_TIMEZONE', env.DEFAULT_TIMEZONE, isValidTimezone],
+      ['DEFAULT_CURRENCY', env.DEFAULT_CURRENCY, isValidCurrency],
+      ['DEFAULT_LOCALE', env.DEFAULT_LOCALE, isValidLocale],
+      ['DEFAULT_COUNTRY', env.DEFAULT_COUNTRY, isValidCountry],
+    ];
+
+    for (const [name, value, isValid] of defaults) {
+      if (!isValid(value)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: [name],
+          message:
+            `"${value}" is not one this runtime recognises — new organizations ` +
+            'would be created with a setting their own settings screen refuses',
+        });
+      }
     }
 
     /*

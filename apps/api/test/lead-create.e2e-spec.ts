@@ -1,5 +1,6 @@
 import { ERROR_CODES } from '@leadflow/api-types';
 import { createTestContext, type TestContext } from './helpers/test-app';
+import { fixtureMobile } from './helpers/phone-fixtures';
 
 /**
  * Lead creation: the "no lead left behind" rule, duplicate detection (spec §23)
@@ -13,7 +14,7 @@ describe('Lead creation', () => {
 
   /** Unique per call, and valid as a US national number for the test tenants. */
   const uniqueMobile = (): string =>
-    `415${String(Math.floor(1000000 + Math.random() * 8999999))}`;
+    fixtureMobile();
 
   const tomorrow = (): string => new Date(Date.now() + 86_400_000).toISOString();
 
@@ -89,11 +90,11 @@ describe('Lead creation', () => {
         .http()
         .post('/api/v1/leads')
         .set(auth(ctx.orgA.owner.accessToken))
-        .send({ ...validLead(), mobile: '+1 (415) 555-0142' })
+        .send({ ...validLead(), mobile: '+1 (415) 286-0142' })
         .expect(201);
 
       // Canonical form, so the same customer typed two ways is one record.
-      expect(response.body.data.mobile).toBe('+14155550142');
+      expect(response.body.data.mobile).toBe('+14152860142');
     });
 
     it('applies the ORGANIZATION country to a local-format number', async () => {
@@ -103,10 +104,10 @@ describe('Lead creation', () => {
         .http()
         .post('/api/v1/leads')
         .set(auth(ctx.orgA.owner.accessToken))
-        .send({ ...validLead(), mobile: '4155550188' })
+        .send({ ...validLead(), mobile: '4152860188' })
         .expect(201);
 
-      expect(response.body.data.mobile).toBe('+14155550188');
+      expect(response.body.data.mobile).toBe('+14152860188');
     });
 
     it('gives each new lead a distinct sequential number', async () => {

@@ -86,6 +86,21 @@ describe('Omnichannel capture', () => {
     overrides: Partial<NormalizedChannelEvent> = {},
   ): NormalizedChannelEvent {
     const id = unique();
+
+    /*
+     * A provider delivers a COMPLETE international number.
+     *
+     * Meta sends the sender as "14155552601" and the WhatsApp normalizer turns
+     * that into "+14155552601" before anything else sees it, so a fixture that
+     * passes the bare national number is not modelling the provider — it is
+     * modelling a person typing into a form, which is a different path with a
+     * different country context. These fixtures are US numbers, hence +1.
+     */
+    const senderPhone =
+      typeof overrides.senderPhone === 'string' && !overrides.senderPhone.startsWith('+')
+        ? `+1${overrides.senderPhone}`
+        : overrides.senderPhone;
+
     return {
       organizationId: org.id,
       integrationId: integrations.get(org.id) as string,
@@ -97,6 +112,7 @@ describe('Omnichannel capture', () => {
       messageType: 'TEXT',
       timestamp: new Date(),
       ...overrides,
+      ...(senderPhone === undefined ? {} : { senderPhone }),
     };
   }
 

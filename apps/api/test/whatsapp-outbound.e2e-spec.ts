@@ -2,6 +2,7 @@ import { createHmac } from 'node:crypto';
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import { TenantContextService } from '../src/common/tenancy/tenant-context.service';
 import { createTestContext, type TestContext } from './helpers/test-app';
+import { fixtureProviderDigits } from './helpers/phone-fixtures';
 
 /**
  * Replying to a WhatsApp customer from the inbox.
@@ -180,7 +181,7 @@ describe('WhatsApp outbound', () => {
   describe('canSend', () => {
     it('is true inside the customer service window', async () => {
       await connectWithToken();
-      const digits = `4477${unique().slice(-9)}`;
+      const digits = fixtureProviderDigits();
       await customerWrites(digits);
 
       const detail = await ctx
@@ -194,7 +195,7 @@ describe('WhatsApp outbound', () => {
 
     it('is false, with a reason, when the channel is switched off', async () => {
       await connectWithToken();
-      const digits = `4477${unique().slice(-9)}`;
+      const digits = fixtureProviderDigits();
       await customerWrites(digits);
       const conversationId = await conversationFor(digits);
 
@@ -226,7 +227,7 @@ describe('WhatsApp outbound', () => {
 
     it('never leaks a credential through the detail response', async () => {
       await connectWithToken();
-      const digits = `4477${unique().slice(-9)}`;
+      const digits = fixtureProviderDigits();
       await customerWrites(digits);
 
       const detail = await ctx
@@ -247,7 +248,7 @@ describe('WhatsApp outbound', () => {
   describe('sending a reply', () => {
     it('reaches the provider and is stored as SENT', async () => {
       await connectWithToken();
-      const digits = `4477${unique().slice(-9)}`;
+      const digits = fixtureProviderDigits();
       await customerWrites(digits);
       const conversationId = await conversationFor(digits);
 
@@ -268,7 +269,7 @@ describe('WhatsApp outbound', () => {
 
     it('does not change the lead owner or the conversation owner', async () => {
       await connectWithToken();
-      const digits = `4477${unique().slice(-9)}`;
+      const digits = fixtureProviderDigits();
 
       const lead = await ctx
         .http()
@@ -303,7 +304,7 @@ describe('WhatsApp outbound', () => {
 
     it('appears in the conversation history as outbound', async () => {
       await connectWithToken();
-      const digits = `4477${unique().slice(-9)}`;
+      const digits = fixtureProviderDigits();
       await customerWrites(digits);
       const conversationId = await conversationFor(digits);
 
@@ -323,7 +324,7 @@ describe('WhatsApp outbound', () => {
 
     it.each(['', '   ', '\n\t'])('refuses the empty message %p without calling the provider', async (content) => {
       await connectWithToken();
-      const digits = `4477${unique().slice(-9)}`;
+      const digits = fixtureProviderDigits();
       await customerWrites(digits);
       const conversationId = await conversationFor(digits);
 
@@ -335,7 +336,7 @@ describe('WhatsApp outbound', () => {
 
     it('refuses a message longer than WhatsApp accepts', async () => {
       await connectWithToken();
-      const digits = `4477${unique().slice(-9)}`;
+      const digits = fixtureProviderDigits();
       await customerWrites(digits);
       const conversationId = await conversationFor(digits);
 
@@ -353,7 +354,7 @@ describe('WhatsApp outbound', () => {
   describe('authorization', () => {
     it('refuses a rep replying on a colleague’s lead, and calls nothing', async () => {
       await connectWithToken();
-      const digits = `4477${unique().slice(-9)}`;
+      const digits = fixtureProviderDigits();
 
       await ctx
         .http()
@@ -378,7 +379,7 @@ describe('WhatsApp outbound', () => {
 
     it('refuses organization B replying to organization A’s conversation', async () => {
       await connectWithToken();
-      const digits = `4477${unique().slice(-9)}`;
+      const digits = fixtureProviderDigits();
       await customerWrites(digits);
       const conversationId = await conversationFor(digits);
 
@@ -390,7 +391,7 @@ describe('WhatsApp outbound', () => {
 
     it('refuses a disabled integration without calling the provider', async () => {
       await connectWithToken();
-      const digits = `4477${unique().slice(-9)}`;
+      const digits = fixtureProviderDigits();
       await customerWrites(digits);
       const conversationId = await conversationFor(digits);
 
@@ -419,7 +420,7 @@ describe('WhatsApp outbound', () => {
 
     it('refuses once the customer service window has closed', async () => {
       await connectWithToken();
-      const digits = `4477${unique().slice(-9)}`;
+      const digits = fixtureProviderDigits();
       await customerWrites(digits);
       const conversationId = await conversationFor(digits);
 
@@ -447,7 +448,7 @@ describe('WhatsApp outbound', () => {
   describe('idempotency', () => {
     it('sends once however many times the request is repeated', async () => {
       await connectWithToken();
-      const digits = `4477${unique().slice(-9)}`;
+      const digits = fixtureProviderDigits();
       await customerWrites(digits);
       const conversationId = await conversationFor(digits);
 
@@ -480,7 +481,7 @@ describe('WhatsApp outbound', () => {
 
     it('stores one message row for a repeated request', async () => {
       await connectWithToken();
-      const digits = `4477${unique().slice(-9)}`;
+      const digits = fixtureProviderDigits();
       await customerWrites(digits);
       const conversationId = await conversationFor(digits);
 
@@ -504,7 +505,7 @@ describe('WhatsApp outbound', () => {
 
     it('lets a genuinely different message through', async () => {
       await connectWithToken();
-      const digits = `4477${unique().slice(-9)}`;
+      const digits = fixtureProviderDigits();
       await customerWrites(digits);
       const conversationId = await conversationFor(digits);
 
@@ -522,7 +523,7 @@ describe('WhatsApp outbound', () => {
   describe('provider failures', () => {
     it('does not mark a rejected message as sent', async () => {
       await connectWithToken();
-      const digits = `4477${unique().slice(-9)}`;
+      const digits = fixtureProviderDigits();
       await customerWrites(digits);
       const conversationId = await conversationFor(digits);
 
@@ -547,7 +548,7 @@ describe('WhatsApp outbound', () => {
 
     it('reports an expired token without revealing it', async () => {
       await connectWithToken();
-      const digits = `4477${unique().slice(-9)}`;
+      const digits = fixtureProviderDigits();
       await customerWrites(digits);
       const conversationId = await conversationFor(digits);
 
@@ -562,7 +563,7 @@ describe('WhatsApp outbound', () => {
 
     it('keeps the record when the outcome is uncertain, so nobody resends blindly', async () => {
       await connectWithToken();
-      const digits = `4477${unique().slice(-9)}`;
+      const digits = fixtureProviderDigits();
       await customerWrites(digits);
       const conversationId = await conversationFor(digits);
 
@@ -624,7 +625,7 @@ describe('WhatsApp outbound', () => {
 
     async function sendAndCapture(): Promise<{ messageId: string; providerId: string }> {
       await connectWithToken();
-      const digits = `4477${unique().slice(-9)}`;
+      const digits = fixtureProviderDigits();
       await customerWrites(digits);
       const conversationId = await conversationFor(digits);
 

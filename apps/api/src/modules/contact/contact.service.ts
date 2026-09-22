@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { EmailService } from '../../common/email/email.service';
 import { PlatformService } from '../../common/platform/platform.service';
+import { parsePhone } from '../../common/utils/phone';
 import { ContactRepository } from './contact.repository';
 import type { SubmitEnquiryDto } from './dto/contact.dto';
 
@@ -54,7 +55,7 @@ export class ContactService {
       name: dto.name,
       email: dto.email,
       company: dto.company,
-      phone: dto.phone,
+      phone: this.enquiryPhone(dto.phone, dto.country),
       country: dto.country,
       message: dto.message,
       source: dto.source,
@@ -90,6 +91,32 @@ export class ContactService {
     }
 
     return { reference, salesEmail: this.email.salesEmail };
+  }
+
+  /**
+   * A stranger's phone number, canonicalised where that is safe and kept as
+   * typed where it is not.
+   *
+   * Deliberately gentler than every CRM write path, because the cost of being
+   * wrong runs the other way. A lead in the CRM is data a salesperson owns and
+   * can correct; this is a person on a public page who may never come back. So
+   * an unparseable number is never a reason to refuse the enquiry — the
+   * message, the name and the email address are what the sales team actually
+   * needs, and a number nobody can dial is still better than an enquiry
+   * nobody receives.
+   *
+   * Canonicalised when the caller said which country they are in, or when the
+   * number carries its own international prefix. A bare local number with no
+   * country stated is stored exactly as typed: reading it against this
+   * deployment's own default would quietly turn a German enquiry into an
+   * Indian one, which is worse than leaving it alone.
+   */
+  private enquiryPhone(phone: string | undefined, country: string | undefined): string | undefined {
+    const result = parsePhone(phone, { country });
+
+    if (result.status === 'VALID') return result.e164;
+
+    return phone?.trim() || undefined;
   }
 
   private async markNotified(id: string): Promise<void> {

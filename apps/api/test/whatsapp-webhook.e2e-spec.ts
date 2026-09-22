@@ -2,6 +2,7 @@ import { createHmac } from 'node:crypto';
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import { TenantContextService } from '../src/common/tenancy/tenant-context.service';
 import { createTestContext, type TestContext } from './helpers/test-app';
+import { fixtureProviderDigits } from './helpers/phone-fixtures';
 
 /**
  * Real WhatsApp webhooks, end to end.
@@ -361,7 +362,7 @@ describe('WhatsApp webhook', () => {
 
   describe('a message from an existing customer', () => {
     it('links to their existing lead and leaves the owner alone', async () => {
-      const digits = `4477${unique().slice(-9)}`;
+      const digits = fixtureProviderDigits();
       const lead = await createLead(ctx.orgA.owner.accessToken, {
         mobile: `+${digits}`,
         assignedToId: ctx.orgA.rep.id,
@@ -390,7 +391,7 @@ describe('WhatsApp webhook', () => {
     });
 
     it('appears in the unified inbox under the WhatsApp filter', async () => {
-      const digits = `4477${unique().slice(-9)}`;
+      const digits = fixtureProviderDigits();
 
       await deliver(payload({ phoneNumberId: numbers.a, from: digits, text: 'need a quote' }));
 
@@ -407,7 +408,7 @@ describe('WhatsApp webhook', () => {
 
   describe('a message from someone unknown', () => {
     it('is stored but attached to nobody, and reaches the review queue', async () => {
-      const digits = `4477${unique().slice(-9)}`;
+      const digits = fixtureProviderDigits();
 
       await deliver(
         payload({ phoneNumberId: numbers.a, from: digits, text: 'What is your MOQ?' }),
@@ -436,7 +437,7 @@ describe('WhatsApp webhook', () => {
 
   describe('duplicate delivery', () => {
     it('stores one message however many times Meta delivers it', async () => {
-      const digits = `4477${unique().slice(-9)}`;
+      const digits = fixtureProviderDigits();
       const messageId = `wamid.${unique()}`;
       const body = payload({ phoneNumberId: numbers.a, from: digits, messageId });
 
@@ -450,7 +451,7 @@ describe('WhatsApp webhook', () => {
     });
 
     it('creates one conversation, not three', async () => {
-      const digits = `4477${unique().slice(-9)}`;
+      const digits = fixtureProviderDigits();
       const body = payload({ phoneNumberId: numbers.a, from: digits, messageId: `wamid.${unique()}` });
 
       await deliver(body);
@@ -472,7 +473,7 @@ describe('WhatsApp webhook', () => {
 
   describe('batched deliveries', () => {
     it('processes every message in one request', async () => {
-      const digits = `4477${unique().slice(-9)}`;
+      const digits = fixtureProviderDigits();
       const before = await countMessages(ctx.orgA.id);
 
       const body = payload({ phoneNumberId: numbers.a, from: digits });
@@ -489,7 +490,7 @@ describe('WhatsApp webhook', () => {
     });
 
     it('does not let one malformed event discard the valid ones beside it', async () => {
-      const digits = `4477${unique().slice(-9)}`;
+      const digits = fixtureProviderDigits();
       const before = await countMessages(ctx.orgA.id);
 
       const body = payload({ phoneNumberId: numbers.a, from: digits });
@@ -533,7 +534,7 @@ describe('WhatsApp webhook', () => {
     });
 
     it('records an unsupported type without pretending it was text', async () => {
-      const digits = `4477${unique().slice(-9)}`;
+      const digits = fixtureProviderDigits();
 
       await deliver(payload({ phoneNumberId: numbers.a, from: digits, type: 'image' }));
 
@@ -554,7 +555,7 @@ describe('WhatsApp webhook', () => {
 
   describe('out-of-order delivery', () => {
     it('shows messages by when they were sent, not when they arrived', async () => {
-      const digits = `4477${unique().slice(-9)}`;
+      const digits = fixtureProviderDigits();
       const base = Math.floor(Date.now() / 1000);
 
       // The later message is delivered FIRST, which Meta does not rule out.

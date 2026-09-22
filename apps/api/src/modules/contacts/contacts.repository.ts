@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { TenantContextService } from '../../common/tenancy/tenant-context.service';
+import { AppConfig } from '../../common/config/config.module';
 
 /**
  * Contact data access.
@@ -14,6 +15,7 @@ export class ContactsRepository {
   constructor(
     private readonly prisma: PrismaService,
     private readonly tenantContext: TenantContextService,
+    private readonly config: AppConfig,
   ) {}
 
   /** Excludes merged and deleted rows — both are tombstones, not people. */
@@ -79,7 +81,10 @@ export class ContactsRepository {
     const organization = await this.prisma.client.organization.findFirst({
       select: { country: true },
     });
-    return organization?.country ?? 'US';
+    // The configured deployment default, not a constant: an organization
+    // with no country is a row that predates the column, and guessing 'US'
+    // for an India-first product read every local number as American.
+    return organization?.country ?? this.config.get('DEFAULT_COUNTRY');
   }
 
   async countAll(search?: string): Promise<number> {

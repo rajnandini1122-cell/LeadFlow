@@ -8,6 +8,12 @@ import {
   MinLength,
 } from 'class-validator';
 import { Transform } from 'class-transformer';
+import {
+  IsCountryCode,
+  IsCurrencyCode,
+  IsLocaleTag,
+  IsTimezoneId,
+} from '../../../common/validation/locale.validators';
 
 export class LoginDto {
   @IsEmail({}, { message: 'must be a valid email address' })
@@ -86,6 +92,38 @@ export class GoogleRegisterDto {
   @MaxLength(120)
   @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   organizationName!: string;
+
+  /*
+   * The same tenant identity settings the password registration accepts, and
+   * for the same reason: an organization created through Google is an
+   * organization like any other, and there is no version of "you may choose
+   * your country, unless you signed in with Google" that makes sense. Absent,
+   * the configured deployment defaults apply — which is what this path did
+   * before and still does.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  @IsTimezoneId()
+  timezone?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(3)
+  @IsCurrencyCode()
+  currency?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(16)
+  @IsLocaleTag()
+  locale?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2)
+  @IsCountryCode()
+  country?: string;
 
   @IsOptional()
   @IsIn(['WEB', 'ANDROID', 'IOS'])

@@ -1,4 +1,5 @@
 import { createTestContext, type TestContext } from './helpers/test-app';
+import { fixtureMobile } from './helpers/phone-fixtures';
 
 /**
  * Product master and product KPIs.
@@ -68,7 +69,7 @@ describe('Products', () => {
       .send({
         firstName: 'Test',
         lastName: 'Buyer',
-        mobile: `415${String(Math.floor(1000000 + Math.random() * 8999999))}`,
+        mobile: fixtureMobile(),
         nextFollowUpAt: tomorrow(),
         ...overrides,
       });

@@ -2,6 +2,7 @@ import { PrismaService } from '../src/common/prisma/prisma.service';
 import { TenantContextService } from '../src/common/tenancy/tenant-context.service';
 import { OutboundRecoveryService } from '../src/modules/omnichannel/outbound-recovery.service';
 import { createTestContext, type TestContext } from './helpers/test-app';
+import { fixtureMobileE164 } from './helpers/phone-fixtures';
 
 /**
  * Closing sends that were claimed but never resolved.
@@ -244,7 +245,7 @@ describe('Stale outbound message recovery', () => {
         .set(auth(ctx.orgA.owner.accessToken))
         .send({
           firstName: 'Rahul',
-          mobile: `+4477${unique().slice(-9)}`,
+          mobile: fixtureMobileE164(),
           assignedToId: ctx.orgA.rep.id,
           nextFollowUpAt: new Date(Date.now() + 86_400_000).toISOString(),
         });

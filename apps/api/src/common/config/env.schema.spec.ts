@@ -157,6 +157,54 @@ describe('production configuration', () => {
     expect(parsed['S3_SECRET_ACCESS_KEY']).toBeUndefined();
   });
 
+  describe('tenant defaults', () => {
+    it('is an India-first deployment out of the box', () => {
+      // The product opens in India, so a deployment that states nothing gets a
+      // coherent Indian tenant rather than the schema's historical US values.
+      const parsed = validateEnv(baseEnv()) as Record<string, unknown>;
+
+      expect(parsed['DEFAULT_COUNTRY']).toBe('IN');
+      expect(parsed['DEFAULT_TIMEZONE']).toBe('Asia/Kolkata');
+      expect(parsed['DEFAULT_CURRENCY']).toBe('INR');
+      expect(parsed['DEFAULT_LOCALE']).toBe('en-IN');
+    });
+
+    it('stays configurable for the next market', () => {
+      const parsed = validateEnv(
+        baseEnv({
+          DEFAULT_COUNTRY: 'de',
+          DEFAULT_TIMEZONE: 'Europe/Berlin',
+          DEFAULT_CURRENCY: 'eur',
+          DEFAULT_LOCALE: 'de-DE',
+        }),
+      ) as Record<string, unknown>;
+
+      // Case corrected rather than refused: "de" is a typo of spelling, not of
+      // meaning, and storing it as typed would make one tenant's country
+      // compare unequal to every other tenant's.
+      expect(parsed['DEFAULT_COUNTRY']).toBe('DE');
+      expect(parsed['DEFAULT_CURRENCY']).toBe('EUR');
+    });
+
+    it.each([
+      ['DEFAULT_COUNTRY', 'ZZ'],
+      ['DEFAULT_COUNTRY', 'XX'],
+      ['DEFAULT_TIMEZONE', 'IST'],
+      ['DEFAULT_TIMEZONE', 'GMT+5:30'],
+      ['DEFAULT_CURRENCY', 'ZZZ'],
+      ['DEFAULT_LOCALE', 'not a locale'],
+    ])('REFUSES to boot with %s=%s', (name, value) => {
+      /*
+       * These are written into every organization created from here on, and
+       * the settings screen validates the same four against the same data — so
+       * an unchecked typo would create tenants that cannot save settings they
+       * never chose. The country is worse than cosmetic: it decides how every
+       * local phone number that tenant enters is read.
+       */
+      expect(() => validateEnv(baseEnv({ [name]: value }))).toThrow(new RegExp(name));
+    });
+  });
+
   describe('email', () => {
     /** A complete SMTP configuration, so each case removes exactly one thing. */
     const smtp = {

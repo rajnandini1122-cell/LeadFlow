@@ -1,4 +1,5 @@
 import { createTestContext, type TestContext } from './helpers/test-app';
+import { fixtureMobile } from './helpers/phone-fixtures';
 
 /**
  * Customer retention and repeat business.
@@ -72,7 +73,7 @@ describe('Customer retention and repeat business', () => {
       .send({
         firstName: 'Test',
         lastName: 'Buyer',
-        mobile: `415${String(Math.floor(1000000 + Math.random() * 8999999))}`,
+        mobile: fixtureMobile(),
         nextFollowUpAt: tomorrow(),
         ...overrides,
       });

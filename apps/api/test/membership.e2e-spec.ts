@@ -2,6 +2,7 @@ import { ERROR_CODES } from '@leadflow/api-types';
 import { createTestContext, PASSWORD, type TestContext } from './helpers/test-app';
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import { TenantContextService } from '../src/common/tenancy/tenant-context.service';
+import { fixtureMobile } from './helpers/phone-fixtures';
 
 /**
  * Phase 2A — organization registration, invitations, membership lifecycle.
@@ -548,7 +549,7 @@ describe('Organization membership and invitations', () => {
         .set(auth(org.token))
         .send({
           firstName: 'Owned',
-          mobile: `415${Math.floor(1000000 + Math.random() * 8999999)}`,
+          mobile: fixtureMobile(),
           nextFollowUpAt: new Date(Date.now() + 86_400_000).toISOString(),
           assignedToId: member.userId,
         })

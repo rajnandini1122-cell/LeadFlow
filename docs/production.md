@@ -71,6 +71,7 @@ Beyond the existing `.env.example`, production needs:
 | `EMAIL_PROVIDER` | `smtp` | `console` only logs and is refused in production |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_SECURE` / `SMTP_USER` / `SMTP_PASSWORD` | the real mailbox | Required together; a partial set refuses to boot |
 | `EMAIL_FROM` | a mailbox the SMTP server may send as | Most servers reject a `From` they do not own |
+| `DEFAULT_COUNTRY` / `DEFAULT_TIMEZONE` / `DEFAULT_CURRENCY` / `DEFAULT_LOCALE` | `IN` / `Asia/Kolkata` / `INR` / `en-IN` | Applied to NEW organizations only; existing tenants keep their own. Validated at boot |
 
 ### Getting `TRUST_PROXY_HOPS` right
 

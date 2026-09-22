@@ -2,6 +2,7 @@ import { createHmac } from 'node:crypto';
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import { TenantContextService } from '../src/common/tenancy/tenant-context.service';
 import { createTestContext, type TestContext } from './helpers/test-app';
+import { fixtureProviderDigits } from './helpers/phone-fixtures';
 
 /**
  * WhatsApp template messaging.
@@ -451,7 +452,7 @@ describe('WhatsApp templates', () => {
       };
       await syncTemplates('b');
 
-      const digits = `4477${unique().slice(-9)}`;
+      const digits = fixtureProviderDigits();
       await customerWrites(digits);
       const conversationId = await conversationFor(digits);
 
@@ -476,7 +477,7 @@ describe('WhatsApp templates', () => {
       await connect();
       await syncTemplates();
 
-      const digits = `4477${unique().slice(-9)}`;
+      const digits = fixtureProviderDigits();
       await customerWrites(digits);
       const conversationId = await conversationFor(digits);
       await closeWindow(conversationId);
@@ -496,7 +497,7 @@ describe('WhatsApp templates', () => {
       templateResponse = { status: 200, body: { data: [] } };
       await syncTemplates();
 
-      const digits = `4477${unique().slice(-9)}`;
+      const digits = fixtureProviderDigits();
       await customerWrites(digits);
       const conversationId = await conversationFor(digits);
       await closeWindow(conversationId);
@@ -515,7 +516,7 @@ describe('WhatsApp templates', () => {
       templateResponse = { status: 200, body: { data: [metaTemplate({ status: 'PENDING' })] } };
       await syncTemplates();
 
-      const digits = `4477${unique().slice(-9)}`;
+      const digits = fixtureProviderDigits();
       await customerWrites(digits);
 
       const detail = await ctx
@@ -535,7 +536,7 @@ describe('WhatsApp templates', () => {
     async function readyConversation(): Promise<string> {
       await connect();
       await syncTemplates();
-      const digits = `4477${unique().slice(-9)}`;
+      const digits = fixtureProviderDigits();
       await customerWrites(digits);
       const conversationId = await conversationFor(digits);
       await closeWindow(conversationId);
@@ -716,7 +717,7 @@ describe('WhatsApp templates', () => {
       await connect();
       await syncTemplates();
 
-      const digits = `4477${unique().slice(-9)}`;
+      const digits = fixtureProviderDigits();
       await customerWrites(digits);
       const conversationId = await conversationFor(digits);
       await closeWindow(conversationId);
@@ -737,7 +738,7 @@ describe('WhatsApp templates', () => {
       templateResponse = { status: 200, body: { data: [metaTemplate({ status: 'PAUSED' })] } };
       await syncTemplates();
 
-      const digits = `4477${unique().slice(-9)}`;
+      const digits = fixtureProviderDigits();
       await customerWrites(digits);
       const conversationId = await conversationFor(digits);
 
@@ -765,7 +766,7 @@ describe('WhatsApp templates', () => {
       };
       await syncTemplates();
 
-      const digits = `4477${unique().slice(-9)}`;
+      const digits = fixtureProviderDigits();
       await customerWrites(digits);
 
       const response = await sendTemplate(await conversationFor(digits), {});
@@ -778,7 +779,7 @@ describe('WhatsApp templates', () => {
       await connect();
       await syncTemplates();
 
-      const digits = `4477${unique().slice(-9)}`;
+      const digits = fixtureProviderDigits();
       await customerWrites(digits);
 
       const response = await sendTemplate(await conversationFor(digits), {
@@ -793,7 +794,7 @@ describe('WhatsApp templates', () => {
       async function ready(): Promise<string> {
         await connect();
         await syncTemplates();
-        const digits = `4477${unique().slice(-9)}`;
+        const digits = fixtureProviderDigits();
         await customerWrites(digits);
         return conversationFor(digits);
       }
@@ -886,7 +887,7 @@ describe('WhatsApp templates', () => {
 
     it('refuses a conversation the caller cannot see', async () => {
       await connect('b');
-      const digits = `4477${unique().slice(-9)}`;
+      const digits = fixtureProviderDigits();
       await customerWrites(digits, numbers.b);
       const orgBConversation = await conversationFor(digits, numbers.b);
 

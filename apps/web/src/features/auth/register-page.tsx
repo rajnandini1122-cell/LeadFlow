@@ -1,8 +1,9 @@
-import { useState, type FormEvent } from 'react';
+import { useMemo, useState, type FormEvent } from 'react';
 import { Link, Navigate } from 'react-router-dom';
 import { ApiError } from '../../lib/api-client';
+import { DEFAULT_COUNTRY, countryOptions } from '../../lib/countries';
 import { useAuth } from './auth-context';
-import { AuthField, AuthLayout, SubmitButton } from './auth-shell';
+import { AuthField, AuthLayout, AuthSelect, SubmitButton } from './auth-shell';
 import { GoogleSignInButton } from './google-sign-in';
 
 /**
@@ -21,10 +22,32 @@ export function RegisterPage(): React.JSX.Element {
   const [lastName, setLastName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [country, setCountry] = useState(DEFAULT_COUNTRY);
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string[]>>({});
   const [submitting, setSubmitting] = useState(false);
 
+  /*
+   * Built once.
+   *
+   * The list comes from the browser's own region data, and there are about 250
+   * of them — deriving and re-rendering that on every keystroke in the fields
+   * above is work nobody asked for, and it is measurable: typing slowed enough
+   * to time a test out.
+   */
+  const countries = useMemo(
+    () => countryOptions().map(({ code, name }) => ({ value: code, label: name })),
+    [],
+  );
+
+  /*
+   * Every hook above this line, without exception.
+   *
+   * The redirect below is an early return, so a hook declared after it runs on
+   * the first render and not on the one where registration has just succeeded
+   * — which React counts, and rejects. It cost a test to find and would have
+   * cost a user the page.
+   */
   if (status === 'authenticated') return <Navigate to="/dashboard" replace />;
 
   const submit = async (event: FormEvent): Promise<void> => {
@@ -34,7 +57,7 @@ export function RegisterPage(): React.JSX.Element {
     setSubmitting(true);
 
     try {
-      await register({ organizationName, firstName, lastName, email, password });
+      await register({ organizationName, firstName, lastName, email, password, country });
     } catch (caught) {
       if (caught instanceof ApiError) {
         setError(caught.message);
@@ -48,6 +71,7 @@ export function RegisterPage(): React.JSX.Element {
   };
 
   const fieldError = (name: string): string | undefined => fieldErrors[name]?.[0];
+
 
   /**
    * A Google signup from the register form.
@@ -69,7 +93,7 @@ export function RegisterPage(): React.JSX.Element {
         return;
       }
 
-      await registerWithGoogle(idToken, organizationName);
+      await registerWithGoogle(idToken, organizationName, country);
     } catch (caught) {
       setError(
         caught instanceof ApiError ? caught.message : 'Google sign-in failed. Please try again.',
@@ -131,6 +155,23 @@ export function RegisterPage(): React.JSX.Element {
           autoComplete="email"
           required
           error={fieldError('email')}
+        />
+
+        {/*
+          Country is asked here because it is not cosmetic: it decides how
+          every phone number this organization later types is read into its
+          canonical form, and therefore whether the same customer entered
+          twice is recognised as one person. It is changeable afterwards in
+          settings, and defaults to where this deployment sells.
+        */}
+        <AuthSelect
+          id="country"
+          label="Country"
+          value={country}
+          onChange={setCountry}
+          options={countries}
+          hint="Sets how phone numbers are read. You can change it later."
+          error={fieldError('country')}
         />
 
         <AuthField

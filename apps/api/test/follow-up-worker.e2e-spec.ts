@@ -3,6 +3,7 @@ import { FollowUpSweepService } from '../src/queues/follow-up-sweep.service';
 import { NotificationsRepository } from '../src/modules/notifications/notifications.repository';
 import { TenantContextService } from '../src/common/tenancy/tenant-context.service';
 import { jobPrincipal } from '../src/queues/job-context';
+import { fixtureMobile } from './helpers/phone-fixtures';
 
 /**
  * The follow-up worker.
@@ -63,7 +64,7 @@ describe('Follow-up worker', () => {
         firstName: 'Sweep',
         lastName: `Case ${unique()}`,
         companyName: `Sweep Co ${unique()}`,
-        mobile: `415${String(Math.floor(1000000 + Math.random() * 8999999))}`,
+        mobile: fixtureMobile(),
         nextFollowUpAt: minutesFromNow(scheduledInMinutes),
       });
 

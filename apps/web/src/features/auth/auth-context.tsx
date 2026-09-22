@@ -72,6 +72,12 @@ interface AuthState {
     lastName: string;
     email: string;
     password: string;
+    /**
+     * ISO 3166-1 alpha-2. Decides how every phone number this organization
+     * later enters is read into E.164, so it is asked at registration rather
+     * than defaulted silently on the server.
+     */
+    country?: string;
   }) => Promise<void>;
   /** Switches tenant without re-entering credentials. Server validates membership. */
   switchOrganization: (organizationId: string) => Promise<void>;
@@ -88,7 +94,11 @@ interface AuthState {
     organizationId?: string,
   ) => Promise<{ needsOrganization: boolean; email?: string | null }>;
   /** Creates the organization for a Google account that has none. */
-  registerWithGoogle: (idToken: string, organizationName: string) => Promise<void>;
+  registerWithGoogle: (
+    idToken: string,
+    organizationName: string,
+    country?: string,
+  ) => Promise<void>;
   logout: () => Promise<void>;
   /**
    * Re-reads the signed-in user from the server.
@@ -218,6 +228,7 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
       lastName: string;
       email: string;
       password: string;
+      country?: string;
     }): Promise<void> => {
       const result = await apiPost<RefreshResult>('/auth/register', {
         ...input,
@@ -300,10 +311,13 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
   );
 
   const registerWithGoogle = useCallback(
-    async (idToken: string, organizationName: string): Promise<void> => {
+    async (idToken: string, organizationName: string, country?: string): Promise<void> => {
       const result = await apiPost<RefreshResult>('/auth/google/register', {
         idToken,
         organizationName,
+        // Same tenant identity the password path sends, so an organization
+        // created through Google is not a second-class one.
+        ...(country ? { country } : {}),
         platform: clientPlatform(),
       });
 

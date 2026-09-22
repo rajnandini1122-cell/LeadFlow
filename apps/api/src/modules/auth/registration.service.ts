@@ -46,7 +46,15 @@ export class RegistrationService {
    * this row a special case for every other auth path.
    */
   async registerWithGoogle(
-    input: { idToken: string; organizationName: string; platform?: string | undefined },
+    input: {
+      idToken: string;
+      organizationName: string;
+      platform?: string | undefined;
+      timezone?: string | undefined;
+      currency?: string | undefined;
+      locale?: string | undefined;
+      country?: string | undefined;
+    },
     meta: RequestMetadata,
   ): Promise<{ tokens: TokenPair; user: AuthenticatedUser; refreshToken: string }> {
     const identity = await this.google.verify(input.idToken);
@@ -67,6 +75,12 @@ export class RegistrationService {
         email: identity.email,
         password: randomBytes(32).toString('base64url'),
         platform: input.platform,
+        // Tenant identity travels the same road as the password path, so both
+        // reach the one place that resolves configured defaults.
+        timezone: input.timezone,
+        currency: input.currency,
+        locale: input.locale,
+        country: input.country,
         // From the verified token, never the request body.
         googleSubject: identity.subject,
       } as RegisterDto & { googleSubject: string },
@@ -113,10 +127,23 @@ export class RegistrationService {
       created = await this.repository.createOrganizationWithOwner({
         organizationName: dto.organizationName,
         slug,
+        /*
+         * What the registering owner said, else what this deployment is
+         * configured for.
+         *
+         * Never the schema's column defaults. Those say US/UTC/USD/en-US
+         * because that is what the first migration happened to write, and a
+         * tenant created for an India-first product must not depend on which
+         * of two unrelated files was more recently edited. The application
+         * decides, from configuration, in one place.
+         *
+         * Every value here has already been validated by the DTO, and the
+         * configured fallbacks are validated at boot.
+         */
         timezone: dto.timezone ?? this.config.get('DEFAULT_TIMEZONE'),
-        currency: (dto.currency ?? this.config.get('DEFAULT_CURRENCY')).toUpperCase(),
-        locale: this.config.get('DEFAULT_LOCALE'),
-        country: (dto.country ?? this.config.get('DEFAULT_COUNTRY')).toUpperCase(),
+        currency: dto.currency ?? this.config.get('DEFAULT_CURRENCY'),
+        locale: dto.locale ?? this.config.get('DEFAULT_LOCALE'),
+        country: dto.country ?? this.config.get('DEFAULT_COUNTRY'),
         email: dto.email,
         passwordHash,
         fullName: `${dto.firstName} ${dto.lastName}`.trim(),

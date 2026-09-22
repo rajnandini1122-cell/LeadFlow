@@ -1,6 +1,7 @@
 import { createTestContext, type TestContext } from './helpers/test-app';
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import { TenantContextService } from '../src/common/tenancy/tenant-context.service';
+import { fixtureMobile } from './helpers/phone-fixtures';
 
 /**
  * Workstream 5 — same-tenant relationship integrity.
@@ -26,11 +27,7 @@ describe('Same-tenant relationship integrity', () => {
   const auth = (token: string) => ({ Authorization: `Bearer ${token}` });
   const inDays = (days: number): string => new Date(Date.now() + days * 86_400_000).toISOString();
 
-  let counter = 0;
-  const mobile = (): string => {
-    counter += 1;
-    return `4155597${String(1000 + counter)}`;
-  };
+  const mobile = (): string => fixtureMobile();
 
   const asSystem = async <T>(fn: (prisma: PrismaService['client']) => Promise<T>): Promise<T> => {
     const tenantContext = ctx.app.get(TenantContextService);

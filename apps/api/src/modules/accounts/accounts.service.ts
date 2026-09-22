@@ -3,6 +3,7 @@ import { ERROR_CODES } from '@leadflow/api-types';
 import { AppException } from '../../common/errors/app.exception';
 import { AuditRepository, AUDIT_ACTIONS } from '../../common/audit/audit.repository';
 import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
+import { parsePhone } from '../../common/utils/phone';
 import type { AccountStatus } from '../../generated/prisma/enums';
 import { AccountsRepository } from './accounts.repository';
 import { AccountLifecycleService } from './account-lifecycle.service';
@@ -110,10 +111,18 @@ export class AccountsService {
   ): Promise<{ account: AccountView; duplicates: DuplicateCandidate[] }> {
     const normalizedName = normalizeCompanyName(dto.name);
     const domain = extractDomain(dto.website) ?? extractDomain(dto.email);
+    /*
+     * Canonicalised BEFORE duplicate detection, not after.
+     *
+     * Phone is one of the signals that decides whether this company already
+     * exists, and "+91 98200 11001" compared against "09820011001" as strings
+     * says two different businesses.
+     */
+    const phone = await this.canonicalPhone(dto.phone);
 
     const existing = await this.repository.findByIdentityKeys({ normalizedName, domain });
     const duplicates = findDuplicateCandidates(
-      { name: dto.name, website: dto.website, email: dto.email, phone: dto.phone },
+      { name: dto.name, website: dto.website, email: dto.email, phone },
       existing,
     );
 
@@ -154,7 +163,7 @@ export class AccountsService {
       industry: dto.industry,
       website: dto.website,
       domain,
-      phone: dto.phone,
+      phone,
       email: dto.email,
       city: dto.city,
       state: dto.state,
@@ -194,7 +203,10 @@ export class AccountsService {
       data['normalizedName'] = normalizeCompanyName(dto.name);
     }
     if (dto.industry !== undefined) data['industry'] = dto.industry;
-    if (dto.phone !== undefined) data['phone'] = dto.phone;
+    // Create and update canonicalise identically. A number that arrives one
+    // way on create and another on update is the same record disagreeing with
+    // itself about who it belongs to.
+    if (dto.phone !== undefined) data['phone'] = await this.canonicalPhone(dto.phone);
     if (dto.city !== undefined) data['city'] = dto.city;
     if (dto.state !== undefined) data['state'] = dto.state;
     if (dto.country !== undefined) data['country'] = dto.country;
@@ -424,6 +436,29 @@ export class AccountsService {
     const account = await this.repository.findById(id);
     if (!account) throw this.notFound();
     return account;
+  }
+
+  /**
+   * A company switchboard number in E.164.
+   *
+   * Read against the ORGANIZATION's country when the caller typed a local
+   * number, exactly as leads and contacts are, so the same business reached on
+   * the same number is one record however the number was typed. An explicitly
+   * international number keeps its own country.
+   *
+   * Something a person typed and got wrong is a validation error they can fix,
+   * never a silently discarded value: a missing phone number on a customer
+   * record is discovered by the salesperson who cannot call them.
+   */
+  private async canonicalPhone(input: string | undefined): Promise<string | undefined> {
+    const result = parsePhone(input, { country: await this.repository.organizationCountry() });
+
+    if (result.status === 'ABSENT') return undefined;
+    if (result.status === 'INVALID') {
+      throw AppException.validation('Invalid phone number.', { phone: [result.reason] });
+    }
+
+    return result.e164;
   }
 
   private async requireMember(userId: string): Promise<void> {

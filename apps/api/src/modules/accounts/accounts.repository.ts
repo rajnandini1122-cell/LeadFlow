@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { TenantContextService } from '../../common/tenancy/tenant-context.service';
+import { AppConfig } from '../../common/config/config.module';
 import type { AccountStatus } from '../../generated/prisma/enums';
 
 /**
@@ -21,7 +22,24 @@ export class AccountsRepository {
   constructor(
     private readonly prisma: PrismaService,
     private readonly tenantContext: TenantContextService,
+    private readonly config: AppConfig,
   ) {}
+
+  /**
+   * The dialling region for numbers this tenant types without a country code.
+   *
+   * Organization is tenant-scoped by the extension, so findFirst returns this
+   * tenant and no other. The fallback is the configured deployment default
+   * rather than a constant: a row with no country predates the column, and
+   * guessing for it should follow the same setting as everything else.
+   */
+  async organizationCountry(): Promise<string> {
+    const organization = await this.prisma.client.organization.findFirst({
+      select: { country: true },
+    });
+
+    return organization?.country ?? this.config.get('DEFAULT_COUNTRY');
+  }
 
   /**
    * The customer list.

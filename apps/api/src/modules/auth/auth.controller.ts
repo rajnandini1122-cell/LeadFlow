@@ -214,7 +214,17 @@ export class AuthController {
     @Res({ passthrough: true }) response: Response,
   ) {
     const result = await this.registration.registerWithGoogle(
-      { idToken: dto.idToken, organizationName: dto.organizationName, platform: dto.platform },
+      {
+        idToken: dto.idToken,
+        organizationName: dto.organizationName,
+        platform: dto.platform,
+        // Tenant identity, exactly as the password path accepts it. Omitted
+        // values fall through to the configured deployment defaults.
+        timezone: dto.timezone,
+        currency: dto.currency,
+        locale: dto.locale,
+        country: dto.country,
+      },
       metadataFrom(request),
     );
 

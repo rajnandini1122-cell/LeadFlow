@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { RoleKey, UserStatus } from '@leadflow/api-types';
 import { PrismaService, type PrismaTransaction } from '../../common/prisma/prisma.service';
 import { TenantContextService } from '../../common/tenancy/tenant-context.service';
+import { AppConfig } from '../../common/config/config.module';
 
 /**
  * User data access, always reached through OrganizationUser.
@@ -17,7 +18,23 @@ export class UsersRepository {
   constructor(
     private readonly prisma: PrismaService,
     private readonly tenantContext: TenantContextService,
+    private readonly config: AppConfig,
   ) {}
+
+  /**
+   * The dialling region for a mobile typed without a country code.
+   *
+   * Organization is tenant-scoped by the extension, so this is always the
+   * caller's own tenant. The fallback is the configured deployment default,
+   * the same one registration uses.
+   */
+  async organizationCountry(): Promise<string> {
+    const organization = await this.prisma.client.organization.findFirst({
+      select: { country: true },
+    });
+
+    return organization?.country ?? this.config.get('DEFAULT_COUNTRY');
+  }
 
   /** Members of the current organization. Scoped automatically. */
   async listMembers() {

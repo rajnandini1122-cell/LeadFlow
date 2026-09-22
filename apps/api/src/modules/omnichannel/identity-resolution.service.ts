@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { toE164 } from '../../common/utils/phone';
+import { normalizeProviderPhone } from '../../common/utils/phone';
 import { OmnichannelRepository } from './omnichannel.repository';
 import type { ContactResolution, NormalizedChannelEvent } from './channel-event';
 
@@ -37,16 +37,17 @@ export class IdentityResolutionService {
     /*
      * Key 2: a phone number, on channels that expose one.
      *
-     * Canonicalised to E.164 against the ORGANIZATION's country before
-     * comparing, because "+91 98200 11001" and "09820011001" are the same
-     * customer and a string comparison says they are not.
+     * Canonicalised to E.164 before comparing, because "919820011001" and
+     * "+91 98200 11001" are the same customer and a string comparison says
+     * they are not — which would file one person's conversations under two
+     * identities depending on how a payload happened to be formatted.
      *
      * A mobile is a strong identifier: it is how the existing duplicate
      * detection already decides two leads are the same person, so matching on
      * it here is consistent with what the product already treats as identity
      * rather than a new and looser standard.
      */
-    const mobile = await this.canonicalMobile(event.senderPhone);
+    const mobile = this.canonicalMobile(event.senderPhone);
     if (mobile) {
       const contact = await this.repository.findLiveContactByMobile(mobile);
       if (contact) {
@@ -89,15 +90,23 @@ export class IdentityResolutionService {
    * Failure is non-fatal on purpose: an unparseable number means we cannot use
    * that key, not that the message should be rejected.
    */
-  private async canonicalMobile(raw: string | undefined): Promise<string | undefined> {
-    if (!raw) return undefined;
+  private canonicalMobile(raw: string | undefined): string | undefined {
+    /*
+     * A PROVIDER-supplied number, not something a person typed here.
+     *
+     * Meta sends the sender as a complete international number, so it is read
+     * as one. Parsing it against the organization's country would be wrong
+     * twice: it invites a foreign customer's number to be read as a local one,
+     * and it makes an identity key depend on a tenant setting that has nothing
+     * to do with the provider — change the setting, and the same person stops
+     * matching themselves.
+     */
+    const canonical = normalizeProviderPhone(raw);
 
-    try {
-      const country = await this.repository.organizationCountry();
-      return toE164(raw, country);
-    } catch {
+    if (!canonical && raw) {
       this.logger.debug('Incoming sender phone could not be canonicalised; skipping phone match.');
-      return undefined;
     }
+
+    return canonical;
   }
 }

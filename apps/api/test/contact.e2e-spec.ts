@@ -21,7 +21,7 @@ describe('Contact form', () => {
     name: 'Dana Whitfield',
     email: `${unique('buyer')}@example.test`,
     company: 'Kestrel Interiors',
-    phone: '+14155550100',
+    phone: '+14152860100',
     message: 'We are a team of six and want to stop losing enquiries. Can we see a demo?',
     source: 'pricing',
     ...overrides,

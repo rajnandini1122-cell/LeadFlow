@@ -2,6 +2,7 @@ import { createHmac } from 'node:crypto';
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import { TenantContextService } from '../src/common/tenancy/tenant-context.service';
 import { createTestContext, type TestContext } from './helpers/test-app';
+import { fixtureProviderDigits } from './helpers/phone-fixtures';
 
 /**
  * Replying on Instagram and Facebook Messenger.
@@ -267,7 +268,7 @@ describe('Messenger outbound', () => {
     });
 
     it('does not change the lead owner or the conversation owner', async () => {
-      const digits = `4477${unique().slice(-9)}`;
+      const digits = fixtureProviderDigits();
       const lead = await ctx
         .http()
         .post('/api/v1/leads')
@@ -340,7 +341,7 @@ describe('Messenger outbound', () => {
     });
 
     it('refuses a rep replying on a colleague’s lead', async () => {
-      const digits = `4477${unique().slice(-9)}`;
+      const digits = fixtureProviderDigits();
       const lead = await ctx
         .http()
         .post('/api/v1/leads')

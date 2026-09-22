@@ -1,5 +1,6 @@
 import { ERROR_CODES } from '@leadflow/api-types';
 import { createTestContext, type TestContext } from './helpers/test-app';
+import { fixtureMobile } from './helpers/phone-fixtures';
 
 /**
  * Authorization boundaries beyond tenant isolation.
@@ -12,8 +13,7 @@ describe('Authorization boundaries', () => {
   let ctx: TestContext;
 
   const auth = (token: string) => ({ Authorization: `Bearer ${token}` });
-  const uniqueMobile = (): string =>
-    `9${String(Math.floor(100000000 + Math.random() * 899999999))}`;
+  const uniqueMobile = (): string => fixtureMobile();
   const tomorrow = (): string => new Date(Date.now() + 86_400_000).toISOString();
 
   beforeAll(async () => {

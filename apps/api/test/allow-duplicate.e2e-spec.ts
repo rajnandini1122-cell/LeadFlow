@@ -1,5 +1,6 @@
 import { ERROR_CODES } from '@leadflow/api-types';
 import { createTestContext, type TestContext } from './helpers/test-app';
+import { fixtureMobileE164 } from './helpers/phone-fixtures';
 
 /**
  * Deliberate duplicate leads.
@@ -18,11 +19,7 @@ describe('Creating a deliberate duplicate lead', () => {
 
   const auth = (token: string) => ({ Authorization: `Bearer ${token}` });
 
-  let counter = 0;
-  const uniqueMobile = () => {
-    counter += 1;
-    return `+1415555${String(7000 + counter).slice(-4)}`;
-  };
+  const uniqueMobile = (): string => fixtureMobileE164();
 
   async function createLead(body: Record<string, unknown>, token?: string) {
     return ctx

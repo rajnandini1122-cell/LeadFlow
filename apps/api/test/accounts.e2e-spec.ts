@@ -1,4 +1,5 @@
 import { createTestContext, type TestContext } from './helpers/test-app';
+import { fixtureMobile } from './helpers/phone-fixtures';
 
 /**
  * Customers, Customer 360, and the relationship lifecycle.
@@ -68,7 +69,7 @@ describe('Accounts and Customer 360', () => {
       .send({
         firstName: 'Test',
         lastName: 'Buyer',
-        mobile: `415${String(Math.floor(1000000 + Math.random() * 8999999))}`,
+        mobile: fixtureMobile(),
         nextFollowUpAt: tomorrow(),
         ...overrides,
       });
@@ -152,7 +153,7 @@ describe('Accounts and Customer 360', () => {
         .send({
           firstName: 'Cross',
           lastName: 'Tenant',
-          mobile: `415${String(Math.floor(1000000 + Math.random() * 8999999))}`,
+          mobile: fixtureMobile(),
           nextFollowUpAt: tomorrow(),
           accountId: theirs.id,
         });

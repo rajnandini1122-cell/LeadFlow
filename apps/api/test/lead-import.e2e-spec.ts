@@ -1,4 +1,5 @@
 import { createTestContext, type TestContext } from './helpers/test-app';
+import { fixtureMobile } from './helpers/phone-fixtures';
 
 /**
  * Phase 5 — CSV lead import and the aggregated dashboard.
@@ -13,11 +14,7 @@ describe('Lead import and dashboard', () => {
   const auth = (token: string) => ({ Authorization: `Bearer ${token}` });
   const inDays = (days: number): string => new Date(Date.now() + days * 86_400_000).toISOString();
 
-  let counter = 0;
-  const mobile = (): string => {
-    counter += 1;
-    return `4155571${String(1000 + counter)}`;
-  };
+  const mobile = (): string => fixtureMobile();
 
   beforeAll(async () => {
     ctx = await createTestContext();
