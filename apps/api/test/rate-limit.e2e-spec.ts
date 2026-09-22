@@ -252,14 +252,15 @@ describe('Rate limiting', () => {
 
       const client = new Redis(process.env['REDIS_URL'] as string, {
         maxRetriesPerRequest: 1,
-        enableOfflineQueue: false,
-        commandTimeout: 1000,
-        // No reconnect timer: this client belongs to one test and must not
-        // outlive it.
+        commandTimeout: 5_000,
+        // Connect on demand, so the commands below never race the handshake,
+        // and no reconnect timer: these clients belong to one test and must
+        // not outlive it.
+        lazyConnect: true,
         retryStrategy: () => null,
       });
-
       const second = client.duplicate();
+
       const replicaA = new RedisThrottlerStorage({ client } as unknown as RedisService);
       const replicaB = new RedisThrottlerStorage({ client: second } as unknown as RedisService);
 
@@ -267,6 +268,8 @@ describe('Rate limiting', () => {
       const key = `e2e-${Date.now()}-${Math.round(Math.random() * 1e9)}`;
 
       try {
+        await Promise.all([client.connect(), second.connect()]);
+
         const first = await replicaA.increment(key, 5_000, 3, 5_000, 'credential');
         const next = await replicaB.increment(key, 5_000, 3, 5_000, 'credential');
 
@@ -285,12 +288,34 @@ describe('Rate limiting', () => {
         // Same caller, different policy, different counter.
         expect((await replicaA.increment(key, 5_000, 3, 5_000, 'default')).totalHits).toBe(1);
       } finally {
-        await client.del(
-          `leadflow:ratelimit:credential:${key}`,
-          `leadflow:ratelimit:default:${key}`,
-        );
-        await client.quit();
-        await second.quit();
+        /*
+         * Every step best-effort, and disconnect() last and unconditionally.
+         *
+         * This suite runs without forceExit, so one live socket does not fail
+         * a test — it hangs the whole run, for as long as the CI job is
+         * allowed to take. An earlier version awaited del() and quit() bare:
+         * the first of them threw on a connection that had already gone, the
+         * two clients were never closed, and the e2e job sat at 100% passing
+         * tests for an hour. disconnect() is synchronous and cannot throw.
+         */
+        try {
+          await client.del(
+            `leadflow:ratelimit:credential:${key}`,
+            `leadflow:ratelimit:default:${key}`,
+          );
+        } catch {
+          // The keys expire on their own in five seconds; a tidy-up that
+          // cannot run is not worth losing the connections over.
+        }
+
+        for (const connection of [client, second]) {
+          try {
+            await connection.quit();
+          } catch {
+            // Already gone, or never arrived. Closed unconditionally below.
+          }
+          connection.disconnect();
+        }
       }
     });
   });
