@@ -149,6 +149,36 @@ export class TeamsService {
 
     let statusChanged: 'ARCHIVED' | 'REACTIVATED' | undefined;
     if (dto.status !== undefined && dto.status !== team.status) {
+      /*
+       * Archiving a team that live routing points at is REFUSED.
+       *
+       * The alternatives are both worse. Letting it through leaves production
+       * sending enquiries to a team nobody is watching — the failure is
+       * silent, and it is discovered by a customer who was never called.
+       * Automatically deleting or retargeting the rules would make a routing
+       * decision on an administrator's behalf, which is precisely the thing
+       * this whole phase exists to keep explicit.
+       *
+       * So the refusal names the rules, and the administrator pauses,
+       * archives or retargets them first.
+       */
+      if (dto.status === 'ARCHIVED') {
+        const routing = await this.repository.activeRulesTargeting(id);
+
+        if (routing.length > 0) {
+          throw AppException.validation(
+            'Assignment rules still send work to this team.',
+            {
+              status: [
+                `pause, archive or retarget these rules first: ${routing
+                  .map((rule) => rule.name)
+                  .join(', ')}`,
+              ],
+            },
+          );
+        }
+      }
+
       changes.status = dto.status;
       statusChanged = dto.status === 'ARCHIVED' ? 'ARCHIVED' : 'REACTIVATED';
       auditBefore['status'] = team.status;
@@ -331,6 +361,29 @@ export class TeamsService {
           assignmentEnabled: row.assignmentEnabled,
         })),
     }));
+  }
+
+  /**
+   * The people in one team who may receive automatically assigned work RIGHT
+   * NOW.
+   *
+   * The canonical answer, exported so nothing else has to reconstruct it.
+   * Assignment rules decide WHICH team; they never decide who in it is
+   * available, and a rule can no more make an ineligible person eligible than
+   * a rota can make somebody unsuspend themselves.
+   *
+   * Returns an empty array for an archived team, a team that does not exist,
+   * and a team in another organization alike — an empty pool is the honest
+   * answer to all three, and distinguishing them here would leak whether a
+   * team id exists somewhere else.
+   */
+  async eligibleAgents(teamId: string): Promise<TeamMemberView[]> {
+    const team = await this.repository.findById(teamId);
+    if (!team) return [];
+
+    return team.members
+      .map((member) => toMemberView(member, team.status))
+      .filter((member) => member.eligibleForAssignment);
   }
 
   /** A team in another organization is indistinguishable from one that is gone. */

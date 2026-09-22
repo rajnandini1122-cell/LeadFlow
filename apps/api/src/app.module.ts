@@ -41,6 +41,7 @@ import { InvitationsModule } from './modules/invitations/invitations.module';
 import { HealthModule } from './modules/health/health.module';
 import { IntegrationsModule } from './modules/integrations/integrations.module';
 import { TeamsModule } from './modules/teams/teams.module';
+import { AssignmentRulesModule } from './modules/assignment-rules/assignment-rules.module';
 
 @Module({
   imports: [
@@ -144,6 +145,7 @@ import { TeamsModule } from './modules/teams/teams.module';
     ContactModule,
     IntegrationsModule,
     TeamsModule,
+    AssignmentRulesModule,
     HealthModule,
   ],
   providers: [

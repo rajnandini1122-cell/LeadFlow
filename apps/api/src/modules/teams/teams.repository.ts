@@ -124,6 +124,22 @@ export class TeamsRepository {
     });
   }
 
+  /**
+   * Active routing rules pointing at this team.
+   *
+   * Read from the teams module rather than through the assignment-rules
+   * service, because the reverse would make the two modules import each other
+   * — and this is one scoped count, not a second opinion about what a rule
+   * means.
+   */
+  async activeRulesTargeting(teamId: string): Promise<{ id: string; name: string }[]> {
+    return this.prisma.client.assignmentRule.findMany({
+      where: { targetTeamId: teamId, status: 'ACTIVE' },
+      select: { id: true, name: true },
+      orderBy: { priority: 'asc' },
+    });
+  }
+
   async findActiveMember(teamId: string, membershipId: string) {
     return this.prisma.client.teamMember.findFirst({
       where: { teamId, organizationMembershipId: membershipId, removedAt: null },

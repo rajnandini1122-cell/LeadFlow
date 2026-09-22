@@ -115,6 +115,15 @@ export const TENANT_SCOPED_MODELS: Record<string, string> = {
    */
   Team: 'organizationId',
   TeamMember: 'organizationId',
+  /*
+   * The routing table.
+   *
+   * It decides which customers reach which team, so an unscoped read would
+   * expose how a competitor organises its sales and an unscoped write could
+   * redirect their enquiries. Scoped like everything else, with composite
+   * foreign keys carrying the tenant underneath.
+   */
+  AssignmentRule: 'organizationId',
   // Plan is deliberately ABSENT: it is a global catalogue offered to every
   // tenant, and the public pricing page reads it with no tenant context at all.
   //

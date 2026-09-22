@@ -211,6 +211,7 @@ model Organization {
   integrationIntakes  IntegrationIntake[]
   teams               Team[]
   teamMembers         TeamMember[]
+  assignmentRules     AssignmentRule[]
 
   @@index([status])
   @@map("organizations")
@@ -1530,12 +1531,18 @@ model Product {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  leads        Lead[]
+  organization    Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  leads           Lead[]
+  assignmentRules AssignmentRule[]
 
   /// One SKU per tenant. Two products sharing a code would make the code
   /// useless as an identifier and any import ambiguous.
   @@unique([organizationId, sku])
+  /// Not a business rule — `id` is unique on its own. It lets a tenant-scoped
+  /// table point a COMPOSITE foreign key at (id, organization_id), so the
+  /// database refuses a row pairing a product with the wrong organization.
+  /// See AssignmentRule.
+  @@unique([id, organizationId])
   /// The catalogue screen lists active products by name.
   @@index([organizationId, active, name])
   @@map("products")
@@ -1998,9 +2005,10 @@ model Team {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  manager      OrganizationUser? @relation("TeamManager", fields: [managerMembershipId, organizationId], references: [id, organizationId], onDelete: NoAction)
-  members      TeamMember[]
+  organization    Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  manager         OrganizationUser? @relation("TeamManager", fields: [managerMembershipId, organizationId], references: [id, organizationId], onDelete: NoAction)
+  members         TeamMember[]
+  assignmentRules AssignmentRule[]
 
   /// Lets TeamMember point a composite key here and inherit the tenant.
   @@unique([id, organizationId])
@@ -2049,4 +2057,118 @@ model TeamMember {
   @@index([organizationId, teamId, removedAt])
   @@index([organizationId, organizationMembershipId, removedAt])
   @@map("team_members")
+}
+
+// =============================================================================
+// ASSIGNMENT RULES — which TEAM handles which work
+// =============================================================================
+
+enum AssignmentRuleStatus {
+  /// Evaluated.
+  ACTIVE
+  /// Kept and editable, but ignored while evaluating. How a rule is switched
+  /// off without losing how it was configured.
+  PAUSED
+  /// Retired. Ignored, kept for the record, and not reactivated — a rule that
+  /// once routed work is evidence of why a customer went where they did.
+  ARCHIVED
+
+  @@map("assignment_rule_status")
+}
+
+/// "Work that looks like THIS goes to THAT team."
+///
+/// Typed columns, not a JSON condition blob. A rule an administrator cannot
+/// read is a rule nobody can audit, and an expression language here would mean
+/// user-supplied logic evaluated on the server — which is a different product
+/// with a different threat model. Two dimensions are supported today, source
+/// and canonical product, combined with AND; an unset dimension means "any".
+///
+/// Deliberately absent: country, state, city, pincode, territory. Geography is
+/// the next phase and it will arrive as a Territory reference, not as a column
+/// here that would then have to be replaced.
+///
+/// A rule targets a TEAM and never a person. Naming an individual would make
+/// the routing wrong the day they went on leave, and who in the team may
+/// actually receive work is decided live by the team's own eligibility rules.
+model AssignmentRule {
+  id             String @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String @map("organization_id") @db.Uuid
+
+  name        String  @db.VarChar(80)
+  /// Lower-cased, whitespace-collapsed `name`, for the duplicate-name check.
+  nameKey     String  @map("name_key") @db.VarChar(80)
+  description String? @db.VarChar(500)
+
+  status AssignmentRuleStatus @default(ACTIVE)
+
+  /**
+   * Precedence: LOWER RUNS FIRST. 10 before 20 before 100.
+   * Unique among a tenant's ACTIVE non-fallback rules, so which rule wins is
+   * never a question of row order or creation time. The cost is that
+   * reordering means choosing a free number rather than swapping two — which
+   * is a refusal an administrator can see and act on, where an ambiguous
+   * ordering is a silent misroute nobody notices.
+   */
+  priority Int
+
+  /**
+   * The lead source this rule matches, as the tenant writes it.
+   * Free text because that is what source IS in this product: every
+   * organization configures its own list (OrganizationSettings.leadSources),
+   * and an enum here would be a second taxonomy that disagrees with theirs.
+   * NULL means "any source".
+   */
+  source    String? @db.VarChar(60)
+  /// `source` normalised for comparison. See normalizeSourceKey.
+  sourceKey String? @map("source_key") @db.VarChar(60)
+
+  /**
+   * The canonical product, by id.
+   * The catalogue entry, never the free text a customer typed. A website
+   * enquiry's `productInterest` is evidence of what was asked for and is
+   * deliberately NOT resolved to a product by guessing — see
+   * ProductMappingService, which offers suggestions and applies only what a
+   * person chose. Until an intake carries a mapped product, a rule with this
+   * set simply does not match it.
+   */
+  productId String? @map("product_id") @db.Uuid
+
+  /**
+   * The last resort, evaluated only when no specific rule matched.
+   * An explicit flag rather than "a rule with no criteria", because those are
+   * different intentions: one is a deliberate catch-all, the other is usually
+   * a half-finished rule that would otherwise start swallowing everything.
+   * At most one may be ACTIVE per organization, enforced by a partial unique
+   * index.
+   */
+  isFallback Boolean @default(false) @map("is_fallback")
+
+  /**
+   * The normalised criteria, as one comparable string.
+   * Server-generated and never accepted from a caller. It exists so the
+   * database can refuse two ACTIVE rules that match exactly the same input
+   * and disagree about the answer — which would otherwise route identical
+   * enquiries to different teams depending on precedence nobody set
+   * deliberately.
+   */
+  criteriaKey String @map("criteria_key") @db.VarChar(120)
+
+  targetTeamId String @map("target_team_id") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  /// Composite, so a team from another tenant has nothing to match.
+  targetTeam   Team         @relation(fields: [targetTeamId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  /// Composite for the same reason. Restrict, because losing a product must
+  /// not silently delete the routing that referenced it.
+  product      Product?     @relation(fields: [productId, organizationId], references: [id, organizationId], onDelete: Restrict)
+
+  /// The evaluation query: this tenant's active rules, in precedence order.
+  @@index([organizationId, status, priority])
+  /// "Which rules point at this team?" — asked before a team may be archived.
+  @@index([organizationId, targetTeamId, status])
+  @@map("assignment_rules")
 }

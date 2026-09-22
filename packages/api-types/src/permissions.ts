@@ -65,6 +65,18 @@ export const PERMISSIONS = {
   TEAM_VIEW: 'team.view',
   TEAM_MANAGE: 'team.manage',
 
+  /**
+   * Assignment rules — which team handles which work.
+   *
+   * Separate from team.manage, and not an overload of it, because they are
+   * materially different powers: staffing a team decides who does the work,
+   * while the routing table decides which customers reach which team at all.
+   * Somebody trusted to add a colleague to Pune Sales is not automatically
+   * trusted to send every website enquiry there.
+   */
+  ASSIGNMENT_RULE_VIEW: 'assignment_rule.view',
+  ASSIGNMENT_RULE_MANAGE: 'assignment_rule.manage',
+
   DASHBOARD_VIEW_OWN: 'dashboard.view.own',
   DASHBOARD_VIEW_TEAM: 'dashboard.view.team',
   DASHBOARD_VIEW_ALL: 'dashboard.view.all',
@@ -111,6 +123,9 @@ const MANAGER_PERMISSIONS: Permission[] = [
   // Sees the teams and who is in them. Cannot restructure them -- being
   // responsible for a team is a business role, not an administrative one.
   PERMISSIONS.TEAM_VIEW,
+  // Sees how work is routed -- a manager whose team stops receiving enquiries
+  // needs to be able to find out why. Changing it is administration.
+  PERMISSIONS.ASSIGNMENT_RULE_VIEW,
   PERMISSIONS.DASHBOARD_VIEW_TEAM,
   PERMISSIONS.REPORT_VIEW,
 ];
@@ -128,6 +143,7 @@ const ADMIN_PERMISSIONS: Permission[] = [
   PERMISSIONS.USER_REMOVE,
   PERMISSIONS.ROLE_ASSIGN,
   PERMISSIONS.TEAM_MANAGE,
+  PERMISSIONS.ASSIGNMENT_RULE_MANAGE,
   PERMISSIONS.ORG_UPDATE,
   PERMISSIONS.DASHBOARD_VIEW_ALL,
 ];

@@ -96,6 +96,12 @@ export const NAV_ITEMS: NavItem[] = [
   // "Sales teams", not "Teams": the entry above is the member directory, and
   // two things called Team would be one thing nobody can find.
   { to: '/sales-teams', label: 'Sales teams', icon: '⚑', permission: PERMISSIONS.TEAM_VIEW },
+  {
+    to: '/assignment-rules',
+    label: 'Assignment rules',
+    icon: '⇄',
+    permission: PERMISSIONS.ASSIGNMENT_RULE_VIEW,
+  },
   { to: '/reports', label: 'Reports', icon: '▤', permission: PERMISSIONS.REPORT_VIEW, exact: true },
   { to: '/reports/daily', label: 'Daily report', icon: '☀', permission: PERMISSIONS.REPORT_VIEW },
   { to: '/settings', label: 'Settings', icon: '⚙', permission: PERMISSIONS.ORG_VIEW, exact: true },

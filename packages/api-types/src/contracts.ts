@@ -320,3 +320,86 @@ export interface AddTeamMemberRequest {
 export interface UpdateTeamMemberRequest {
   assignmentEnabled: boolean;
 }
+
+// --- assignment rules --------------------------------------------------------
+
+export const ASSIGNMENT_RULE_STATUSES = ['ACTIVE', 'PAUSED', 'ARCHIVED'] as const;
+export type AssignmentRuleStatus = (typeof ASSIGNMENT_RULE_STATUSES)[number];
+
+/** One routing rule: work that looks like THIS goes to THAT team. */
+export interface AssignmentRuleView {
+  id: string;
+  name: string;
+  description: string | null;
+  status: AssignmentRuleStatus;
+  /** Lower runs first. Unique among a tenant's active non-fallback rules. */
+  priority: number;
+  /** The lead source this matches, as the tenant writes it. Null means any. */
+  source: string | null;
+  /** The CANONICAL product, never free text. Null means any. */
+  product: { id: string; name: string; sku: string } | null;
+  /** Evaluated only when no specific rule matched. */
+  isFallback: boolean;
+  targetTeam: { id: string; name: string; status: string };
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateAssignmentRuleRequest {
+  name: string;
+  description?: string;
+  /** Omitted, the server places it after the current lowest-precedence rule. */
+  priority?: number;
+  source?: string;
+  productId?: string;
+  isFallback?: boolean;
+  targetTeamId: string;
+}
+
+export interface UpdateAssignmentRuleRequest {
+  name?: string;
+  description?: string | null;
+  priority?: number;
+  /** Null clears the criterion, meaning "any". */
+  source?: string | null;
+  productId?: string | null;
+  targetTeamId?: string;
+  status?: AssignmentRuleStatus;
+}
+
+/** The facts a piece of work carries, for a preview. */
+export interface AssignmentPreviewRequest {
+  source?: string;
+  productId?: string;
+}
+
+/**
+ * What the evaluator decided, and why.
+ *
+ * MATCHED / FALLBACK_MATCHED say which rule answered — the distinction
+ * matters, because falling through to the catch-all usually means the routing
+ * table is missing a rule somebody meant to write.
+ */
+export const ASSIGNMENT_DECISIONS = [
+  'MATCHED',
+  'FALLBACK_MATCHED',
+  'NO_MATCH',
+  'NO_ELIGIBLE_AGENTS',
+] as const;
+export type AssignmentDecision = (typeof ASSIGNMENT_DECISIONS)[number];
+
+export interface AssignmentPreviewResult {
+  decision: AssignmentDecision;
+  /** The rule that answered, when one did. */
+  rule: { id: string; name: string; priority: number; isFallback: boolean } | null;
+  team: { id: string; name: string } | null;
+  /**
+   * Who in that team could receive work right now.
+   *
+   * A POOL, never a choice. Picking the person is the job of the phase that
+   * writes the lead, so that the selection and the write happen together —
+   * and because territories may still narrow this pool first.
+   */
+  eligibleAgents: { membershipId: string; userId: string; fullName: string }[];
+  eligibleAgentCount: number;
+}
