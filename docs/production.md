@@ -90,6 +90,43 @@ which is correct until the topology is known, and is the value the tests run
 under. Verify after a deploy by comparing the `ip` on an audit row against the
 address the client really used.
 
+### The website intake boundary
+
+`WEBSITE_INTAKE_ENABLED=true` opens one server-to-server route,
+`POST /api/v1/integrations/website/intake`, for an approved backend to submit
+enquiries. Disabled, it answers 404 — an endpoint nobody has configured should
+not announce itself.
+
+A caller proves itself by signing each request. Three headers:
+
+| Header | Meaning |
+|---|---|
+| `X-LeadFlow-Timestamp` | unix seconds; accepted within five minutes either way |
+| `X-LeadFlow-Event-Id` | the caller's own id for the submission, and the idempotency key |
+| `X-LeadFlow-Signature` | `sha256=<hex>`, HMAC-SHA256 of `<timestamp>.<eventId>.<sha256 of the exact body bytes>` |
+
+Three properties are worth stating because each one is a decision:
+
+* **The tenant is configuration.** `WEBSITE_INTAKE_ORGANIZATION_ID` decides
+  where a submission lands. A signature proves who is calling, not what they
+  may touch — a body that could name an organization would make one shared
+  secret into access to every tenant. An `organizationId` in the payload is
+  stripped before validation sees it.
+* **A retry is not a second customer.** The event id is unique per tenant and
+  source *in the database*, so two identical requests arriving together produce
+  one row and one receipt. The same id carrying a different payload is a 409
+  rather than an overwrite.
+* **Intake does not create a Lead yet.** An active lead needs a next follow-up
+  date, and a lead needs an owner to be anybody's job. Both are policy —
+  how soon somebody calls a website enquiry, and who — and those belong to the
+  assignment workstream. Submissions are durable and auditable in
+  `integration_intakes`; `created_lead_id` is what will record the conversion.
+
+Rotating the secret: set the new value and redeploy. There is no overlap window,
+so coordinate with whoever operates the website — a submission signed with the
+old secret is refused, and the website should retry it with the same event id
+once both sides agree, which is exactly what the idempotency key is for.
+
 ### Mail
 
 `EMAIL_PROVIDER=smtp` talks to any standards-compliant server; there is no

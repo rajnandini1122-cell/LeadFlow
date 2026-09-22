@@ -290,6 +290,55 @@ describe('production configuration', () => {
     );
   });
 
+  describe('the website intake integration', () => {
+    const configured = {
+      WEBSITE_INTAKE_ENABLED: 'true',
+      WEBSITE_INTAKE_ORGANIZATION_ID: '01999999-9999-7999-8999-999999999999',
+      WEBSITE_INTAKE_SIGNING_SECRET: 'a-website-intake-secret-of-at-least-32',
+    };
+
+    it('needs nothing at all while it is switched off', () => {
+      // The default state. An integration nobody has configured should not be
+      // a reason the process refuses to start.
+      expect(() => validateEnv(baseEnv())).not.toThrow();
+      expect(() =>
+        validateEnv(baseEnv({ WEBSITE_INTAKE_ENABLED: 'false' })),
+      ).not.toThrow();
+    });
+
+    it('accepts a complete configuration', () => {
+      expect(() => validateEnv(baseEnv(configured))).not.toThrow();
+    });
+
+    it.each(['WEBSITE_INTAKE_ORGANIZATION_ID', 'WEBSITE_INTAKE_SIGNING_SECRET'])(
+      'REFUSES to boot when enabled with %s missing',
+      (missing) => {
+        /*
+         * An enabled integration with nothing configured is worse than a
+         * disabled one: a live, publicly reachable route that cannot
+         * authenticate anybody and has nowhere to put what it receives. The
+         * website team would discover it; better that the deploy does.
+         */
+        const env = baseEnv(configured);
+        delete env[missing];
+
+        expect(() => validateEnv(env)).toThrow(new RegExp(missing));
+      },
+    );
+
+    it('REFUSES a signing secret short enough to guess', () => {
+      expect(() =>
+        validateEnv(baseEnv({ ...configured, WEBSITE_INTAKE_SIGNING_SECRET: 'too-short' })),
+      ).toThrow(/WEBSITE_INTAKE_SIGNING_SECRET/);
+    });
+
+    it('REFUSES an organization id that is not one', () => {
+      expect(() =>
+        validateEnv(baseEnv({ ...configured, WEBSITE_INTAKE_ORGANIZATION_ID: 'the-main-org' })),
+      ).toThrow(/WEBSITE_INTAKE_ORGANIZATION_ID/);
+    });
+  });
+
   describe('auth secrets', () => {
     it('REFUSES identical access and refresh secrets', () => {
       // Sharing them lets a refresh token be presented as an access token.

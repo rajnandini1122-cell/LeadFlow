@@ -39,6 +39,7 @@ import { ContactModule } from './modules/contact/contact.module';
 import { FollowUpsModule } from './modules/follow-ups/follow-ups.module';
 import { InvitationsModule } from './modules/invitations/invitations.module';
 import { HealthModule } from './modules/health/health.module';
+import { IntegrationsModule } from './modules/integrations/integrations.module';
 
 @Module({
   imports: [
@@ -140,6 +141,7 @@ import { HealthModule } from './modules/health/health.module';
     ReportsModule,
     SubscriptionsModule,
     ContactModule,
+    IntegrationsModule,
     HealthModule,
   ],
   providers: [

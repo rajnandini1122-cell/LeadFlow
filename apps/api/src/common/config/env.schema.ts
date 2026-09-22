@@ -337,6 +337,35 @@ export const envSchema = z
     AUTH_THROTTLE_TTL: z.coerce.number().int().positive().default(900),
     AUTH_THROTTLE_LIMIT: z.coerce.number().int().positive().default(5),
 
+    /*
+     * --- website intake integration -----------------------------------------
+     *
+     * The server-to-server boundary the CRAVION website will submit enquiries
+     * through. OFF unless deliberately switched on: an integration nobody has
+     * configured should not be a live endpoint, and while disabled the route
+     * answers 404 rather than advertising that it exists.
+     *
+     * The organization is configuration, never a field in the request. A
+     * caller that could name its own tenant could write into any of them, and
+     * the signature only proves who is calling, not what they may touch.
+     */
+    WEBSITE_INTAKE_ENABLED: z
+      .string()
+      .default('false')
+      .transform((value) => value === 'true'),
+    WEBSITE_INTAKE_ORGANIZATION_ID: z.string().uuid().optional(),
+    /**
+     * The shared secret the website signs its submissions with.
+     *
+     * 32 characters minimum, for the same reason the JWT secrets are: a short
+     * HMAC key is a guessable HMAC key. Never logged, never returned by any
+     * API, and never compared with `===`.
+     */
+    WEBSITE_INTAKE_SIGNING_SECRET: z
+      .string()
+      .min(32, 'must be at least 32 characters')
+      .optional(),
+
     /**
      * How many reverse proxies sit in front of this process.
      *
@@ -410,6 +439,34 @@ export const envSchema = z
             `"${value}" is not one this runtime recognises — new organizations ` +
             'would be created with a setting their own settings screen refuses',
         });
+      }
+    }
+
+    /*
+     * An enabled integration with nothing configured is worse than a disabled
+     * one.
+     *
+     * Without a secret the endpoint could not authenticate anybody, and
+     * without an organization it would have nowhere to put what it received.
+     * Either way it would be a live, publicly reachable route that fails on
+     * every request — so the process refuses to start instead, in every
+     * environment, rather than waiting for the website team to discover it.
+     */
+    if (env.WEBSITE_INTAKE_ENABLED) {
+      for (const [name, value] of Object.entries({
+        WEBSITE_INTAKE_ORGANIZATION_ID: env.WEBSITE_INTAKE_ORGANIZATION_ID,
+        WEBSITE_INTAKE_SIGNING_SECRET: env.WEBSITE_INTAKE_SIGNING_SECRET,
+      })) {
+        if (!value) {
+          ctx.addIssue({
+            code: 'custom',
+            path: [name],
+            message:
+              'is required when WEBSITE_INTAKE_ENABLED=true — an enabled ' +
+              'integration with nothing configured is a live endpoint that ' +
+              'refuses every request',
+          });
+        }
       }
     }
 

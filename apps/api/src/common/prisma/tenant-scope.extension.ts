@@ -93,8 +93,21 @@ export const TENANT_SCOPED_MODELS: Record<string, string> = {
   // be enough to send as another tenant if any single check above it were ever
   // missed. Scoped for the same reason conversations are.
   WhatsAppTemplate: 'organizationId',
+  /*
+   * Integration intake.
+   *
+   * A submission from an approved integration, holding a real person's name,
+   * email, phone and what they asked about — the same data a lead holds, and
+   * scoped on the same fail-closed terms. Unlike ContactEnquiry, which belongs
+   * to nobody because an anonymous visitor belongs to nobody, an intake always
+   * belongs to exactly one tenant: the one the integration is configured for.
+   */
+  IntegrationIntake: 'organizationId',
   // Plan is deliberately ABSENT: it is a global catalogue offered to every
   // tenant, and the public pricing page reads it with no tenant context at all.
+  //
+  // ContactEnquiry is ABSENT for a different reason: a public contact form
+  // submission has no tenant to scope it to. See its model comment.
 };
 
 /** Operations whose `where` must be narrowed to the tenant. */

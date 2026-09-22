@@ -208,6 +208,7 @@ model Organization {
   conversations       Conversation[]
   messages            Message[]
   channelIdentities   ContactChannelIdentity[]
+  integrationIntakes  IntegrationIntake[]
 
   @@index([status])
   @@map("organizations")
@@ -1818,4 +1819,112 @@ model UserDevice {
   /// The fan-out query: this user's active devices.
   @@index([organizationId, userId, active])
   @@map("user_devices")
+}
+
+// =============================================================================
+// INTEGRATION INTAKE — the server-to-server boundary
+// =============================================================================
+
+/// Where an intake is in its short life.
+///
+/// Deliberately four states and no workflow engine. Conversion to a Lead is a
+/// later phase, so nothing here advances on its own: an operator or that later
+/// phase moves a row on, and until then RECEIVED means exactly "we have it and
+/// nobody has acted".
+enum IntakeStatus {
+  /// Accepted, stored, and waiting for the conversion phase.
+  RECEIVED
+  /// Accepted, and it looks like somebody already in the CRM. Held for a
+  /// person to decide rather than merged or duplicated automatically.
+  DUPLICATE
+  /// Converted into CRM records. Written by the conversion phase, not by
+  /// intake — see created_lead_id.
+  PROCESSED
+  /// Accepted at the boundary but could not be processed. failure_reason says
+  /// why, in words safe to store.
+  FAILED
+
+  @@map("intake_status")
+}
+
+/// A submission from an approved integration, recorded before anything is done
+/// with it.
+///
+/// TENANT-SCOPED, unlike ContactEnquiry. The distinction is who the sender
+/// belongs to: a public contact enquiry comes from an anonymous visitor who
+/// belongs to no organization, while this arrives through a signed integration
+/// that is configured FOR one tenant. There is a right answer to "whose is
+/// this", so it is recorded and enforced rather than left open.
+///
+/// The row is the authority for idempotency. A website that retries — because
+/// a response was lost, a queue redelivered, or somebody double-clicked — must
+/// not produce two customers, and a unique index is the only thing that holds
+/// under concurrency and across replicas. Redis can make the second attempt
+/// cheaper; it cannot be what decides.
+///
+/// What is NOT stored: the signing secret, the signature, request headers, and
+/// the raw body. The normalised fields below are what processing needs; a raw
+/// dump would be a copy of everything a caller ever sent, kept indefinitely,
+/// with no way to know what is in it.
+model IntegrationIntake {
+  id             String @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String @map("organization_id") @db.Uuid
+
+  /// Which integration sent it, e.g. "WEBSITE". A column rather than an enum:
+  /// adding a second source should not need a migration.
+  source          String @db.VarChar(40)
+  /// The sender's own id for this submission — the idempotency key, carried in
+  /// a signed header so it cannot be altered in flight.
+  externalEventId String @map("external_event_id") @db.VarChar(120)
+  /// What kind of submission it is, e.g. "ENQUIRY".
+  eventType       String @map("event_type") @db.VarChar(60)
+
+  status IntakeStatus @default(RECEIVED)
+
+  /// SHA-256 of the exact body bytes, hex.
+  ///
+  /// What makes a retry distinguishable from a collision: the same event id
+  /// with the same hash is the same submission and returns the same receipt;
+  /// the same id with a different hash is a caller mistake and is refused
+  /// rather than silently overwriting what was sent first.
+  payloadHash String @map("payload_hash") @db.Char(64)
+
+  // --- the submission itself, canonicalised on the way in -------------------
+  name            String? @db.VarChar(150)
+  email           String? @db.VarChar(320)
+  /// E.164 where the number could be parsed, exactly as the CRM stores one.
+  phone           String? @db.VarChar(20)
+  /// ISO 3166-1 alpha-2.
+  country         String? @db.VarChar(2)
+  company         String? @db.VarChar(200)
+  message         String? @db.VarChar(4000)
+  productInterest String? @map("product_interest") @db.VarChar(120)
+  /// The page or campaign it came from, for attribution.
+  sourcePage      String? @map("source_page") @db.VarChar(200)
+
+  // --- what happened to it --------------------------------------------------
+  receivedAt       DateTime  @default(now()) @map("received_at") @db.Timestamptz(6)
+  processedAt      DateTime? @map("processed_at") @db.Timestamptz(6)
+  /// Set by the conversion phase. Its absence is what "not yet a Lead" means.
+  createdLeadId    String?   @map("created_lead_id") @db.Uuid
+  /// A customer this submission looks like, recorded as a SIGNAL only. Nothing
+  /// in the CRM is written or overwritten on the strength of it.
+  matchedContactId String?   @map("matched_contact_id") @db.Uuid
+  matchedLeadId    String?   @map("matched_lead_id") @db.Uuid
+  /// Why processing failed, in operator-readable words. Never a stack trace
+  /// and never anything from a signature or a secret.
+  failureReason    String?   @map("failure_reason") @db.VarChar(400)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  /// Idempotency, enforced by the database rather than by a prior read.
+  /// Check-then-insert loses under concurrency: two identical requests both
+  /// find nothing and both insert.
+  @@unique([organizationId, source, externalEventId])
+  /// The review queue: what is waiting, oldest first.
+  @@index([organizationId, status, receivedAt])
+  @@map("integration_intakes")
 }
