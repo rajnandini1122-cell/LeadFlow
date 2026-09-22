@@ -52,6 +52,19 @@ export const PERMISSIONS = {
   ORG_VIEW: 'org.view',
   ORG_UPDATE: 'org.update',
 
+  /**
+   * Sales teams.
+   *
+   * A noun of their own rather than a stretch of `org.update`, because every
+   * other noun in this catalogue has its own verbs and teams will shortly be
+   * what assignment rules are written against. Reading is separated from
+   * managing on the same line USER_VIEW and USER_UPDATE already draw: a
+   * manager needs to see the structure they work in; restructuring it is
+   * administration.
+   */
+  TEAM_VIEW: 'team.view',
+  TEAM_MANAGE: 'team.manage',
+
   DASHBOARD_VIEW_OWN: 'dashboard.view.own',
   DASHBOARD_VIEW_TEAM: 'dashboard.view.team',
   DASHBOARD_VIEW_ALL: 'dashboard.view.all',
@@ -95,6 +108,9 @@ const MANAGER_PERMISSIONS: Permission[] = [
   PERMISSIONS.ACCOUNT_STATUS_CHANGE,
   PERMISSIONS.FOLLOW_UP_VIEW_TEAM,
   PERMISSIONS.USER_VIEW,
+  // Sees the teams and who is in them. Cannot restructure them -- being
+  // responsible for a team is a business role, not an administrative one.
+  PERMISSIONS.TEAM_VIEW,
   PERMISSIONS.DASHBOARD_VIEW_TEAM,
   PERMISSIONS.REPORT_VIEW,
 ];
@@ -111,6 +127,7 @@ const ADMIN_PERMISSIONS: Permission[] = [
   PERMISSIONS.USER_SUSPEND,
   PERMISSIONS.USER_REMOVE,
   PERMISSIONS.ROLE_ASSIGN,
+  PERMISSIONS.TEAM_MANAGE,
   PERMISSIONS.ORG_UPDATE,
   PERMISSIONS.DASHBOARD_VIEW_ALL,
 ];

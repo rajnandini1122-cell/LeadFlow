@@ -209,6 +209,8 @@ model Organization {
   messages            Message[]
   channelIdentities   ContactChannelIdentity[]
   integrationIntakes  IntegrationIntake[]
+  teams               Team[]
+  teamMembers         TeamMember[]
 
   @@index([status])
   @@map("organizations")
@@ -353,8 +355,17 @@ model OrganizationUser {
   user         User         @relation("MembershipUser", fields: [userId], references: [id], onDelete: Cascade)
   invitedBy    User?        @relation("MembershipInviter", fields: [invitedById], references: [id], onDelete: SetNull)
   role         Role         @relation(fields: [roleId], references: [id])
+  managedTeams Team[]       @relation("TeamManager")
+  teamMembers  TeamMember[] @relation("TeamMembership")
 
   @@unique([organizationId, userId])
+  /// Not a business rule — `id` is already unique on its own.
+  ///
+  /// It exists so another tenant-scoped table can point a COMPOSITE foreign key
+  /// at (id, organization_id) and have the database refuse a row that pairs a
+  /// membership with the wrong organization. See TeamMember: it is what makes
+  /// "team in org A, member from org B" impossible rather than merely guarded.
+  @@unique([id, organizationId])
   @@index([userId])
   @@index([organizationId, status])
   /// Supports sweeping expired invitations without scanning the table.
@@ -1927,4 +1938,115 @@ model IntegrationIntake {
   /// The review queue: what is waiting, oldest first.
   @@index([organizationId, status, receivedAt])
   @@map("integration_intakes")
+}
+
+// =============================================================================
+// SALES TEAMS — the structure future assignment rules will read
+// =============================================================================
+
+enum TeamStatus {
+  ACTIVE
+  /// Retired, and kept. A team that once owned work is part of the historical
+  /// record: archiving preserves who was in it and what they did, which
+  /// deleting would destroy.
+  ARCHIVED
+
+  @@map("team_status")
+}
+
+/// A sales team within one organization, e.g. "Pune Sales".
+///
+/// Deliberately has NO routing rules, no territory, no round-robin cursor and
+/// no weights. It is the structure those later phases will reference, and
+/// putting a half-formed version of them here would mean rewriting them as
+/// soon as the real requirements arrive.
+///
+/// A team is not an authorization boundary. Being named manager of a team
+/// carries business responsibility and grants no permission: what somebody may
+/// DO is decided by Role and RolePermission, exactly as before.
+model Team {
+  id             String @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String @map("organization_id") @db.Uuid
+
+  name        String  @db.VarChar(80)
+  /// Lower-cased, whitespace-collapsed `name`, for the duplicate check.
+  ///
+  /// A separate column rather than a functional index, because the same
+  /// normalisation has to be applied by the application when it looks a team
+  /// up — and two expressions of one rule drift.
+  nameKey     String  @map("name_key") @db.VarChar(80)
+  description String? @db.VarChar(500)
+
+  status TeamStatus @default(ACTIVE)
+
+  /**
+   * The person responsible for the team, as an ORGANIZATION MEMBERSHIP.
+   * A membership rather than a user id: a user is global and belongs to no
+   * tenant, so a bare user id could name somebody from another organization
+   * and nothing in the database would object. The composite foreign key below
+   * pins the membership to this team's own organization.
+   * Nullable, because a team between managers is a real state and refusing to
+   * store it would mean either inventing a manager or deleting the team.
+   * NoAction rather than SetNull: the reference is composite, and nulling it
+   * would have to null organization_id too, which is NOT NULL. In practice
+   * nothing hard-deletes a membership — removal is a status and a timestamp —
+   * and the application clears this column itself when a manager leaves the
+   * team.
+   */
+  managerMembershipId String? @map("manager_membership_id") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  manager      OrganizationUser? @relation("TeamManager", fields: [managerMembershipId, organizationId], references: [id, organizationId], onDelete: NoAction)
+  members      TeamMember[]
+
+  /// Lets TeamMember point a composite key here and inherit the tenant.
+  @@unique([id, organizationId])
+  /// One ACTIVE team per name per organization. Partial — so an archived
+  /// "Pune Sales" does not block a new one — and therefore created by raw SQL
+  /// in the migration, which Prisma's schema language cannot express.
+  @@index([organizationId, status])
+  @@map("teams")
+}
+
+/// One person's place in one team.
+///
+/// Links a Team to an OrganizationUser MEMBERSHIP, never to a user id, an
+/// email address or a second copy of a person. There is exactly one identity
+/// model in this product — User plus OrganizationUser — and an "agent" is a
+/// membership doing sales work, not a new kind of record.
+model TeamMember {
+  id             String @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String @map("organization_id") @db.Uuid
+  teamId         String @map("team_id") @db.Uuid
+
+  organizationMembershipId String @map("organization_membership_id") @db.Uuid
+
+  /**
+   * Whether FUTURE automatic assignment may route work here.
+   * An operational pause — leave, training, a workload that is already too
+   * high — and nothing more. It does not suspend a login, withdraw a
+   * permission, unassign an existing lead or touch a follow-up. Those are
+   * organization membership concerns and they stay there.
+   */
+  assignmentEnabled Boolean @default(true) @map("assignment_enabled")
+
+  joinedAt  DateTime  @default(now()) @map("joined_at") @db.Timestamptz(6)
+  /// NULL means currently in the team. Set on removal rather than deleting the
+  /// row, so "who was in this team when that deal closed" stays answerable.
+  removedAt DateTime? @map("removed_at") @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  team         Team             @relation(fields: [teamId, organizationId], references: [id, organizationId], onDelete: Cascade)
+  membership   OrganizationUser @relation("TeamMembership", fields: [organizationMembershipId, organizationId], references: [id, organizationId], onDelete: Cascade)
+
+  /// The review queries: who is in this team, and which teams is this person in.
+  @@index([organizationId, teamId, removedAt])
+  @@index([organizationId, organizationMembershipId, removedAt])
+  @@map("team_members")
 }

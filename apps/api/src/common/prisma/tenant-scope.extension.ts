@@ -103,6 +103,18 @@ export const TENANT_SCOPED_MODELS: Record<string, string> = {
    * belongs to exactly one tenant: the one the integration is configured for.
    */
   IntegrationIntake: 'organizationId',
+  /*
+   * Sales teams, and who is in them.
+   *
+   * A team names people and will shortly decide who receives which customer,
+   * so an unscoped read would expose one tenant's sales structure and an
+   * unscoped write could put a stranger into it. Scoped on the same
+   * fail-closed terms as leads — and the database enforces the same rule
+   * underneath, through composite foreign keys that carry the tenant into the
+   * key, so a bug here is refused twice rather than once.
+   */
+  Team: 'organizationId',
+  TeamMember: 'organizationId',
   // Plan is deliberately ABSENT: it is a global catalogue offered to every
   // tenant, and the public pricing page reads it with no tenant context at all.
   //

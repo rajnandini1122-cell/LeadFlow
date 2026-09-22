@@ -35,7 +35,8 @@ interface NavItem {
 }
 
 /** Navigation from spec §25. */
-const NAV_ITEMS: NavItem[] = [
+/** Exported so a test can assert what each entry requires to be visible. */
+export const NAV_ITEMS: NavItem[] = [
   { to: '/dashboard', label: 'Dashboard', icon: '◆' },
   { to: '/inbox', label: 'Inbox', icon: '✉', badge: 'inbox', requiresOmnichannel: true },
   { to: '/leads', label: 'Leads', icon: '☰' },
@@ -92,6 +93,9 @@ const NAV_ITEMS: NavItem[] = [
   },
   { to: '/follow-ups', label: 'Follow-ups', icon: '◷', badge: 'overdue' },
   { to: '/team', label: 'Team', icon: '⚇', permission: PERMISSIONS.USER_VIEW },
+  // "Sales teams", not "Teams": the entry above is the member directory, and
+  // two things called Team would be one thing nobody can find.
+  { to: '/sales-teams', label: 'Sales teams', icon: '⚑', permission: PERMISSIONS.TEAM_VIEW },
   { to: '/reports', label: 'Reports', icon: '▤', permission: PERMISSIONS.REPORT_VIEW, exact: true },
   { to: '/reports/daily', label: 'Daily report', icon: '☀', permission: PERMISSIONS.REPORT_VIEW },
   { to: '/settings', label: 'Settings', icon: '⚙', permission: PERMISSIONS.ORG_VIEW, exact: true },

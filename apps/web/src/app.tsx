@@ -33,6 +33,8 @@ import { RetentionPage } from './features/accounts/retention-page';
 import { ContactDetailPage } from './features/contacts/contact-detail-page';
 import { FollowUpsPage } from './features/followups/follow-ups-page';
 import { TeamPage } from './features/team/team-page';
+import { SalesTeamsPage } from './features/sales-teams/sales-teams-page';
+import { TeamDetailPage } from './features/sales-teams/team-detail-page';
 import { ReportsPage } from './features/reports/reports-page';
 import { DailyReportPage } from './features/reports/daily-report-page';
 import { SettingsPage } from './features/settings/settings-page';
@@ -161,6 +163,8 @@ export function App(): React.JSX.Element {
                 <Route path="contacts/:id" element={<ContactDetailPage />} />
                 <Route path="follow-ups" element={<FollowUpsPage />} />
                 <Route path="team" element={<TeamPage />} />
+                <Route path="sales-teams" element={<SalesTeamsPage />} />
+                <Route path="sales-teams/:id" element={<TeamDetailPage />} />
                 <Route path="reports" element={<ReportsPage />} />
                 <Route path="reports/daily" element={<DailyReportPage />} />
                 <Route path="settings" element={<SettingsPage />} />

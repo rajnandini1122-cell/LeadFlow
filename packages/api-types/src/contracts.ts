@@ -222,3 +222,101 @@ export interface MembershipSummary {
   /** True for the organization the current access token is scoped to. */
   current: boolean;
 }
+
+// --- sales teams -------------------------------------------------------------
+
+export const TEAM_STATUSES = ['ACTIVE', 'ARCHIVED'] as const;
+export type TeamStatus = (typeof TEAM_STATUSES)[number];
+
+/** A team as it appears in the list. */
+export interface TeamListItem {
+  id: string;
+  name: string;
+  description: string | null;
+  status: TeamStatus;
+  manager: TeamManagerSummary | null;
+  /**
+   * Members currently in the team whose organization membership is ACTIVE.
+   *
+   * Deliberately not "rows in team_members": a removed colleague and a
+   * suspended one both still have history here, and counting them would
+   * overstate every team the moment somebody leaves.
+   */
+  activeMemberCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TeamManagerSummary {
+  /** The organization MEMBERSHIP id — what the team actually references. */
+  membershipId: string;
+  userId: string;
+  fullName: string;
+  role: RoleKey;
+}
+
+export interface TeamDetail extends TeamListItem {
+  members: TeamMemberView[];
+}
+
+/** One person's place in one team. */
+export interface TeamMemberView {
+  /** Identifies this membership row, for removal and toggling. */
+  id: string;
+  membershipId: string;
+  userId: string;
+  fullName: string;
+  email: string;
+  avatarUrl: string | null;
+  role: RoleKey;
+  /** The ORGANIZATION membership status. Authoritative over anything below. */
+  status: UserStatus;
+  assignmentEnabled: boolean;
+  joinedAt: string;
+  /**
+   * Whether future automatic assignment may route work to this person.
+   *
+   * A derived answer, never stored: it needs the live organization membership
+   * status, the role, the team's own status and assignmentEnabled together.
+   * Storing it would mean a suspended colleague stayed "eligible" until
+   * something remembered to recompute it.
+   */
+  eligibleForAssignment: boolean;
+}
+
+/** An organization member, with the teams they are in. For team management. */
+export interface TeamAgentCandidate {
+  membershipId: string;
+  userId: string;
+  fullName: string;
+  email: string;
+  avatarUrl: string | null;
+  role: RoleKey;
+  status: UserStatus;
+  /** True when this role may receive automatically assigned work at all. */
+  assignableRole: boolean;
+  teams: { teamId: string; teamName: string; assignmentEnabled: boolean }[];
+}
+
+export interface CreateTeamRequest {
+  name: string;
+  description?: string;
+  /** An organization member's USER id. Resolved to their membership server-side. */
+  managerUserId?: string;
+}
+
+export interface UpdateTeamRequest {
+  name?: string;
+  description?: string | null;
+  /** Null clears the manager; omitted leaves it alone. */
+  managerUserId?: string | null;
+  status?: TeamStatus;
+}
+
+export interface AddTeamMemberRequest {
+  userId: string;
+}
+
+export interface UpdateTeamMemberRequest {
+  assignmentEnabled: boolean;
+}
