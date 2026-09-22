@@ -1,4 +1,5 @@
 import { createTestContext, PASSWORD, type TestContext } from './helpers/test-app';
+import { AUDIT_ACTIONS } from '../src/common/audit/audit.repository';
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import { TenantContextService } from '../src/common/tenancy/tenant-context.service';
 
@@ -188,6 +189,169 @@ describe('Refresh token rotation under concurrency', () => {
         .expect(200);
 
       expect(second.body.data.tokens.accessToken).toBeTruthy();
+    });
+
+    it('treats an attempt drawn BEFORE the rotation order as a race loser, not a replay', async () => {
+      /*
+       * The interleaving real PostgreSQL produces and PGlite cannot.
+       *
+       * A loser can lose in two places. The one that loses at the WRITE is
+       * covered above: rotateSession matches no row. The one covered here
+       * loses at the READ — it registered while the token was live, but by the
+       * time it looked, the winner had committed, so it sees a revoked row.
+       * That request used to be punished as a replay, taking the winner's
+       * brand-new session with it (CI run #3: 1 live session, expected 2).
+       *
+       * PGlite serialises the two requests past that window, so the ordering
+       * is forced deterministically instead: pushing the parent's recorded
+       * rotation order beyond anything the next request can draw reproduces
+       * exactly what a late reader observes, on any database.
+       */
+      const { refreshToken, userId } = await freshSession();
+
+      await ctx.http().post('/api/v1/auth/refresh').send({ refreshToken }).expect(200);
+
+      const before = await sessionsFor(userId);
+      const parent = before[1];
+      expect(parent?.revokedReason).toBe('ROTATED');
+      // The rotation recorded its position in the database's order of events.
+      expect(parent?.rotationOrder).not.toBeNull();
+
+      await asSystem((prisma) =>
+        prisma.session.update({
+          where: { id: parent?.id },
+          data: { rotationOrder: (parent?.rotationOrder ?? 0n) + 1_000_000n },
+        }),
+      );
+
+      const loser = await ctx.http().post('/api/v1/auth/refresh').send({ refreshToken });
+
+      // Losing a race is an authentication failure, never a 500.
+      expect(loser.status).toBe(401);
+
+      const after = await sessionsFor(userId);
+      const family = after.filter((session) => session.familyId === parent?.familyId);
+
+      // The winner's descendant is untouched, and no second child was minted.
+      expect(family.filter((session) => session.revokedAt === null)).toHaveLength(1);
+      expect(after).toHaveLength(before.length);
+    });
+
+    it('classifies on database order alone — a future revokedAt excuses nothing', async () => {
+      /*
+       * The guarantee that matters once there is more than one API replica.
+       *
+       * revokedAt is written by whichever process won the rotation, so two
+       * replicas with skewed clocks would disagree about it. Here the
+       * timestamp is moved far into the future — under a clock-based rule this
+       * replay would be waved through as "concurrent" — while the authoritative
+       * rotation order is left exactly as the database wrote it. The family
+       * must still die.
+       */
+      const { refreshToken, userId } = await freshSession();
+
+      await ctx.http().post('/api/v1/auth/refresh').send({ refreshToken }).expect(200);
+
+      const parent = (await sessionsFor(userId))[1];
+
+      await asSystem((prisma) =>
+        prisma.session.update({
+          where: { id: parent?.id },
+          data: { revokedAt: new Date(Date.now() + 60 * 60 * 1000) },
+        }),
+      );
+
+      const replay = await ctx.http().post('/api/v1/auth/refresh').send({ refreshToken });
+      expect(replay.status).toBe(401);
+
+      const family = (await sessionsFor(userId)).filter(
+        (session) => session.familyId === parent?.familyId,
+      );
+      expect(family.every((session) => session.revokedAt !== null)).toBe(true);
+    });
+
+    it('fails secure when a rotated session carries no rotation order', async () => {
+      /*
+       * Rows revoked before this mechanism existed have no ordering value.
+       * Absence of evidence is not evidence of concurrency: such a row is
+       * treated as a replay, not excused.
+       */
+      const { refreshToken, userId } = await freshSession();
+
+      await ctx.http().post('/api/v1/auth/refresh').send({ refreshToken }).expect(200);
+
+      const parent = (await sessionsFor(userId))[1];
+
+      await asSystem((prisma) =>
+        prisma.session.update({
+          where: { id: parent?.id },
+          data: { rotationOrder: null },
+        }),
+      );
+
+      const replay = await ctx.http().post('/api/v1/auth/refresh').send({ refreshToken });
+      expect(replay.status).toBe(401);
+
+      const family = (await sessionsFor(userId)).filter(
+        (session) => session.familyId === parent?.familyId,
+      );
+      expect(family.every((session) => session.revokedAt !== null)).toBe(true);
+    });
+
+    it('leaves an unrelated family live when reuse is detected', async () => {
+      const { refreshToken, userId } = await freshSession();
+
+      await ctx.http().post('/api/v1/auth/refresh').send({ refreshToken }).expect(200);
+
+      const replay = await ctx.http().post('/api/v1/auth/refresh').send({ refreshToken });
+      expect(replay.status).toBe(401);
+
+      const sessions = await sessionsFor(userId);
+      const rotatedFamily = sessions[1]?.familyId;
+      const unrelated = sessions.filter((session) => session.familyId !== rotatedFamily);
+
+      // The registration login is its own family; one family's compromise must
+      // not sign the person out of a device that never held the leaked token.
+      expect(unrelated.length).toBeGreaterThan(0);
+      expect(unrelated.every((session) => session.revokedAt === null)).toBe(true);
+    });
+
+    it('mints no session when reuse is detected', async () => {
+      const { refreshToken, userId } = await freshSession();
+
+      await ctx.http().post('/api/v1/auth/refresh').send({ refreshToken }).expect(200);
+      const before = await sessionsFor(userId);
+
+      const replay = await ctx.http().post('/api/v1/auth/refresh').send({ refreshToken });
+      expect(replay.status).toBe(401);
+
+      expect(await sessionsFor(userId)).toHaveLength(before.length);
+    });
+
+    it('audits a real replay, and stays silent for concurrent losers', async () => {
+      const reuseAudits = async (userId: string): Promise<number> =>
+        asSystem((prisma) =>
+          prisma.auditLog.count({
+            where: { actorUserId: userId, action: AUDIT_ACTIONS.TOKEN_REUSE_DETECTED },
+          }),
+        );
+
+      const { refreshToken, userId } = await freshSession();
+
+      await Promise.all(
+        Array.from({ length: 5 }, () =>
+          ctx.http().post('/api/v1/auth/refresh').send({ refreshToken }),
+        ),
+      );
+
+      // Four people losing a race is not a security event. Recording it as one
+      // teaches whoever reads the audit trail to ignore the real thing.
+      expect(await reuseAudits(userId)).toBe(0);
+
+      const replay = await ctx.http().post('/api/v1/auth/refresh').send({ refreshToken });
+      expect(replay.status).toBe(401);
+
+      expect(await reuseAudits(userId)).toBeGreaterThan(0);
     });
   });
 });

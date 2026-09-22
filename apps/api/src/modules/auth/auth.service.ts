@@ -339,10 +339,68 @@ export class AuthService {
     rawRefreshToken: string,
     meta: RequestMetadata,
   ): Promise<{ tokens: TokenPair; refreshToken: string; user: AuthenticatedUser }> {
+    /*
+     * Where this request stands in the database's own order of events.
+     *
+     * Drawn from a PostgreSQL sequence before anything else happens, so the
+     * number is assigned by the one authority every replica shares. No process
+     * clock takes part in the classification below, which means two API
+     * replicas with arbitrarily skewed clocks reach the same verdict.
+     */
+    const attemptOrder = await this.repository.nextRefreshOrder();
+
     const hash = this.tokens.hashRefreshToken(rawRefreshToken);
     const session = await this.repository.findSessionByTokenHash(hash);
 
     if (!session) throw AppException.tokenInvalid();
+
+    /*
+     * --- lost the rotation race, NOT a replay -------------------------------
+     *
+     * Several requests legitimately carrying one token arrive together. One
+     * consumes it; the rest must fail with 401 and leave the family alone, or
+     * the winner's brand-new session dies with them.
+     *
+     * A loser can lose in two places. Losing at the WRITE is handled further
+     * down: rotateSession matches no row and returns null. Losing at the READ
+     * is handled here — the request registered while the token was still live,
+     * but by the time it looked, the winner had committed, so it sees a
+     * revoked row. Treating that as reuse is what revoked the winner's session
+     * (CI run #3: one live session where two were required). PGlite's single
+     * connection had always serialised the two requests past this window,
+     * which is why only real PostgreSQL exposed it.
+     *
+     * The question is ordering, not elapsed time: did this request register
+     * with the database BEFORE the rotation did? Sequence values are unique
+     * and monotonic, so the comparison is strict and has no window in it. A
+     * replay that registers one position after the rotation is still a replay
+     * and still kills the family.
+     *
+     * Only a ROTATED parent qualifies. A session revoked by logout, password
+     * change, lost membership or an earlier reuse detection is invalid for
+     * reasons that have nothing to do with racing.
+     *
+     * A ROTATED row with no rotation order predates this mechanism. It is
+     * treated as a replay — the secure direction — rather than assumed to be
+     * concurrent.
+     */
+    if (
+      session.revokedAt &&
+      session.revokedReason === 'ROTATED' &&
+      session.rotationOrder !== null &&
+      attemptOrder < session.rotationOrder
+    ) {
+      this.logger.debug(
+        {
+          userId: session.userId,
+          organizationId: session.organizationId,
+          familyId: session.familyId,
+        },
+        'Concurrent refresh lost the rotation race — family left intact',
+      );
+
+      throw AppException.tokenInvalid();
+    }
 
     // --- reuse detection ----------------------------------------------------
     // A revoked token being presented means it leaked: the legitimate client

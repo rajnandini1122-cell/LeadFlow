@@ -165,6 +165,48 @@ export class AuthRepository {
     );
   }
 
+  /**
+   * The next value of the refresh ordering sequence.
+   *
+   * This is the authority that tells a concurrent race loser from a replay.
+   * Every refresh draws one of these before it does anything else, and a
+   * rotation stamps the value it drew onto the session it consumed; comparing
+   * the two answers "did this request register before the rotation did"
+   * without any clock taking part. That matters once more than one API replica
+   * exists, because their clocks can disagree while the database cannot
+   * disagree with itself.
+   *
+   * `nextval` is deliberately NOT transactional. A request that draws a value
+   * and then fails leaves a gap, and gaps are fine: nothing here counts
+   * sequence values, it only compares them. The alternative — a counter row
+   * updated under a lock — would serialise every refresh in the product
+   * against every other, which is a real cost for no gain.
+   */
+  async nextRefreshOrder(): Promise<bigint> {
+    return this.tenantContext.runAsSystem(
+      'refresh: draw the ordering value that classifies concurrency, before any tenant is known',
+      async () => {
+        /*
+         * Raw SQL, deliberately and narrowly. PostgreSQL sequences have no
+         * Prisma primitive, and there is nothing here to scope to a tenant:
+         * the statement reads one number from a global sequence and touches no
+         * row of any tenant-owned table.
+         */
+        // eslint-disable-next-line no-restricted-syntax
+        const rows = await this.prisma.client.$queryRaw<
+          { nextval: bigint }[]
+        >`SELECT nextval('refresh_order_seq')`;
+
+        const value = rows[0]?.nextval;
+        if (value === undefined) {
+          throw new Error('refresh_order_seq returned no value');
+        }
+
+        return value;
+      },
+    );
+  }
+
   async rotateSession(input: {
     currentSessionId: string;
     organizationId: string;
@@ -185,6 +227,20 @@ export class AuthRepository {
     return this.tenantContext.runAsSystem('refresh: rotate a refresh token atomically', () =>
       this.prisma.client.$transaction(async (tx) => {
         /*
+         * The rotation's position in the database's order of events, stamped
+         * onto the row being consumed so that a later reader can tell whether
+         * its own attempt came before or after this moment. Drawn inside the
+         * transaction, immediately before the consume it describes.
+         */
+        // eslint-disable-next-line no-restricted-syntax -- see nextRefreshOrder above.
+        const ordered = await tx.$queryRaw<{ nextval: bigint }[]>`SELECT nextval('refresh_order_seq')`;
+        const rotationOrder = ordered[0]?.nextval;
+
+        if (rotationOrder === undefined) {
+          throw new Error('refresh_order_seq returned no value');
+        }
+
+        /*
          * Consume FIRST, and conditionally.
          *
          * `revokedAt: null` in the WHERE clause is the whole fix. The previous
@@ -203,6 +259,7 @@ export class AuthRepository {
             revokedAt: new Date(),
             revokedReason: 'ROTATED',
             replacedById: replacementId,
+            rotationOrder,
           },
         });
 
