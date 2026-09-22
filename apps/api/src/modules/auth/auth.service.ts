@@ -7,6 +7,7 @@ import type {
   OrganizationSummary,
   TokenPair,
 } from '@leadflow/api-types';
+import { AppConfig } from '../../common/config/config.module';
 import { AppException } from '../../common/errors/app.exception';
 import { AUDIT_ACTIONS, AuditRepository } from '../../common/audit/audit.repository';
 import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
@@ -41,6 +42,7 @@ export class AuthService {
     private readonly audit: AuditRepository,
     private readonly sessions: SessionService,
     private readonly google: GoogleAuthService,
+    private readonly config: AppConfig,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -339,16 +341,6 @@ export class AuthService {
     rawRefreshToken: string,
     meta: RequestMetadata,
   ): Promise<{ tokens: TokenPair; refreshToken: string; user: AuthenticatedUser }> {
-    /*
-     * Where this request stands in the database's own order of events.
-     *
-     * Drawn from a PostgreSQL sequence before anything else happens, so the
-     * number is assigned by the one authority every replica shares. No process
-     * clock takes part in the classification below, which means two API
-     * replicas with arbitrarily skewed clocks reach the same verdict.
-     */
-    const attemptOrder = await this.repository.nextRefreshOrder();
-
     const hash = this.tokens.hashRefreshToken(rawRefreshToken);
     const session = await this.repository.findSessionByTokenHash(hash);
 
@@ -363,43 +355,69 @@ export class AuthService {
      *
      * A loser can lose in two places. Losing at the WRITE is handled further
      * down: rotateSession matches no row and returns null. Losing at the READ
-     * is handled here — the request registered while the token was still live,
-     * but by the time it looked, the winner had committed, so it sees a
-     * revoked row. Treating that as reuse is what revoked the winner's session
-     * (CI run #3: one live session where two were required). PGlite's single
-     * connection had always serialised the two requests past this window,
-     * which is why only real PostgreSQL exposed it.
+     * is handled here — the request was sent while the token was still live,
+     * but by the time it reached the database the winner had committed, so it
+     * sees a revoked row. Treating that as reuse revoked the winner's session
+     * (CI run #3: one live session where two were required).
      *
-     * The question is ordering, not elapsed time: did this request register
-     * with the database BEFORE the rotation did? Sequence values are unique
-     * and monotonic, so the comparison is strict and has no window in it. A
-     * replay that registers one position after the rotation is still a replay
-     * and still kills the family.
+     * Two earlier attempts at an exact test failed, and the second failure is
+     * the reason this one is an interval. Comparing application clocks cannot
+     * work across replicas. Comparing a database sequence looked exact, but it
+     * orders requests by when they reach the DATABASE, not by when the client
+     * sent them: under a saturated connection pool a perfectly legitimate
+     * request draws its number after the rotation has already committed (CI
+     * run #4). From database state alone, that request is indistinguishable
+     * from a replay sent immediately afterwards.
      *
-     * Only a ROTATED parent qualifies. A session revoked by logout, password
-     * change, lost membership or an earlier reuse detection is invalid for
-     * reasons that have nothing to do with racing.
+     * So the distinction is accepted as approximate and made explicit: a
+     * rotated token presented within REFRESH_REUSE_INTERVAL_MS of its own
+     * rotation is treated as a straggler from the same wave. What the interval
+     * suppresses is FAMILY REVOCATION, nothing else — the spent token still
+     * fails with 401, still mints no child, and still returns no credential of
+     * any kind.
      *
-     * A ROTATED row with no rotation order predates this mechanism. It is
-     * treated as a replay — the secure direction — rather than assumed to be
-     * concurrent.
+     * Both sides of the comparison are PostgreSQL's own clock: `revoked_at` is
+     * written by the database during the consume, and the interval is
+     * evaluated by the database. No process clock participates.
+     *
+     * Only a ROTATED parent qualifies. Logout, password change, lost
+     * membership and earlier reuse detection revoke for reasons that have
+     * nothing to do with racing, and get no grace at all.
      */
-    if (
-      session.revokedAt &&
-      session.revokedReason === 'ROTATED' &&
-      session.rotationOrder !== null &&
-      attemptOrder < session.rotationOrder
-    ) {
-      this.logger.debug(
-        {
-          userId: session.userId,
-          organizationId: session.organizationId,
-          familyId: session.familyId,
-        },
-        'Concurrent refresh lost the rotation race — family left intact',
-      );
+    if (session.revokedAt && session.revokedReason === 'ROTATED') {
+      const intervalMs = this.config.get('REFRESH_REUSE_INTERVAL_MS');
 
-      throw AppException.tokenInvalid();
+      /*
+       * Zero means strict — no tolerance at all, not a zero-length window.
+       *
+       * The distinction is not academic. The database comparison is
+       * `clock_timestamp() - revoked_at <= interval`, which is TRUE at
+       * difference zero and for any revocation stamped in the future, so a
+       * zero-length interval would still hand out grace at the exact instant
+       * of rotation. Short-circuiting here means a configured 0 never
+       * consults the interval at all: every rotated token takes the ordinary
+       * reuse path.
+       */
+      const withinReuseInterval =
+        intervalMs > 0 &&
+        (await this.repository.isWithinRotationReuseInterval({
+          sessionId: session.id,
+          organizationId: session.organizationId,
+          intervalMs,
+        }));
+
+      if (withinReuseInterval) {
+        this.logger.debug(
+          {
+            userId: session.userId,
+            organizationId: session.organizationId,
+            familyId: session.familyId,
+          },
+          'Refresh presented just after its own rotation — family left intact',
+        );
+
+        throw AppException.tokenInvalid();
+      }
     }
 
     // --- reuse detection ----------------------------------------------------

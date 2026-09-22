@@ -1,5 +1,7 @@
 import { ERROR_CODES } from '@leadflow/api-types';
 import { createTestContext, PASSWORD, type TestContext } from './helpers/test-app';
+import { PrismaService } from '../src/common/prisma/prisma.service';
+import { TenantContextService } from '../src/common/tenancy/tenant-context.service';
 
 /**
  * Authentication lifecycle: login, refresh rotation, reuse detection, logout.
@@ -15,6 +17,33 @@ describe('Authentication flow', () => {
 
   const refreshWith = (token: string) =>
     ctx.http().post('/api/v1/auth/refresh').send({ refreshToken: token });
+
+  /**
+   * Ages a rotation past REFRESH_REUSE_INTERVAL_MS, in the DATABASE's clock.
+   *
+   * Requests sent together can reach the database far apart, so a rotated
+   * token presented immediately afterwards is treated as a straggler rather
+   * than a leak. Reuse detection begins once that short interval has passed,
+   * and this is how a test reaches that point without sleeping. The seconds
+   * come from `clock_timestamp()` because that is what the rotation itself
+   * wrote — mixing in this process's clock would compare two different
+   * timelines.
+   */
+  const ageRotation = async (userId: string, secondsAgo: number): Promise<void> => {
+    const tenantContext = ctx.app.get(TenantContextService);
+    const prisma = ctx.app.get(PrismaService);
+
+    await tenantContext.runAsSystem(
+      'e2e fixture: age a rotation past the reuse interval',
+      () =>
+        prisma.client.$executeRaw`
+          UPDATE "sessions"
+             SET "revoked_at" = clock_timestamp() - make_interval(secs => ${secondsAgo}::double precision)
+           WHERE "user_id" = ${userId}::uuid
+             AND "revoked_reason" = 'ROTATED'
+        ` as Promise<number>,
+    );
+  };
 
   beforeAll(async () => {
     ctx = await createTestContext();
@@ -118,14 +147,29 @@ describe('Authentication flow', () => {
       const rotated = await refreshWith(first).expect(200);
       const second = rotated.body.data.tokens.refreshToken as string;
 
-      // Replaying the already-rotated token: this is what a stolen token looks
-      // like once the real client has moved on.
+      /*
+       * Immediately after the rotation, the spent token is refused but the
+       * family survives: at that distance a straggler from the same wave and
+       * a stolen copy are indistinguishable, so the benefit of the doubt goes
+       * to the client. Nothing is issued either way.
+       */
+      const straggler = await refreshWith(first).expect(401);
+      expect(straggler.body.error.code).toBe(ERROR_CODES.TOKEN_INVALID);
+
+      // The family is untouched, so the legitimate client carries on.
+      const carriedOn = await refreshWith(second).expect(200);
+      const third = carriedOn.body.data.tokens.refreshToken as string;
+
+      // Past the interval, the same replay is what a stolen token looks like
+      // once the real client has moved on.
+      await ageRotation(login.body.data.user.id as string, 30);
+
       const replay = await refreshWith(first).expect(401);
       expect(replay.body.error.code).toBe(ERROR_CODES.TOKEN_REUSE_DETECTED);
 
       // The critical assertion: the CURRENT token is now dead too. Revoking
       // only the replayed token would leave the attacker's copy working.
-      await refreshWith(second).expect(401);
+      await refreshWith(third).expect(401);
     });
 
     it('rejects an unknown refresh token', async () => {

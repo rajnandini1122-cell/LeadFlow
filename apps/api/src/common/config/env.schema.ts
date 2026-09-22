@@ -88,6 +88,23 @@ export const envSchema = z
     JWT_ACCESS_TTL: durationString.default('15m'),
     JWT_REFRESH_TTL: durationString.default('30d'),
 
+    /**
+     * How long after a refresh token is rotated a second presentation of it is
+     * still treated as a straggler rather than a leak.
+     *
+     * Requests sent together can reach the database far apart — a saturated
+     * connection pool is enough — and from database state alone a legitimate
+     * straggler is indistinguishable from a replay sent immediately after the
+     * rotation. This interval is that ambiguity, made explicit and bounded.
+     *
+     * It suppresses FAMILY REVOCATION only. Inside it the spent token still
+     * fails with 401, still mints no child, and still returns no credential;
+     * outside it, reuse kills the whole family as before. Larger values trade
+     * detection speed for tolerance, so the upper bound is deliberately low.
+     * Set it to 0 for strict detection with no tolerance at all.
+     */
+    REFRESH_REUSE_INTERVAL_MS: z.coerce.number().int().min(0).max(10_000).default(2000),
+
     ARGON2_MEMORY_COST: z.coerce.number().int().min(8192).default(19456),
     ARGON2_TIME_COST: z.coerce.number().int().min(2).default(2),
     ARGON2_PARALLELISM: z.coerce.number().int().min(1).default(1),

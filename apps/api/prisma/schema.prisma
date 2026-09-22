@@ -434,21 +434,6 @@ model Session {
   revokedReason String?   @map("revoked_reason") @db.VarChar(80)
   replacedById  String?   @map("replaced_by_id") @db.Uuid
 
-  /// Where this session's ROTATION sits in the database's order of events.
-  ///
-  /// Drawn from `refresh_order_seq` inside the transaction that consumes the
-  /// session, and only ever set when `revokedReason = 'ROTATED'`. A refresh
-  /// that arrives afterwards compares its own drawn value against this one to
-  /// learn whether it registered before the rotation (a concurrent race loser,
-  /// which must not kill the family) or after it (a replay, which must).
-  ///
-  /// Deliberately an ordering value rather than a timestamp: two API replicas
-  /// can disagree about the time, but they cannot disagree about a sequence
-  /// the database itself hands out. NULL on rows revoked for any other reason,
-  /// and on rows that predate the mechanism — those are treated as replays,
-  /// which is the secure direction.
-  rotationOrder BigInt?   @map("rotation_order")
-
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
