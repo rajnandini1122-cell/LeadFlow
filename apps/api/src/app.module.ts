@@ -41,6 +41,7 @@ import { InvitationsModule } from './modules/invitations/invitations.module';
 import { HealthModule } from './modules/health/health.module';
 import { IntegrationsModule } from './modules/integrations/integrations.module';
 import { TeamsModule } from './modules/teams/teams.module';
+import { TerritoriesModule } from './modules/territories/territories.module';
 import { AssignmentRulesModule } from './modules/assignment-rules/assignment-rules.module';
 
 @Module({
@@ -145,6 +146,7 @@ import { AssignmentRulesModule } from './modules/assignment-rules/assignment-rul
     ContactModule,
     IntegrationsModule,
     TeamsModule,
+    TerritoriesModule,
     AssignmentRulesModule,
     HealthModule,
   ],

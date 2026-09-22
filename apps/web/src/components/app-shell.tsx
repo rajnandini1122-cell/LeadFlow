@@ -96,6 +96,9 @@ export const NAV_ITEMS: NavItem[] = [
   // "Sales teams", not "Teams": the entry above is the member directory, and
   // two things called Team would be one thing nobody can find.
   { to: '/sales-teams', label: 'Sales teams', icon: '⚑', permission: PERMISSIONS.TEAM_VIEW },
+  // Directly above assignment rules, because that is the order they are used
+  // in: a territory has to exist before a rule can route one.
+  { to: '/territories', label: 'Territories', icon: '◈', permission: PERMISSIONS.TERRITORY_VIEW },
   {
     to: '/assignment-rules',
     label: 'Assignment rules',

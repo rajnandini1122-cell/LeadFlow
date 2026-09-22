@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import type { AssignmentRuleView, TeamListItem } from '@leadflow/api-types';
+import type { AssignmentRuleView, TeamListItem, TerritoryListItem } from '@leadflow/api-types';
 import { ApiError } from '../../lib/api-client';
 
 export interface RuleFormValues {
@@ -8,6 +8,7 @@ export interface RuleFormValues {
   priority: string;
   source: string;
   productId: string;
+  territoryId: string;
   isFallback: boolean;
   targetTeamId: string;
 }
@@ -25,6 +26,7 @@ export function RuleFormDialog({
   rule,
   teams,
   products,
+  territories,
   sources,
   saving,
   error,
@@ -35,6 +37,7 @@ export function RuleFormDialog({
   rule?: AssignmentRuleView | undefined;
   teams: TeamListItem[];
   products: { id: string; name: string }[];
+  territories: TerritoryListItem[];
   /** The tenant's own configured lead sources. */
   sources: string[];
   saving: boolean;
@@ -59,6 +62,7 @@ export function RuleFormDialog({
             priority: String(rule.priority),
             source: rule.source ?? '',
             productId: rule.product?.id ?? '',
+            territoryId: rule.territory?.id ?? '',
             isFallback: rule.isFallback,
             targetTeamId: rule.targetTeam.id,
           }
@@ -120,6 +124,13 @@ export function RuleFormDialog({
   // one, and offering it would produce an error nobody can act on.
   const targets = teams.filter(
     (team) => team.status === 'ACTIVE' || team.id === rule?.targetTeam.id,
+  );
+
+  // Same reasoning for territories, plus one more: a rule that was paused
+  // while its territory was retired must still show what it used to route,
+  // rather than silently appearing to route everywhere.
+  const scopes = territories.filter(
+    (territory) => territory.status === 'ACTIVE' || territory.id === rule?.territory?.id,
   );
 
   return (
@@ -237,6 +248,40 @@ export function RuleFormDialog({
                     ))}
                   </select>
                 </div>
+
+                <div className="sm:col-span-2">
+                  <label
+                    htmlFor="rule-territory"
+                    className="mb-1 block text-xs font-medium text-slate-600"
+                  >
+                    Territory <span className="text-slate-400">(anywhere, if blank)</span>
+                  </label>
+                  <select
+                    id="rule-territory"
+                    value={values.territoryId}
+                    onChange={(event) => set('territoryId', event.target.value)}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
+                  >
+                    <option value="">Anywhere</option>
+                    {scopes.map((territory) => (
+                      <option key={territory.id} value={territory.id}>
+                        {territory.name}
+                        {territory.status === 'ARCHIVED' ? ' (archived)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                  {/* A named territory, never a city or a pincode. The
+                      resolver turns an address into one of these before any
+                      rule is consulted, so the routing table stays readable
+                      and there is one description of where a place is. */}
+                  <p className="mt-1 text-xs text-slate-500">
+                    Locations are resolved to a territory first. Edit which places a territory
+                    covers on the Territories screen.
+                  </p>
+                  {fieldError('territoryId') && (
+                    <p className="mt-1 text-xs text-red-600">{fieldError('territoryId')}</p>
+                  )}
+                </div>
               </div>
             )}
 
@@ -324,6 +369,7 @@ const EMPTY: RuleFormValues = {
   priority: '',
   source: '',
   productId: '',
+  territoryId: '',
   isFallback: false,
   targetTeamId: '',
 };

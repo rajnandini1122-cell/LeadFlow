@@ -1,7 +1,8 @@
 import { Injectable } from '@nestjs/common';
-import { PrismaService } from '../../common/prisma/prisma.service';
+import { PrismaService, type PrismaTransaction } from '../../common/prisma/prisma.service';
 import { TenantContextService } from '../../common/tenancy/tenant-context.service';
 import type { AssignmentRuleStatus } from '../../generated/prisma/enums';
+import { lockActiveTerritory } from '../territories/territories.repository';
 
 /**
  * Assignment rule data access.
@@ -78,6 +79,12 @@ export class AssignmentRulesRepository {
    * ON CONFLICT cannot say WHICH index objected, so the reason is worked out
    * afterwards by asking — three cheap scoped reads, on a path that only runs
    * when something was already refused.
+   *
+   * A rule with a TERRITORY is written inside a transaction that first takes
+   * that territory's row lock. A prior "is it active?" read would be stale the
+   * moment another administrator archived it, and the two requests would
+   * otherwise both succeed — leaving live routing pointed at a retired
+   * territory. See lockActiveTerritory.
    */
   async create(input: {
     name: string;
@@ -87,31 +94,42 @@ export class AssignmentRulesRepository {
     source?: string | undefined;
     sourceKey?: string | undefined;
     productId?: string | undefined;
+    territoryId?: string | undefined;
     isFallback: boolean;
     criteriaKey: string;
     targetTeamId: string;
   }): Promise<{ id: string } | RuleConflict> {
-    const [created] = await this.prisma.client.assignmentRule.createManyAndReturn({
-      skipDuplicates: true,
-      data: [
-        {
-          organizationId: this.tenantContext.requireOrganizationId(),
-          name: input.name,
-          nameKey: input.nameKey,
-          description: input.description ?? null,
-          priority: input.priority,
-          source: input.source ?? null,
-          sourceKey: input.sourceKey ?? null,
-          productId: input.productId ?? null,
-          isFallback: input.isFallback,
-          criteriaKey: input.criteriaKey,
-          targetTeamId: input.targetTeamId,
-        },
-      ],
-      select: { id: true },
-    });
+    const organizationId = this.tenantContext.requireOrganizationId();
 
-    return created ?? this.explainConflict(input);
+    return this.prisma.client.$transaction(async (tx) => {
+      if (input.territoryId) {
+        const territory = await lockActiveTerritory(tx, input.territoryId);
+        if (!territory) return { conflict: 'TERRITORY_UNAVAILABLE' } as const;
+      }
+
+      const [created] = await tx.assignmentRule.createManyAndReturn({
+        skipDuplicates: true,
+        data: [
+          {
+            organizationId,
+            name: input.name,
+            nameKey: input.nameKey,
+            description: input.description ?? null,
+            priority: input.priority,
+            source: input.source ?? null,
+            sourceKey: input.sourceKey ?? null,
+            productId: input.productId ?? null,
+            territoryId: input.territoryId ?? null,
+            isFallback: input.isFallback,
+            criteriaKey: input.criteriaKey,
+            targetTeamId: input.targetTeamId,
+          },
+        ],
+        select: { id: true },
+      });
+
+      return created ?? this.explainConflict(tx, input);
+    });
   }
 
   /**
@@ -121,17 +139,23 @@ export class AssignmentRulesRepository {
    * administrator would want to hear about them: the fallback slot, then the
    * criteria, then the precedence.
    */
-  private async explainConflict(input: {
-    isFallback: boolean;
-    criteriaKey: string;
-    priority: number;
-  }): Promise<RuleConflict> {
+  private async explainConflict(
+    tx: PrismaTransaction,
+    input: {
+      isFallback: boolean;
+      criteriaKey: string;
+      priority: number;
+    },
+  ): Promise<RuleConflict> {
     if (input.isFallback) {
-      const existing = await this.activeFallback();
+      const existing = await tx.assignmentRule.findFirst({
+        where: { status: 'ACTIVE', isFallback: true },
+        select: { id: true },
+      });
       if (existing) return { conflict: 'FALLBACK_EXISTS' };
     }
 
-    const sameCriteria = await this.prisma.client.assignmentRule.findFirst({
+    const sameCriteria = await tx.assignmentRule.findFirst({
       where: { status: 'ACTIVE', isFallback: false, criteriaKey: input.criteriaKey },
       select: { id: true },
     });
@@ -150,18 +174,38 @@ export class AssignmentRulesRepository {
       source?: string | null;
       sourceKey?: string | null;
       productId?: string | null;
+      territoryId?: string | null;
       criteriaKey?: string;
       targetTeamId?: string;
       status?: AssignmentRuleStatus;
     },
     /** Which fallback constraint a collision on (organization_id) would mean. */
     isFallback = false,
+    /**
+     * The territory this rule will route to once the change lands, when the
+     * rule will be ACTIVE afterwards.
+     *
+     * Locked inside the same transaction as the write, for the same reason
+     * create does it: an administrator activating a rule and another archiving
+     * the territory it points at must not both succeed. Undefined when the
+     * rule will not be active, or routes nowhere in particular — a paused rule
+     * may hold a reference to an archived territory, which is history rather
+     * than routing.
+     */
+    lockTerritoryId?: string | undefined,
   ): Promise<'UPDATED' | RuleConflict> {
     try {
-      // updateMany, so the tenant scope is part of the WHERE: another
-      // organization's rule matches nothing rather than being checked for.
-      await this.prisma.client.assignmentRule.updateMany({ where: { id }, data: changes });
-      return 'UPDATED';
+      return await this.prisma.client.$transaction(async (tx) => {
+        if (lockTerritoryId) {
+          const territory = await lockActiveTerritory(tx, lockTerritoryId);
+          if (!territory) return { conflict: 'TERRITORY_UNAVAILABLE' } as const;
+        }
+
+        // updateMany, so the tenant scope is part of the WHERE: another
+        // organization's rule matches nothing rather than being checked for.
+        await tx.assignmentRule.updateMany({ where: { id }, data: changes });
+        return 'UPDATED' as const;
+      });
     } catch (error) {
       const conflict = conflictOf(error, isFallback);
       if (conflict) return conflict;
@@ -237,13 +281,31 @@ export class AssignmentRulesRepository {
       select: { id: true, name: true, sku: true, active: true },
     });
   }
+
+  /**
+   * The territory a rule may reference: same tenant, and its current status.
+   *
+   * Cross-tenant safety is structural — the query is scoped, so another
+   * organization's territory is simply not found, and the composite foreign key
+   * would refuse the row even if it were. This read is what turns the ordinary
+   * mistake into a message; the lock inside the write transaction is what
+   * decides the race.
+   */
+  async findTerritory(territoryId: string) {
+    return this.prisma.client.territory.findFirst({
+      where: { id: territoryId },
+      select: { id: true, name: true, status: true },
+    });
+  }
 }
 
 /** Which invariant refused a write. */
 export type RuleConflict =
   | { conflict: 'FALLBACK_EXISTS' }
   | { conflict: 'CRITERIA_TAKEN' }
-  | { conflict: 'PRIORITY_TAKEN' };
+  | { conflict: 'PRIORITY_TAKEN' }
+  /** The territory was archived by somebody else while this write was in flight. */
+  | { conflict: 'TERRITORY_UNAVAILABLE' };
 
 /**
  * Which invariant a unique violation hit.
@@ -275,6 +337,7 @@ function conflictOf(error: unknown, isFallback: boolean): RuleConflict | undefin
 const RULE_INCLUDE = {
   targetTeam: { select: { id: true, name: true, status: true } },
   product: { select: { id: true, name: true, sku: true } },
+  territory: { select: { id: true, name: true, status: true } },
 } as const;
 
 /** Only what the evaluator needs. No names, no descriptions, no PII. */
@@ -285,6 +348,7 @@ const EVALUATION_SELECT = {
   isFallback: true,
   sourceKey: true,
   productId: true,
+  territoryId: true,
   targetTeamId: true,
   targetTeam: { select: { id: true, name: true, status: true } },
 } as const;

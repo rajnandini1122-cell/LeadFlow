@@ -77,6 +77,20 @@ export const PERMISSIONS = {
   ASSIGNMENT_RULE_VIEW: 'assignment_rule.view',
   ASSIGNMENT_RULE_MANAGE: 'assignment_rule.manage',
 
+  /**
+   * Territories — the geography routing is written against.
+   *
+   * Its own noun rather than part of assignment_rule.manage, because the two
+   * can be delegated separately and usually are: redrawing which pincodes
+   * belong to which territory changes where every future enquiry from those
+   * places lands, whether or not the person doing it may touch a single rule.
+   * Read is separated from manage on the line the catalogue already draws — a
+   * manager whose region stops receiving enquiries needs to see the map;
+   * redrawing it is administration.
+   */
+  TERRITORY_VIEW: 'territory.view',
+  TERRITORY_MANAGE: 'territory.manage',
+
   DASHBOARD_VIEW_OWN: 'dashboard.view.own',
   DASHBOARD_VIEW_TEAM: 'dashboard.view.team',
   DASHBOARD_VIEW_ALL: 'dashboard.view.all',
@@ -126,6 +140,8 @@ const MANAGER_PERMISSIONS: Permission[] = [
   // Sees how work is routed -- a manager whose team stops receiving enquiries
   // needs to be able to find out why. Changing it is administration.
   PERMISSIONS.ASSIGNMENT_RULE_VIEW,
+  // Sees the map their routing is written against, for the same reason.
+  PERMISSIONS.TERRITORY_VIEW,
   PERMISSIONS.DASHBOARD_VIEW_TEAM,
   PERMISSIONS.REPORT_VIEW,
 ];
@@ -144,6 +160,7 @@ const ADMIN_PERMISSIONS: Permission[] = [
   PERMISSIONS.ROLE_ASSIGN,
   PERMISSIONS.TEAM_MANAGE,
   PERMISSIONS.ASSIGNMENT_RULE_MANAGE,
+  PERMISSIONS.TERRITORY_MANAGE,
   PERMISSIONS.ORG_UPDATE,
   PERMISSIONS.DASHBOARD_VIEW_ALL,
 ];

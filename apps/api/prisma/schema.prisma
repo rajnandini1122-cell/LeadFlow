@@ -212,6 +212,8 @@ model Organization {
   teams               Team[]
   teamMembers         TeamMember[]
   assignmentRules     AssignmentRule[]
+  territories         Territory[]
+  territoryCoverage   TerritoryCoverage[]
 
   @@index([status])
   @@map("organizations")
@@ -2135,6 +2137,16 @@ model AssignmentRule {
   productId String? @map("product_id") @db.Uuid
 
   /**
+   * The geographic scope, by id.
+   * A RESOLVED territory, never a city or a pincode a customer typed. Raw
+   * geography is TerritoriesService's job: it owns the coverage table and the
+   * specificity order, and a rule that matched on a city string would be a
+   * second, private geography database disagreeing with the first.
+   * NULL means "anywhere".
+   */
+  territoryId String? @map("territory_id") @db.Uuid
+
+  /**
    * The last resort, evaluated only when no specific rule matched.
    * An explicit flag rather than "a rule with no criteria", because those are
    * different intentions: one is a deliberate catch-all, the other is usually
@@ -2152,7 +2164,7 @@ model AssignmentRule {
    * enquiries to different teams depending on precedence nobody set
    * deliberately.
    */
-  criteriaKey String @map("criteria_key") @db.VarChar(120)
+  criteriaKey String @map("criteria_key") @db.VarChar(200)
 
   targetTeamId String @map("target_team_id") @db.Uuid
 
@@ -2165,10 +2177,129 @@ model AssignmentRule {
   /// Composite for the same reason. Restrict, because losing a product must
   /// not silently delete the routing that referenced it.
   product      Product?     @relation(fields: [productId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  /// Composite for the same reason, Restrict for the same reason: retiring a
+  /// territory must not silently delete the routing that referenced it.
+  territory    Territory?   @relation(fields: [territoryId, organizationId], references: [id, organizationId], onDelete: Restrict)
 
   /// The evaluation query: this tenant's active rules, in precedence order.
   @@index([organizationId, status, priority])
   /// "Which rules point at this team?" — asked before a team may be archived.
   @@index([organizationId, targetTeamId, status])
+  /// The same question for a territory, asked before one may be archived.
+  @@index([organizationId, territoryId, status])
   @@map("assignment_rules")
+}
+
+// =============================================================================
+// TERRITORIES — geography resolved to a name, so routing never parses an address
+// =============================================================================
+
+enum TerritoryStatus {
+  ACTIVE
+  /// Retired, and kept. A territory that once decided where enquiries went is
+  /// part of the record of why a customer reached the team they did.
+  ARCHIVED
+
+  @@map("territory_status")
+}
+
+/// How one coverage row selects a place.
+///
+/// Four explicit shapes rather than a rule language: an administrator has to be
+/// able to read the table and say which enquiries land where, and a stored
+/// expression is a routing decision nobody can audit.
+enum TerritoryCoverageType {
+  COUNTRY
+  STATE
+  CITY
+  POSTAL_CODE
+
+  @@map("territory_coverage_type")
+}
+
+/// A named geographic scope — "Pune / PCMC", "UAE", "South India".
+///
+/// Deliberately has NO team: assignment rules are the one authority that maps
+/// criteria to a team, and a `targetTeamId` here would be a second routing
+/// system quietly disagreeing with the first. A territory answers WHERE, and
+/// stops.
+///
+/// It has no members either. Who may receive work is J3's answer, derived from
+/// organization membership and team configuration; a TerritoryAgent table would
+/// be a second copy of a person, drifting the moment somebody is suspended.
+model Territory {
+  id             String @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String @map("organization_id") @db.Uuid
+
+  name String @db.VarChar(80)
+  /// Lower-cased, whitespace-collapsed `name`, for the duplicate-name check.
+  nameKey     String  @map("name_key") @db.VarChar(80)
+  description String? @db.VarChar(500)
+
+  status TerritoryStatus @default(ACTIVE)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization    Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  coverage        TerritoryCoverage[]
+  assignmentRules AssignmentRule[]
+
+  /// Lets coverage and rules point a COMPOSITE key here and inherit the tenant.
+  @@unique([id, organizationId])
+  @@index([organizationId, status, name])
+  @@map("territories")
+}
+
+/// ONE explicit geographic selector owned by one territory.
+///
+/// A row per selector rather than a JSON blob of rules, for the same reason
+/// assignment criteria are typed: the set of shapes is small, known, and has to
+/// be indexable and uniquely ownable. "IN / Maharashtra" belongs to exactly one
+/// territory at a time, and that is a database guarantee, not a convention.
+///
+/// Soft removal, following TeamMember: a selector that once routed enquiries
+/// explains where they went, and a later re-add is a new row rather than a
+/// resurrection.
+model TerritoryCoverage {
+  id             String @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String @map("organization_id") @db.Uuid
+  territoryId    String @map("territory_id") @db.Uuid
+
+  type TerritoryCoverageType
+
+  /// ISO 3166-1 alpha-2, upper-cased. Required for every shape: a state or a
+  /// pincode with no country is not a place, it is a fragment.
+  countryCode String @map("country_code") @db.VarChar(2)
+
+  /// Trimmed, whitespace-collapsed, lower-cased — identity normalisation only.
+  /// There is no canonical global list of states or cities, and inventing one
+  /// would mean refusing places that exist.
+  stateKey  String? @map("state_key") @db.VarChar(80)
+  /// As the administrator typed it, for display.
+  stateName String? @map("state_name") @db.VarChar(80)
+
+  cityKey  String? @map("city_key") @db.VarChar(80)
+  cityName String? @map("city_name") @db.VarChar(80)
+
+  /// Upper-cased with spaces removed. A STRING, never an integer: SW1A 1AA and
+  /// 08540 are both real, and one of them loses its leading zero as a number.
+  postalCodeKey String? @map("postal_code_key") @db.VarChar(16)
+  postalCode    String? @map("postal_code") @db.VarChar(16)
+
+  /// The whole selector as one comparable string, e.g. `CITY|IN|maharashtra|pune`.
+  /// Server-generated and never accepted from a caller: it is what the database
+  /// uses to refuse two territories claiming the same place.
+  coverageKey String @map("coverage_key") @db.VarChar(200)
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  removedAt DateTime? @map("removed_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  /// Composite, so another tenant's territory has nothing to match.
+  territory    Territory    @relation(fields: [territoryId, organizationId], references: [id, organizationId], onDelete: Cascade)
+
+  /// The territory detail screen: this territory's live selectors.
+  @@index([organizationId, territoryId, removedAt])
+  @@map("territory_coverage")
 }

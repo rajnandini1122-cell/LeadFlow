@@ -1052,6 +1052,557 @@ describe('Assignment rules', () => {
     });
   });
 
+  // ---------------------------------------------------------------------------
+  // Territories — geography, resolved before any rule is consulted
+  // ---------------------------------------------------------------------------
+
+  describe('the territory criterion', () => {
+    /** A territory covering exactly one city, ready to be routed on. */
+    const territoryCovering = async (coverage: Record<string, unknown>, label = 'Territory') => {
+      const created = await ctx
+        .http()
+        .post('/api/v1/territories')
+        .set(owner())
+        .send({ name: unique(label) })
+        .expect(201);
+
+      const id = created.body.data.id as string;
+      await ctx
+        .http()
+        .post(`/api/v1/territories/${id}/coverage`)
+        .set(owner())
+        .send(coverage)
+        .expect(201);
+
+      return id;
+    };
+
+    /** Releases every live territory, so a place is free for the next case. */
+    const clearTerritories = async (): Promise<void> => {
+      const list = await ctx.http().get('/api/v1/territories').set(owner()).expect(200);
+
+      for (const territory of list.body.data as { id: string; status: string }[]) {
+        if (territory.status === 'ACTIVE') {
+          await ctx
+            .http()
+            .patch(`/api/v1/territories/${territory.id}`)
+            .set(owner())
+            .send({ status: 'ARCHIVED' })
+            .expect(200);
+        }
+      }
+    };
+
+    beforeEach(async () => {
+      await clearTerritories();
+    });
+
+    afterAll(async () => {
+      await clearRules();
+      await clearTerritories();
+    });
+
+    it('creates a rule that routes one territory', async () => {
+      const team = await teamWithAgent();
+      const pune = await territoryCovering({ type: 'CITY', country: 'IN', city: 'Pune' }, 'Pune');
+
+      const response = await createRule({
+        name: unique('Pune work'),
+        territoryId: pune,
+        targetTeamId: team.id,
+      });
+
+      expect(response.status).toBe(201);
+      expect(response.body.data.territory).toMatchObject({ id: pune, status: 'ACTIVE' });
+    });
+
+    it('accepts a territory alone as a criterion', async () => {
+      const team = await teamWithAgent();
+      const pune = await territoryCovering({ type: 'CITY', country: 'IN', city: 'Pune' });
+
+      // "Everything from Pune" is a real rule, not a half-finished one.
+      const response = await createRule({
+        name: unique('Geography only'),
+        territoryId: pune,
+        targetTeamId: team.id,
+      });
+
+      expect(response.status).toBe(201);
+    });
+
+    it('refuses an archived territory for an active rule', async () => {
+      const team = await teamWithAgent();
+      const retired = await territoryCovering({ type: 'COUNTRY', country: 'DE' }, 'Retired');
+
+      await ctx
+        .http()
+        .patch(`/api/v1/territories/${retired}`)
+        .set(owner())
+        .send({ status: 'ARCHIVED' })
+        .expect(200);
+
+      const response = await createRule({
+        name: unique('Dead scope'),
+        territoryId: retired,
+        targetTeamId: team.id,
+      });
+
+      expect(response.status).toBe(400);
+    });
+
+    it('refuses another organization’s territory without admitting it exists', async () => {
+      const team = await teamWithAgent();
+
+      const theirs = await ctx
+        .http()
+        .post('/api/v1/territories')
+        .set(auth(ctx.orgB.owner.accessToken))
+        .send({ name: unique('Theirs') })
+        .expect(201);
+
+      const response = await createRule({
+        name: unique('Cross tenant'),
+        territoryId: theirs.body.data.id,
+        targetTeamId: team.id,
+      });
+
+      // The same answer a territory that never existed would get.
+      expect(response.status).toBe(400);
+      expect(String(response.body.error.message)).not.toContain('another organization');
+    });
+
+    it('refuses a raw city string in place of a territory', async () => {
+      const team = await teamWithAgent();
+
+      // The mandatory separation: a rule that could match a city would be its
+      // own geography database, and the first two that disagreed would route
+      // the same enquiry two ways.
+      const response = await createRule({
+        name: unique('Raw geo'),
+        city: 'Pune',
+        targetTeamId: team.id,
+      });
+
+      expect(response.status).toBe(400);
+    });
+
+    it('ANDs territory with source', async () => {
+      const websiteTeam = await teamWithAgent();
+      const pune = await territoryCovering({ type: 'CITY', country: 'IN', city: 'Pune' });
+
+      await createRule({
+        name: unique('Website from Pune'),
+        source: 'Website',
+        territoryId: pune,
+        targetTeamId: websiteTeam.id,
+      }).then((r) => expect(r.status).toBe(201));
+
+      const both = await preview({ source: 'Website', country: 'IN', city: 'Pune' });
+      expect(both.body.data).toMatchObject({
+        decision: 'MATCHED',
+        team: { id: websiteTeam.id },
+        territory: { id: pune },
+      });
+
+      // Right place, wrong source.
+      expect((await preview({ source: 'Referral', country: 'IN', city: 'Pune' })).body.data.decision).toBe(
+        'NO_MATCH',
+      );
+      // Right source, wrong place.
+      expect((await preview({ source: 'Website', country: 'IN', city: 'Nashik' })).body.data.decision).toBe(
+        'NO_MATCH',
+      );
+    });
+
+    it('ANDs territory with product', async () => {
+      const team = await teamWithAgent();
+      const product = await createProduct();
+      const uae = await territoryCovering({ type: 'COUNTRY', country: 'AE' }, 'UAE');
+
+      await createRule({
+        name: unique('Product in UAE'),
+        productId: product.id,
+        territoryId: uae,
+        targetTeamId: team.id,
+      }).then((r) => expect(r.status).toBe(201));
+
+      expect(
+        (await preview({ productId: product.id, country: 'AE' })).body.data.decision,
+      ).toBe('MATCHED');
+      expect((await preview({ productId: product.id, country: 'IN' })).body.data.decision).toBe(
+        'NO_MATCH',
+      );
+      expect((await preview({ country: 'AE' })).body.data.decision).toBe('NO_MATCH');
+    });
+
+    it('ANDs all three', async () => {
+      const team = await teamWithAgent();
+      const product = await createProduct();
+      const pune = await territoryCovering({ type: 'CITY', country: 'IN', city: 'Pune' });
+
+      await createRule({
+        name: unique('All three'),
+        source: 'Website',
+        productId: product.id,
+        territoryId: pune,
+        targetTeamId: team.id,
+      }).then((r) => expect(r.status).toBe(201));
+
+      const full = { source: 'Website', productId: product.id, country: 'IN', city: 'Pune' };
+      expect((await preview(full)).body.data.decision).toBe('MATCHED');
+
+      // Drop any one fact and it stops matching. AND, not "mostly".
+      expect((await preview({ ...full, source: 'Referral' })).body.data.decision).toBe('NO_MATCH');
+      expect((await preview({ ...full, city: 'Nashik' })).body.data.decision).toBe('NO_MATCH');
+      expect(
+        (await preview({ source: 'Website', country: 'IN', city: 'Pune' })).body.data.decision,
+      ).toBe('NO_MATCH');
+    });
+
+    it('leaves a source-only rule matching work from anywhere', async () => {
+      const team = await teamWithAgent();
+      await createRule({
+        name: unique('Any website'),
+        source: 'Website',
+        targetTeamId: team.id,
+      }).then((r) => expect(r.status).toBe(201));
+
+      // The compatibility guarantee for every rule written before territories
+      // existed: no territory criterion means anywhere, including nowhere.
+      expect((await preview({ source: 'Website' })).body.data.decision).toBe('MATCHED');
+      expect(
+        (await preview({ source: 'Website', country: 'IN', city: 'Pune' })).body.data.decision,
+      ).toBe('MATCHED');
+    });
+
+    it('leaves a product-only rule matching work from anywhere', async () => {
+      const team = await teamWithAgent();
+      const product = await createProduct();
+
+      await createRule({
+        name: unique('Any product'),
+        productId: product.id,
+        targetTeamId: team.id,
+      }).then((r) => expect(r.status).toBe(201));
+
+      expect((await preview({ productId: product.id })).body.data.decision).toBe('MATCHED');
+      expect(
+        (await preview({ productId: product.id, country: 'FR' })).body.data.decision,
+      ).toBe('MATCHED');
+    });
+
+    it('still falls back when geography matches nothing', async () => {
+      const specific = await teamWithAgent();
+      const catchAll = await teamWithAgent();
+      const pune = await territoryCovering({ type: 'CITY', country: 'IN', city: 'Pune' });
+
+      await createRule({
+        name: unique('Pune only'),
+        territoryId: pune,
+        targetTeamId: specific.id,
+      }).then((r) => expect(r.status).toBe(201));
+      await createRule({
+        name: unique('Fallback'),
+        isFallback: true,
+        targetTeamId: catchAll.id,
+      }).then((r) => expect(r.status).toBe(201));
+
+      const elsewhere = await preview({ country: 'FR' });
+      expect(elsewhere.body.data).toMatchObject({
+        decision: 'FALLBACK_MATCHED',
+        team: { id: catchAll.id },
+        // And the reason it fell through is visible: France is on nobody's map.
+        territory: null,
+      });
+    });
+
+    it('lets an unresolved location reach a rule that states no territory', async () => {
+      const general = await teamWithAgent();
+      const puneTeam = await teamWithAgent();
+      const pune = await territoryCovering({ type: 'CITY', country: 'IN', city: 'Pune' });
+
+      await createRule({
+        name: unique('Pune website'),
+        priority: 10,
+        source: 'Website',
+        territoryId: pune,
+        targetTeamId: puneTeam.id,
+      }).then((r) => expect(r.status).toBe(201));
+      await createRule({
+        name: unique('Any website'),
+        priority: 20,
+        source: 'Website',
+        targetTeamId: general.id,
+      }).then((r) => expect(r.status).toBe(201));
+
+      // An enquiry from nowhere in particular skips the geographic rule and is
+      // taken by the general one. Nothing is guessed to make it fit.
+      const anywhere = await preview({ source: 'Website' });
+      expect(anywhere.body.data.team.id).toBe(general.id);
+
+      const fromPune = await preview({ source: 'Website', country: 'IN', city: 'Pune' });
+      expect(fromPune.body.data.team.id).toBe(puneTeam.id);
+    });
+
+    it('obeys precedence between two territory rules', async () => {
+      const first = await teamWithAgent();
+      const second = await teamWithAgent();
+      const india = await territoryCovering({ type: 'COUNTRY', country: 'IN' }, 'India');
+
+      await createRule({
+        name: unique('Low number'),
+        priority: 10,
+        territoryId: india,
+        targetTeamId: first.id,
+      }).then((r) => expect(r.status).toBe(201));
+
+      // Same territory, different source, so the criteria differ and both may
+      // be active. Precedence decides which is asked first.
+      await createRule({
+        name: unique('High number'),
+        priority: 20,
+        source: 'Website',
+        territoryId: india,
+        targetTeamId: second.id,
+      }).then((r) => expect(r.status).toBe(201));
+
+      const response = await preview({ source: 'Website', country: 'IN' });
+      expect(response.body.data.team.id).toBe(first.id);
+    });
+
+    it('still reports the eligible pool from the team, never a chosen person', async () => {
+      const team = await teamWithAgent();
+      const pune = await territoryCovering({ type: 'CITY', country: 'IN', city: 'Pune' });
+
+      await createRule({
+        name: unique('Pune pool'),
+        territoryId: pune,
+        targetTeamId: team.id,
+      }).then((r) => expect(r.status).toBe(201));
+
+      const response = await preview({ country: 'IN', city: 'Pune' });
+
+      expect(response.body.data.decision).toBe('MATCHED');
+      expect(response.body.data.eligibleAgentCount).toBe(1);
+      expect(response.body.data.eligibleAgents[0].userId).toBe(team.userId);
+      // A pool, not a choice. Picking the person belongs to the phase that
+      // writes the lead, so the selection and the write happen together.
+      expect(response.body.data).not.toHaveProperty('assignedTo');
+      expect(response.body.data).not.toHaveProperty('selectedAgent');
+    });
+
+    it('reports a matched territory whose team has nobody available', async () => {
+      const empty = await emptyTeam();
+      const pune = await territoryCovering({ type: 'CITY', country: 'IN', city: 'Pune' });
+
+      await createRule({
+        name: unique('Understaffed'),
+        territoryId: pune,
+        targetTeamId: empty,
+      }).then((r) => expect(r.status).toBe(201));
+
+      const response = await preview({ country: 'IN', city: 'Pune' });
+
+      // A staffing problem, not a routing one — and the two need different
+      // fixes, so they get different answers.
+      expect(response.body.data.decision).toBe('NO_ELIGIBLE_AGENTS');
+      expect(response.body.data.territory.id).toBe(pune);
+      expect(response.body.data.eligibleAgentCount).toBe(0);
+    });
+
+    it('refuses to archive a territory that live routing points at', async () => {
+      const team = await teamWithAgent();
+      const pune = await territoryCovering({ type: 'CITY', country: 'IN', city: 'Pune' });
+      const ruleName = unique('Still routing');
+
+      await createRule({ name: ruleName, territoryId: pune, targetTeamId: team.id }).then((r) =>
+        expect(r.status).toBe(201),
+      );
+
+      const response = await ctx
+        .http()
+        .patch(`/api/v1/territories/${pune}`)
+        .set(owner())
+        .send({ status: 'ARCHIVED' });
+
+      expect(response.status).toBe(400);
+      // Names what to fix, rather than sending an administrator looking.
+      expect(JSON.stringify(response.body.error)).toContain(ruleName);
+
+      const still = await ctx.http().get(`/api/v1/territories/${pune}`).set(owner()).expect(200);
+      expect(still.body.data.status).toBe('ACTIVE');
+    });
+
+    it('lets a paused rule keep a territory that has since been retired', async () => {
+      const team = await teamWithAgent();
+      const pune = await territoryCovering({ type: 'CITY', country: 'IN', city: 'Pune' });
+
+      const rule = await createRule({
+        name: unique('Historic'),
+        territoryId: pune,
+        targetTeamId: team.id,
+      });
+      expect(rule.status).toBe(201);
+
+      await ctx
+        .http()
+        .patch(`/api/v1/assignment-rules/${rule.body.data.id}`)
+        .set(owner())
+        .send({ status: 'PAUSED' })
+        .expect(200);
+
+      // Now nothing live points at it, so it may be retired.
+      await ctx
+        .http()
+        .patch(`/api/v1/territories/${pune}`)
+        .set(owner())
+        .send({ status: 'ARCHIVED' })
+        .expect(200);
+
+      // The paused rule still records where that work used to go — history,
+      // not a live decision.
+      const after = await ctx
+        .http()
+        .get(`/api/v1/assignment-rules/${rule.body.data.id}`)
+        .set(owner())
+        .expect(200);
+      expect(after.body.data.territory).toMatchObject({ id: pune, status: 'ARCHIVED' });
+
+      // And it cannot be brought back while the territory is retired.
+      const revive = await ctx
+        .http()
+        .patch(`/api/v1/assignment-rules/${rule.body.data.id}`)
+        .set(owner())
+        .send({ status: 'ACTIVE' });
+      expect(revive.status).toBe(400);
+    });
+
+    it('never leaves an active rule pointing at an archived territory', async () => {
+      const team = await teamWithAgent();
+      const pune = await territoryCovering({ type: 'CITY', country: 'IN', city: 'Pune' });
+
+      /*
+       * The race, run for real.
+       *
+       * One administrator writes a rule that routes Pune while another retires
+       * Pune. Both read a world in which their action is fine. PostgreSQL
+       * decides: the archive writes the territory row first and then looks for
+       * rules, and the rule write takes the same row lock before it inserts,
+       * so the two serialise. Either ordering is legitimate; the contradiction
+       * is not.
+       */
+      const [created, archived] = await Promise.all([
+        createRule({ name: unique('Racing rule'), territoryId: pune, targetTeamId: team.id }),
+        ctx
+          .http()
+          .patch(`/api/v1/territories/${pune}`)
+          .set(owner())
+          .send({ status: 'ARCHIVED' }),
+      ]);
+
+      // Neither request may fail in a way that hides a broken state.
+      expect([200, 201, 400, 409]).toContain(created.status);
+      expect([200, 400, 409]).toContain(archived.status);
+
+      const contradictions = await asSystem('e2e territory race', () =>
+        prisma().assignmentRule.count({
+          where: {
+            organizationId: ctx.orgA.id,
+            status: 'ACTIVE',
+            territory: { status: 'ARCHIVED' },
+          },
+        }),
+      );
+
+      expect(contradictions).toBe(0);
+    });
+
+    it('leaves rules alone when a place stops being covered', async () => {
+      const team = await teamWithAgent();
+
+      const created = await ctx
+        .http()
+        .post('/api/v1/territories')
+        .set(owner())
+        .send({ name: unique('Shrinking') })
+        .expect(201);
+      const id = created.body.data.id as string;
+
+      const added = await ctx
+        .http()
+        .post(`/api/v1/territories/${id}/coverage`)
+        .set(owner())
+        .send({ type: 'CITY', country: 'IN', city: 'Pune' })
+        .expect(201);
+
+      const rule = await createRule({
+        name: unique('Unchanged'),
+        territoryId: id,
+        targetTeamId: team.id,
+      });
+      expect(rule.status).toBe(201);
+
+      await ctx
+        .http()
+        .post(`/api/v1/territories/${id}/coverage/${added.body.data.coverage[0].id}/remove`)
+        .set(owner())
+        .expect(200);
+
+      // The rule is untouched and still active — it simply matches less now.
+      const after = await ctx
+        .http()
+        .get(`/api/v1/assignment-rules/${rule.body.data.id}`)
+        .set(owner())
+        .expect(200);
+      expect(after.body.data).toMatchObject({ status: 'ACTIVE', territory: { id } });
+
+      expect((await preview({ country: 'IN', city: 'Pune' })).body.data.decision).toBe('NO_MATCH');
+    });
+
+    it('resolves geography in a preview without writing anything', async () => {
+      const team = await teamWithAgent();
+      const pune = await territoryCovering({ type: 'CITY', country: 'IN', city: 'Pune' });
+      await createRule({
+        name: unique('Read only'),
+        territoryId: pune,
+        targetTeamId: team.id,
+      }).then((r) => expect(r.status).toBe(201));
+
+      const before = await asSystem('e2e before geo preview', async () => {
+        const client = prisma();
+        const where = { organizationId: ctx.orgA.id };
+
+        return {
+          leads: await client.lead.count({ where }),
+          intakes: await client.integrationIntake.count({ where }),
+          followUps: await client.followUp.count({ where }),
+          rules: await client.assignmentRule.count({ where }),
+          coverage: await client.territoryCoverage.count({ where, }),
+          liveCoverage: await client.territoryCoverage.count({ where: { ...where, removedAt: null } }),
+        };
+      });
+
+      await preview({ source: 'Website', country: 'IN', state: 'Maharashtra', city: 'Pune', postalCode: '411019' });
+      await preview({ country: 'FR' });
+
+      const after = await asSystem('e2e after geo preview', async () => {
+        const client = prisma();
+        const where = { organizationId: ctx.orgA.id };
+
+        return {
+          leads: await client.lead.count({ where }),
+          intakes: await client.integrationIntake.count({ where }),
+          followUps: await client.followUp.count({ where }),
+          rules: await client.assignmentRule.count({ where }),
+          coverage: await client.territoryCoverage.count({ where }),
+          liveCoverage: await client.territoryCoverage.count({ where: { ...where, removedAt: null } }),
+        };
+      });
+
+      expect(after).toEqual(before);
+    });
+  });
+
   /** A canonical catalogue product, which is the only product a rule may name. */
   async function createProduct() {
     const response = await ctx

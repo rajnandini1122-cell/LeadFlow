@@ -19,6 +19,7 @@ import { useAuth } from '../auth/auth-context';
 import { useActiveProducts } from '../products/use-products';
 import { RulePreview } from './rule-preview';
 import { RuleFormDialog, type RuleFormValues } from './rule-form-dialog';
+import { useTerritories } from '../territories/use-territories';
 import { useAssignmentRules, useCreateRule, useUpdateRule } from './use-assignment-rules';
 
 /**
@@ -42,6 +43,9 @@ export function AssignmentRulesPage(): React.JSX.Element {
     enabled: canManage,
   });
   const products = useActiveProducts();
+  // Only fetched for somebody who can write rules — a manager reading the
+  // table sees the territory each rule names without needing the whole map.
+  const territories = useTerritories(canManage);
   const organization = useQuery({
     queryKey: ['organization'],
     queryFn: () => apiGet<OrganizationDetail>('/organizations/current'),
@@ -85,6 +89,7 @@ export function AssignmentRulesPage(): React.JSX.Element {
       ...(values.description ? { description: values.description } : {}),
       ...(!values.isFallback && values.source ? { source: values.source } : {}),
       ...(!values.isFallback && values.productId ? { productId: values.productId } : {}),
+      ...(!values.isFallback && values.territoryId ? { territoryId: values.territoryId } : {}),
       ...(values.priority ? { priority: Number(values.priority) } : {}),
     };
 
@@ -96,6 +101,7 @@ export function AssignmentRulesPage(): React.JSX.Element {
           description: values.description || null,
           source: values.isFallback ? null : values.source || null,
           productId: values.isFallback ? null : values.productId || null,
+          territoryId: values.isFallback ? null : values.territoryId || null,
           targetTeamId: body.targetTeamId,
           ...(values.priority ? { priority: Number(values.priority) } : {}),
         },
@@ -222,6 +228,7 @@ export function AssignmentRulesPage(): React.JSX.Element {
         rule={editing ?? undefined}
         teams={teams.data ?? []}
         products={products.data?.items ?? []}
+        territories={territories.data ?? []}
         sources={organization.data?.settings.leadSources ?? []}
         saving={createRule.isPending || updateRule.isPending}
         error={createRule.error ?? updateRule.error}
@@ -233,6 +240,7 @@ export function AssignmentRulesPage(): React.JSX.Element {
         }}
         onSubmit={submit}
       />
+
     </div>
   );
 }
@@ -244,6 +252,7 @@ function criteriaSummary(rule: AssignmentRuleView): string {
   const parts: string[] = [];
   if (rule.source) parts.push(`source ${rule.source}`);
   if (rule.product) parts.push(`product ${rule.product.name}`);
+  if (rule.territory) parts.push(`territory ${rule.territory.name}`);
 
   // Every criterion must hold, so the summary says "and" rather than listing
   // them as though any one would do.

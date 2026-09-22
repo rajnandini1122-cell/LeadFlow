@@ -27,6 +27,7 @@ const WEBSITE_RULE: AssignmentRuleView = {
   priority: 10,
   source: 'Website',
   product: null,
+  territory: null,
   isFallback: false,
   targetTeam: { id: 't-1', name: 'Pune Sales', status: 'ACTIVE' },
   createdAt: '2026-09-01T00:00:00.000Z',
@@ -64,6 +65,23 @@ const FALLBACK_RULE: AssignmentRuleView = {
   targetTeam: { id: 't-3', name: 'General Sales', status: 'ACTIVE' },
 };
 
+/** A rule scoped to one resolved territory — never to a city string. */
+const TERRITORY_RULE: AssignmentRuleView = {
+  ...WEBSITE_RULE,
+  id: '019a0000-0000-7000-8000-00000000r005',
+  name: 'Pune website work',
+  description: null,
+  priority: 5,
+  source: 'Website',
+  territory: { id: 'terr-1', name: 'Pune / PCMC', status: 'ACTIVE' },
+  targetTeam: { id: 't-1', name: 'Pune Sales', status: 'ACTIVE' },
+};
+
+const TERRITORIES = [
+  { id: 'terr-1', name: 'Pune / PCMC', status: 'ACTIVE' },
+  { id: 'terr-9', name: 'Retired Region', status: 'ARCHIVED' },
+];
+
 const TEAMS = [
   { id: 't-1', name: 'Pune Sales', status: 'ACTIVE' },
   { id: 't-2', name: 'Export Team', status: 'ACTIVE' },
@@ -84,6 +102,7 @@ function stubApi(rules: AssignmentRuleView[] = [WEBSITE_RULE, PRODUCT_RULE, PAUS
     if (url === '/assignment-rules') return Promise.resolve(rules as never);
     if (url === '/teams') return Promise.resolve(TEAMS as never);
     if (url === '/products') return Promise.resolve(PRODUCTS as never);
+    if (url === '/territories') return Promise.resolve(TERRITORIES as never);
     return Promise.resolve(ORGANIZATION as never);
   });
 }
@@ -110,6 +129,7 @@ const previewResult = (
   team: { id: 't-1', name: 'Pune Sales' },
   eligibleAgents: [{ membershipId: 'm-1', userId: 'u-1', fullName: 'Asha Rep' }],
   eligibleAgentCount: 1,
+  territory: null,
   ...overrides,
 });
 
@@ -378,5 +398,148 @@ describe('someone who may only view', () => {
     renderPage();
 
     expect(await screen.findByRole('button', { name: /check/i })).toBeInTheDocument();
+  });
+});
+
+describe('the territory criterion', () => {
+  it('says which territory a rule is scoped to, in words', async () => {
+    stubApi([TERRITORY_RULE]);
+    renderPage();
+
+    await screen.findByText('Pune website work');
+    // AND, said out loud. A row that listed the two criteria without joining
+    // them would read as "either of these".
+    expect(screen.getByText(/source Website and territory Pune \/ PCMC/)).toBeInTheDocument();
+  });
+
+  it('offers territories, and sends the id rather than a place name', async () => {
+    const apiPost = vi.spyOn(apiClient, 'apiPost').mockResolvedValue(TERRITORY_RULE as never);
+    renderPage();
+
+    await userEvent.click(await screen.findByRole('button', { name: /new rule/i }));
+    const dialog = within(screen.getByRole('dialog'));
+
+    await userEvent.type(dialog.getByLabelText(/^name$/i), 'Pune work');
+    await userEvent.selectOptions(dialog.getByLabelText(/territory/i), 'terr-1');
+    await userEvent.selectOptions(dialog.getByLabelText(/send to team/i), 't-1');
+    await userEvent.click(dialog.getByRole('button', { name: /create rule/i }));
+
+    await waitFor(() =>
+      expect(apiPost).toHaveBeenCalledWith('/assignment-rules', {
+        name: 'Pune work',
+        targetTeamId: 't-1',
+        isFallback: false,
+        // A resolved id. The form has no city, state or pincode box at all,
+        // because a rule that matched raw geography would be a second
+        // geography database.
+        territoryId: 'terr-1',
+      }),
+    );
+  });
+
+  it('does not offer an archived territory for a new rule', async () => {
+    renderPage();
+
+    await userEvent.click(await screen.findByRole('button', { name: /new rule/i }));
+    const dialog = within(screen.getByRole('dialog'));
+
+    // The API refuses one, and offering it would produce an error nobody can
+    // act on.
+    expect(within(dialog.getByLabelText(/territory/i)).queryByText(/Retired Region/)).toBeNull();
+    expect(within(dialog.getByLabelText(/territory/i)).getByText('Pune / PCMC')).toBeInTheDocument();
+  });
+
+  it('still shows the retired territory a paused rule was written against', async () => {
+    const paused: AssignmentRuleView = {
+      ...TERRITORY_RULE,
+      status: 'PAUSED',
+      territory: { id: 'terr-9', name: 'Retired Region', status: 'ARCHIVED' },
+    };
+    stubApi([paused]);
+    renderPage();
+
+    await userEvent.click(await screen.findByRole('button', { name: /edit/i }));
+    const dialog = within(screen.getByRole('dialog'));
+
+    // Otherwise the form would silently claim the rule routes everywhere.
+    expect(
+      within(dialog.getByLabelText(/territory/i)).getByText(/Retired Region/),
+    ).toBeInTheDocument();
+  });
+
+  it('hides the territory along with the other criteria for a fallback', async () => {
+    renderPage();
+
+    await userEvent.click(await screen.findByRole('button', { name: /new rule/i }));
+    const dialog = within(screen.getByRole('dialog'));
+
+    await userEvent.click(dialog.getByRole('checkbox'));
+    expect(dialog.queryByLabelText(/territory/i)).toBeNull();
+  });
+});
+
+describe('the preview, with a location', () => {
+  const checkLocation = async (result: AssignmentPreviewResult) => {
+    vi.spyOn(apiClient, 'apiPost').mockResolvedValue(result as never);
+    renderPage();
+
+    await userEvent.type(await screen.findByLabelText(/^city$/i), 'Pune');
+    await userEvent.click(screen.getByRole('button', { name: /check/i }));
+
+    return screen.findByTestId('preview-result');
+  };
+
+  it('sends the location raw, for the server to resolve', async () => {
+    const apiPost = vi
+      .spyOn(apiClient, 'apiPost')
+      .mockResolvedValue(previewResult({ territory: { id: 'terr-1', name: 'Pune / PCMC' } }) as never);
+    renderPage();
+
+    await userEvent.selectOptions(await screen.findByLabelText(/^country$/i), 'IN');
+    await userEvent.type(screen.getByLabelText(/^state$/i), 'Maharashtra');
+    await userEvent.type(screen.getByLabelText(/^city$/i), 'Pune');
+    await userEvent.type(screen.getByLabelText(/^postal code$/i), '411019');
+    await userEvent.click(screen.getByRole('button', { name: /check/i }));
+
+    await waitFor(() =>
+      // Resolved by the server, on the same path production will take. Doing
+      // it here would mean the screen tested one thing and production another.
+      expect(apiPost).toHaveBeenCalledWith('/assignment-rules/preview', {
+        country: 'IN',
+        state: 'Maharashtra',
+        city: 'Pune',
+        postalCode: '411019',
+      }),
+    );
+  });
+
+  it('names the territory a location resolved to', async () => {
+    const panel = await checkLocation(
+      previewResult({ territory: { id: 'terr-1', name: 'Pune / PCMC' } }),
+    );
+
+    expect(within(panel).getByText(/Pune \/ PCMC/)).toBeInTheDocument();
+  });
+
+  it('separates "no territory covers this" from "no rule matched"', async () => {
+    const panel = await checkLocation(
+      previewResult({ decision: 'NO_MATCH', rule: null, team: null, eligibleAgents: [], eligibleAgentCount: 0 }),
+    );
+
+    // Two different problems with two different fixes: one is a missing rule,
+    // the other a gap in the map.
+    expect(within(panel).getByText(/No territory covers that location/i)).toBeInTheDocument();
+    expect(within(panel).getByText('No match')).toBeInTheDocument();
+  });
+
+  it('says nothing about territories when no location was given', async () => {
+    vi.spyOn(apiClient, 'apiPost').mockResolvedValue(previewResult() as never);
+    renderPage();
+
+    await userEvent.type(await screen.findByLabelText(/^source$/i), 'Website');
+    await userEvent.click(screen.getByRole('button', { name: /check/i }));
+
+    const panel = await screen.findByTestId('preview-result');
+    expect(within(panel).queryByText(/No territory covers/i)).toBeNull();
   });
 });

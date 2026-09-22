@@ -4,11 +4,13 @@ import {
   type AssignmentPreviewResult,
   type AssignmentRuleStatus,
   type AssignmentRuleView,
+  type TerritoryStatus,
 } from '@leadflow/api-types';
 import { AppException } from '../../common/errors/app.exception';
 import { AuditRepository } from '../../common/audit/audit.repository';
 import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
 import { TeamsService } from '../teams/teams.service';
+import { TerritoriesService } from '../territories/territories.service';
 import { AssignmentRulesRepository, type RuleConflict } from './assignment-rules.repository';
 import {
   criteriaKey,
@@ -54,6 +56,7 @@ export class AssignmentRulesService {
   constructor(
     private readonly repository: AssignmentRulesRepository,
     private readonly teams: TeamsService,
+    private readonly territories: TerritoriesService,
     private readonly audit: AuditRepository,
   ) {}
 
@@ -81,23 +84,26 @@ export class AssignmentRulesService {
      * where an administrator can see it, and if it is the catch-all it must
      * not quietly decline to catch things.
      */
-    if (isFallback && !hasNoCriteria({ sourceKey, productId: dto.productId })) {
+    const criteria = { sourceKey, productId: dto.productId, territoryId: dto.territoryId };
+
+    if (isFallback && !hasNoCriteria(criteria)) {
       throw AppException.validation('A fallback rule cannot have criteria.', {
-        isFallback: ['remove the source and product, or make this a specific rule'],
+        isFallback: ['remove the source, product and territory, or make this a specific rule'],
       });
     }
 
-    if (!isFallback && hasNoCriteria({ sourceKey, productId: dto.productId })) {
+    if (!isFallback && hasNoCriteria(criteria)) {
       // Otherwise it silently becomes a second catch-all that outranks the
       // real one, which is how a routing table starts sending everything to
       // one team for reasons nobody can find.
       throw AppException.validation('A rule needs at least one criterion.', {
-        source: ['set a source or a product, or mark this rule as the fallback'],
+        source: ['set a source, a product or a territory, or mark this rule as the fallback'],
       });
     }
 
     const team = await this.requireActiveTeam(dto.targetTeamId);
     if (dto.productId) await this.requireProduct(dto.productId);
+    if (dto.territoryId) await this.requireActiveTerritory(dto.territoryId);
 
     const priority = dto.priority ?? (await this.repository.nextPriority());
 
@@ -109,8 +115,9 @@ export class AssignmentRulesService {
       source: dto.source,
       sourceKey,
       productId: dto.productId,
+      territoryId: dto.territoryId,
       isFallback,
-      criteriaKey: criteriaKey({ sourceKey, productId: dto.productId }),
+      criteriaKey: criteriaKey(criteria),
       targetTeamId: team.id,
     });
 
@@ -127,6 +134,7 @@ export class AssignmentRulesService {
         isFallback,
         source: sourceKey ?? null,
         productId: dto.productId ?? null,
+        territoryId: dto.territoryId ?? null,
         targetTeamId: team.id,
       },
     });
@@ -177,24 +185,40 @@ export class AssignmentRulesService {
 
     // Criteria move together: either is enough to change what the rule
     // matches, so the key is recomputed from both whenever one is touched.
-    const criteriaTouched = dto.source !== undefined || dto.productId !== undefined;
+    const criteriaTouched =
+      dto.source !== undefined || dto.productId !== undefined || dto.territoryId !== undefined;
+
+    /*
+     * Whichever territory this rule will route to once the change lands.
+     *
+     * Read outside the criteria block as well, because ACTIVATING a rule
+     * nobody edited still needs its territory to be usable — the rule has
+     * not changed, but the world may have.
+     */
+    const nextTerritoryId =
+      dto.territoryId === undefined ? rule.territoryId : dto.territoryId ?? null;
+
     if (criteriaTouched) {
       const sourceKey =
         dto.source === undefined ? rule.sourceKey : normalizeSourceKey(dto.source) ?? null;
       const productId = dto.productId === undefined ? rule.productId : dto.productId;
+      const criteria = { sourceKey, productId, territoryId: nextTerritoryId };
 
-      if (rule.isFallback && !hasNoCriteria({ sourceKey, productId })) {
+      if (rule.isFallback && !hasNoCriteria(criteria)) {
         throw AppException.validation('A fallback rule cannot have criteria.', {
-          isFallback: ['remove the source and product, or create a specific rule'],
+          isFallback: ['remove the source, product and territory, or create a specific rule'],
         });
       }
-      if (!rule.isFallback && hasNoCriteria({ sourceKey, productId })) {
+      if (!rule.isFallback && hasNoCriteria(criteria)) {
         throw AppException.validation('A rule needs at least one criterion.', {
-          source: ['set a source or a product'],
+          source: ['set a source, a product or a territory'],
         });
       }
 
       if (productId && productId !== rule.productId) await this.requireProduct(productId);
+      if (nextTerritoryId && nextTerritoryId !== rule.territoryId) {
+        await this.requireActiveTerritory(nextTerritoryId);
+      }
 
       if (dto.source !== undefined) {
         changes.source = dto.source ?? null;
@@ -207,8 +231,13 @@ export class AssignmentRulesService {
         before['productId'] = rule.productId;
         after['productId'] = productId;
       }
+      if (dto.territoryId !== undefined) {
+        changes.territoryId = nextTerritoryId;
+        before['territoryId'] = rule.territoryId;
+        after['territoryId'] = nextTerritoryId;
+      }
 
-      changes.criteriaKey = criteriaKey({ sourceKey, productId });
+      changes.criteriaKey = criteriaKey(criteria);
     }
 
     let targetChanged = false;
@@ -224,7 +253,13 @@ export class AssignmentRulesService {
     if (dto.status !== undefined && dto.status !== rule.status) {
       // Activating points live routing at this team, so the team must be able
       // to receive work now — not merely when the rule was written.
-      if (dto.status === 'ACTIVE') await this.requireActiveTeam(changes.targetTeamId ?? rule.targetTeamId);
+      if (dto.status === 'ACTIVE') {
+        await this.requireActiveTeam(changes.targetTeamId ?? rule.targetTeamId);
+        // And the territory, for the same reason: a rule brought back to
+        // life pointing at a retired scope would match nothing and read as
+        // broken rather than as retired.
+        if (nextTerritoryId) await this.requireActiveTerritory(nextTerritoryId);
+      }
 
       changes.status = dto.status;
       statusAction =
@@ -256,7 +291,15 @@ export class AssignmentRulesService {
         if (clash) throw conflictError(clash);
       }
 
-      const result = await this.repository.update(id, changes, rule.isFallback);
+      const result = await this.repository.update(
+        id,
+        changes,
+        rule.isFallback,
+        // Locked only when the rule will actually be routing afterwards. A
+        // paused rule may keep pointing at an archived territory: that is a
+        // record of where work used to go, not a live decision.
+        willBeActive && nextTerritoryId ? nextTerritoryId : undefined,
+      );
       if (result !== 'UPDATED') throw conflictError(result);
 
       await this.audit.record({
@@ -296,10 +339,17 @@ export class AssignmentRulesService {
    *   3. otherwise the single active fallback, if there is one;
    *   4. otherwise NO_MATCH — never an arbitrary team.
    */
-  async evaluate(context: AssignmentContext): Promise<AssignmentPreviewResult> {
+  async evaluate(
+    context: AssignmentContext,
+    /** What the geography resolved to, for the answer. Never re-derived here. */
+    territory?: { id: string; name: string } | null,
+  ): Promise<AssignmentPreviewResult> {
     const rules = await this.repository.activeRules();
     const matched = rules.find((rule) =>
-      criteriaMatch({ sourceKey: rule.sourceKey, productId: rule.productId }, context),
+      criteriaMatch(
+        { sourceKey: rule.sourceKey, productId: rule.productId, territoryId: rule.territoryId },
+        context,
+      ),
     );
 
     const fallback = matched ? undefined : await this.repository.activeFallback();
@@ -309,7 +359,7 @@ export class AssignmentRulesService {
       // Deliberately not "pick a team". A routing table with no answer is a
       // configuration an administrator should see, not one the software
       // papers over by choosing somebody.
-      return empty('NO_MATCH');
+      return { ...empty('NO_MATCH'), territory: territory ?? null };
     }
 
     const agents = await this.teams.eligibleAgents(chosen.targetTeamId);
@@ -338,6 +388,14 @@ export class AssignmentRulesService {
         fullName: agent.fullName,
       })),
       eligibleAgentCount: agents.length,
+      /*
+       * Reported even when no rule mentioned a territory.
+       *
+       * "No rule matched" and "that pincode belongs to no territory" are
+       * different problems — one is a missing rule, the other a gap in the map
+       * — and an administrator who cannot tell them apart fixes the wrong one.
+       */
+      territory: territory ?? null,
     };
 
     if (agents.length === 0) {
@@ -350,8 +408,39 @@ export class AssignmentRulesService {
     return result;
   }
 
+  /**
+   * The full path an enquiry takes, run forwards and changing nothing.
+   *
+   *   raw geography -> TerritoriesService -> territory id
+   *                 -> the rules -> a team -> that team's available people
+   *
+   * Geography is resolved FIRST and separately, which is the whole shape of
+   * this phase: rules match a territory id, never a city or a pincode, so the
+   * coverage table stays the single description of where a place is and a rule
+   * cannot become a private geography database of its own.
+   *
+   * Still read-only end to end. Resolving a location writes nothing, and
+   * neither does evaluating the rules.
+   */
   async preview(dto: PreviewAssignmentDto): Promise<AssignmentPreviewResult> {
-    return this.evaluate({ source: dto.source, productId: dto.productId });
+    const resolution = await this.territories.resolve({
+      country: dto.country,
+      state: dto.state,
+      city: dto.city,
+      postalCode: dto.postalCode,
+    });
+
+    return this.evaluate(
+      {
+        source: dto.source,
+        productId: dto.productId,
+        // Null when the location matched nothing, which is a fact rather than
+        // a wildcard: a rule that states a territory does not match work whose
+        // territory is unknown.
+        territoryId: resolution.territory?.id ?? null,
+      },
+      resolution.territory,
+    );
   }
 
   /** A rule in another organization is indistinguishable from one that is gone. */
@@ -399,11 +488,49 @@ export class AssignmentRulesService {
 
     return product;
   }
+
+  /**
+   * The territory a rule may route to: this tenant's, and still in use.
+   *
+   * Another organization's territory is simply not found by the scoped query,
+   * and the composite foreign key would refuse the row even if the check were
+   * missed. The message says the id is not usable and never that it belongs to
+   * somebody else — a different message for a foreign id would confirm it
+   * exists.
+   *
+   * This is the friendly check, not the authority. The authority is the row
+   * lock the write takes inside its transaction, because between this read and
+   * that write another administrator may archive the territory.
+   */
+  private async requireActiveTerritory(territoryId: string) {
+    const territory = await this.repository.findTerritory(territoryId);
+
+    if (!territory) {
+      throw AppException.validation('That territory could not be found.', {
+        territoryId: ['must be a territory in your organization'],
+      });
+    }
+
+    if (territory.status !== 'ACTIVE') {
+      throw AppException.validation('That territory is archived.', {
+        territoryId: ['route work to an active territory'],
+      });
+    }
+
+    return territory;
+  }
 }
 
 /** Empty result for the decisions that name no rule and no team. */
 function empty(decision: AssignmentPreviewResult['decision']): AssignmentPreviewResult {
-  return { decision, rule: null, team: null, eligibleAgents: [], eligibleAgentCount: 0 };
+  return {
+    decision,
+    rule: null,
+    team: null,
+    eligibleAgents: [],
+    eligibleAgentCount: 0,
+    territory: null,
+  };
 }
 
 /** The refusals the database issues, in words an administrator can act on. */
@@ -413,7 +540,13 @@ function conflictError(conflict: RuleConflict): AppException {
       ? 'This organization already has an active fallback rule. Pause or archive it first.'
       : conflict.conflict === 'CRITERIA_TAKEN'
         ? 'Another active rule already matches exactly these criteria. Edit that rule instead.'
-        : 'Another active rule already uses this priority. Choose a different one.';
+        : conflict.conflict === 'TERRITORY_UNAVAILABLE'
+          ? // Reached only when somebody archived the territory between this
+            // request's check and its write. Rare, and worth its own message:
+            // "priority taken" would send an administrator looking in
+            // completely the wrong place.
+            'That territory was archived while this was being saved. Reload and choose another.'
+          : 'Another active rule already uses this priority. Choose a different one.';
 
   return AppException.conflict(ERROR_CODES.CONFLICT, message);
 }
@@ -433,6 +566,13 @@ function toView(rule: RuleRow): AssignmentRuleView {
     priority: rule.priority,
     source: rule.source,
     product: rule.product ? { id: rule.product.id, name: rule.product.name, sku: rule.product.sku } : null,
+    territory: rule.territory
+      ? {
+          id: rule.territory.id,
+          name: rule.territory.name,
+          status: rule.territory.status as TerritoryStatus,
+        }
+      : null,
     isFallback: rule.isFallback,
     targetTeam: {
       id: rule.targetTeam.id,

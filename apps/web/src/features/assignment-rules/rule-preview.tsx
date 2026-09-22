@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { Card, CardHeader } from '../../components/ui';
+import { countryOptions } from '../../lib/countries';
 import { usePreviewAssignment } from './use-assignment-rules';
 
 /**
@@ -19,13 +20,29 @@ export function RulePreview({
 }): React.JSX.Element {
   const [source, setSource] = useState('');
   const [productId, setProductId] = useState('');
+  const [country, setCountry] = useState('');
+  const [state, setState] = useState('');
+  const [city, setCity] = useState('');
+  const [postalCode, setPostalCode] = useState('');
   const preview = usePreviewAssignment();
+
+  const countries = countryOptions();
 
   const submit = (event: FormEvent): void => {
     event.preventDefault();
+    /*
+     * Geography goes up RAW, and the server resolves it to a territory before
+     * it evaluates anything — the same path the phase that converts an enquiry
+     * into a lead will take. Resolving it here instead would mean the screen
+     * tested one thing and production did another.
+     */
     preview.mutate({
       ...(source ? { source } : {}),
       ...(productId ? { productId } : {}),
+      ...(country ? { country } : {}),
+      ...(state ? { state } : {}),
+      ...(city ? { city } : {}),
+      ...(postalCode ? { postalCode } : {}),
     });
   };
 
@@ -78,6 +95,73 @@ export function RulePreview({
           </select>
         </div>
 
+        <div>
+          <label
+            htmlFor="preview-country"
+            className="mb-1 block text-xs font-medium text-slate-600"
+          >
+            Country
+          </label>
+          <select
+            id="preview-country"
+            value={country}
+            onChange={(event) => setCountry(event.target.value)}
+            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
+          >
+            <option value="">Any</option>
+            {countries.map((option) => (
+              <option key={option.code} value={option.code}>
+                {option.name}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div>
+          <label htmlFor="preview-state" className="mb-1 block text-xs font-medium text-slate-600">
+            State
+          </label>
+          <input
+            id="preview-state"
+            value={state}
+            onChange={(event) => setState(event.target.value)}
+            placeholder="Any"
+            maxLength={80}
+            className="w-28 rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
+          />
+        </div>
+
+        <div>
+          <label htmlFor="preview-city" className="mb-1 block text-xs font-medium text-slate-600">
+            City
+          </label>
+          <input
+            id="preview-city"
+            value={city}
+            onChange={(event) => setCity(event.target.value)}
+            placeholder="Any"
+            maxLength={80}
+            className="w-28 rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
+          />
+        </div>
+
+        <div>
+          <label
+            htmlFor="preview-postal"
+            className="mb-1 block text-xs font-medium text-slate-600"
+          >
+            Postal code
+          </label>
+          <input
+            id="preview-postal"
+            value={postalCode}
+            onChange={(event) => setPostalCode(event.target.value)}
+            placeholder="Any"
+            maxLength={16}
+            className="w-28 rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
+          />
+        </div>
+
         <button
           type="submit"
           disabled={preview.isPending}
@@ -96,6 +180,29 @@ export function RulePreview({
       {preview.data && (
         <div className="border-t border-slate-100 px-5 py-4 text-sm" data-testid="preview-result">
           <Outcome decision={preview.data.decision} />
+
+          {/*
+            What the geography resolved to, shown whether or not a rule went on
+            to mention it. "No rule matched" and "that pincode is on nobody's
+            map" are different problems with different fixes, and an
+            administrator who cannot tell them apart fixes the wrong one.
+          */}
+          {(country || state || city || postalCode) && (
+            <p className="mt-2 text-slate-600">
+              {preview.data.territory ? (
+                <>
+                  Territory{' '}
+                  <span className="font-medium text-slate-900">
+                    {preview.data.territory.name}
+                  </span>
+                </>
+              ) : (
+                <span className="text-slate-500">
+                  No territory covers that location, so no territory rule can match it.
+                </span>
+              )}
+            </p>
+          )}
 
           {preview.data.rule && (
             <p className="mt-2 text-slate-600">

@@ -338,6 +338,13 @@ export interface AssignmentRuleView {
   source: string | null;
   /** The CANONICAL product, never free text. Null means any. */
   product: { id: string; name: string; sku: string } | null;
+  /**
+   * The RESOLVED territory this matches. Null means anywhere.
+   *
+   * A territory, never a city or a pincode: geography is turned into this by
+   * the territory resolver before any rule is consulted.
+   */
+  territory: { id: string; name: string; status: TerritoryStatus } | null;
   /** Evaluated only when no specific rule matched. */
   isFallback: boolean;
   targetTeam: { id: string; name: string; status: string };
@@ -352,6 +359,8 @@ export interface CreateAssignmentRuleRequest {
   priority?: number;
   source?: string;
   productId?: string;
+  /** A territory id from GET /territories. Never raw geography. */
+  territoryId?: string;
   isFallback?: boolean;
   targetTeamId: string;
 }
@@ -363,14 +372,26 @@ export interface UpdateAssignmentRuleRequest {
   /** Null clears the criterion, meaning "any". */
   source?: string | null;
   productId?: string | null;
+  territoryId?: string | null;
   targetTeamId?: string;
   status?: AssignmentRuleStatus;
 }
 
-/** The facts a piece of work carries, for a preview. */
+/**
+ * The facts a piece of work carries, for a preview.
+ *
+ * Geography arrives RAW here and nowhere else in the routing path: the preview
+ * resolves it to a territory first, exactly as the phase that converts an
+ * enquiry into a lead will, so what an administrator tests is what production
+ * will do rather than a simplified version of it.
+ */
 export interface AssignmentPreviewRequest {
   source?: string;
   productId?: string;
+  country?: string;
+  state?: string;
+  city?: string;
+  postalCode?: string;
 }
 
 /**
@@ -402,4 +423,104 @@ export interface AssignmentPreviewResult {
    */
   eligibleAgents: { membershipId: string; userId: string; fullName: string }[];
   eligibleAgentCount: number;
+  /**
+   * What the geography resolved to before any rule was consulted.
+   *
+   * Null when no location was supplied or none of it is covered. Shown rather
+   * than hidden, because "no rule matched" and "the pincode belongs to no
+   * territory" are different problems with different fixes.
+   */
+  territory: { id: string; name: string } | null;
+}
+
+// --- territories -------------------------------------------------------------
+
+export const TERRITORY_STATUSES = ['ACTIVE', 'ARCHIVED'] as const;
+export type TerritoryStatus = (typeof TERRITORY_STATUSES)[number];
+
+export const TERRITORY_COVERAGE_TYPES = ['COUNTRY', 'STATE', 'CITY', 'POSTAL_CODE'] as const;
+export type TerritoryCoverageType = (typeof TERRITORY_COVERAGE_TYPES)[number];
+
+/** One explicit geographic selector owned by a territory. */
+export interface TerritoryCoverageView {
+  id: string;
+  type: TerritoryCoverageType;
+  /** ISO 3166-1 alpha-2. */
+  countryCode: string;
+  state: string | null;
+  city: string | null;
+  postalCode: string | null;
+  /** The selector in words, e.g. "Pune, Maharashtra (IN)". */
+  label: string;
+  createdAt: string;
+}
+
+/**
+ * A named geographic scope.
+ *
+ * It has no team and no members. Which team handles a territory is an
+ * assignment rule, so that there is exactly one routing authority; who in that
+ * team may take the work is team membership, so that there is exactly one
+ * record of a person.
+ */
+export interface TerritoryListItem {
+  id: string;
+  name: string;
+  description: string | null;
+  status: TerritoryStatus;
+  /** Live selectors only — removed ones are history, not coverage. */
+  coverageCount: number;
+  /** A few selectors in words, for the list. Empty when there are none. */
+  coverageSummary: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TerritoryDetail extends TerritoryListItem {
+  coverage: TerritoryCoverageView[];
+}
+
+export interface CreateTerritoryRequest {
+  name: string;
+  description?: string;
+}
+
+export interface UpdateTerritoryRequest {
+  name?: string;
+  description?: string | null;
+  status?: TerritoryStatus;
+}
+
+/** Raw geography, normalised and keyed by the server. */
+export interface AddTerritoryCoverageRequest {
+  type: TerritoryCoverageType;
+  country: string;
+  state?: string;
+  city?: string;
+  postalCode?: string;
+}
+
+export interface ResolveTerritoryRequest {
+  country?: string;
+  state?: string;
+  city?: string;
+  postalCode?: string;
+}
+
+export const TERRITORY_RESOLUTIONS = ['MATCHED', 'NO_MATCH'] as const;
+export type TerritoryResolutionDecision = (typeof TERRITORY_RESOLUTIONS)[number];
+
+/**
+ * Where a location resolves to, and on the strength of which selector.
+ *
+ * There is no AMBIGUOUS outcome, because there is no way to reach one: a
+ * partial unique index gives every place at most one live owner per
+ * organization, and the specificity order is fixed. Resolution is read-only —
+ * asking where an address would go never changes where anything goes.
+ */
+export interface TerritoryResolution {
+  decision: TerritoryResolutionDecision;
+  territory: { id: string; name: string } | null;
+  /** Which configured selector answered. Names the type, not the customer. */
+  matchedCoverage: { id: string; type: TerritoryCoverageType; label: string } | null;
 }

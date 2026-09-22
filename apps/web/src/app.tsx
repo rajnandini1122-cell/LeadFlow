@@ -35,6 +35,7 @@ import { FollowUpsPage } from './features/followups/follow-ups-page';
 import { TeamPage } from './features/team/team-page';
 import { SalesTeamsPage } from './features/sales-teams/sales-teams-page';
 import { TeamDetailPage } from './features/sales-teams/team-detail-page';
+import { TerritoriesPage } from './features/territories/territories-page';
 import { AssignmentRulesPage } from './features/assignment-rules/assignment-rules-page';
 import { ReportsPage } from './features/reports/reports-page';
 import { DailyReportPage } from './features/reports/daily-report-page';
@@ -166,6 +167,7 @@ export function App(): React.JSX.Element {
                 <Route path="team" element={<TeamPage />} />
                 <Route path="sales-teams" element={<SalesTeamsPage />} />
                 <Route path="sales-teams/:id" element={<TeamDetailPage />} />
+                <Route path="territories" element={<TerritoriesPage />} />
                 <Route path="assignment-rules" element={<AssignmentRulesPage />} />
                 <Route path="reports" element={<ReportsPage />} />
                 <Route path="reports/daily" element={<DailyReportPage />} />

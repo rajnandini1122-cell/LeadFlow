@@ -13,6 +13,7 @@ import {
   ValidateIf,
 } from 'class-validator';
 import { ASSIGNMENT_RULE_STATUSES } from '@leadflow/api-types';
+import { IsCountryCode } from '../../../common/validation/locale.validators';
 
 const trim = ({ value }: { value: unknown }): unknown =>
   typeof value === 'string' ? value.trim() : value;
@@ -61,6 +62,18 @@ export class CreateAssignmentRuleDto {
   @IsUUID('7', { message: 'must be a valid product id' })
   productId?: string;
 
+  /**
+   * A RESOLVED territory id. Never a country, state, city or pincode.
+   *
+   * Raw geography belongs to the territory resolver, which owns the coverage
+   * table and the specificity order. Accepting a city here would make every
+   * rule its own geography database, and the first two that disagreed would
+   * route the same enquiry two ways.
+   */
+  @IsOptional()
+  @IsUUID('7', { message: 'must be a valid territory id' })
+  territoryId?: string;
+
   /** The catch-all. A fallback carries no criteria — see the service. */
   @IsOptional()
   @IsBoolean()
@@ -104,6 +117,12 @@ export class UpdateAssignmentRuleDto {
   @IsUUID('7', { message: 'must be a valid product id' })
   productId?: string | null;
 
+  /** Null clears the criterion, meaning "anywhere". */
+  @IsOptional()
+  @ValidateIf((_object, value) => value !== null)
+  @IsUUID('7', { message: 'must be a valid territory id' })
+  territoryId?: string | null;
+
   @IsOptional()
   @IsUUID('7', { message: 'must be a valid team id' })
   targetTeamId?: string;
@@ -132,4 +151,37 @@ export class PreviewAssignmentDto {
   @IsOptional()
   @IsUUID('7', { message: 'must be a valid product id' })
   productId?: string;
+
+  /*
+   * Geography arrives RAW here and nowhere else in the routing path.
+   *
+   * The preview resolves it to a territory first, exactly as the phase that
+   * turns an enquiry into a lead will, so what an administrator tests is what
+   * production does. The rules themselves still never see a city or a pincode
+   * — they match the territory id that comes back.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(2)
+  @IsCountryCode()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim().toUpperCase() : value))
+  country?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  @Transform(trim)
+  state?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  @Transform(trim)
+  city?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(16)
+  @Transform(trim)
+  postalCode?: string;
 }

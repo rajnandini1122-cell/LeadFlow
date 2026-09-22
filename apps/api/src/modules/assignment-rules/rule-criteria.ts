@@ -1,18 +1,20 @@
 /**
  * What a rule matches on, and how a piece of work is described to it.
  *
- * Two dimensions today — source and canonical product — combined with AND, an
- * unset dimension meaning "any". Typed functions rather than a condition
- * language: an administrator has to be able to read a routing table, and a
- * rule expressed as user-supplied logic is a rule nobody can audit and a
- * different product's threat model.
+ * Three dimensions — source, canonical product and resolved territory —
+ * combined with AND, an unset dimension meaning "any". Typed functions rather
+ * than a condition language: an administrator has to be able to read a routing
+ * table, and a rule expressed as user-supplied logic is a rule nobody can audit
+ * and a different product's threat model.
  *
- * THE SEAM FOR TERRITORIES. Adding geography later means adding a field to
- * `AssignmentContext`, a matcher to `DIMENSIONS`, and a segment to the
- * criteria key. It does not mean rewriting the evaluator, because the
- * evaluator does not know what the dimensions are — it asks each one whether
- * it is satisfied. That is the whole reason this file is a list rather than a
- * chain of if-statements.
+ * Territory arrived exactly as the seam promised it would: one field on
+ * `AssignmentContext`, one entry in `DIMENSIONS`, one more segment in the
+ * criteria key. The evaluator below was not touched, because it does not know
+ * what the dimensions are — it asks each one whether it is satisfied. That is
+ * the whole reason this file is a list rather than a chain of if-statements,
+ * and it is why there is no geography in it: a territory reaches here already
+ * RESOLVED, as an id. Matching a city string here would make every rule its own
+ * private geography database.
  */
 
 /**
@@ -40,12 +42,21 @@ export interface AssignmentContext {
   source?: string | null | undefined;
   /** A CANONICAL product id. Never free text a customer typed. */
   productId?: string | null | undefined;
+  /**
+   * A RESOLVED territory id. Never a country, state, city or pincode.
+   *
+   * TerritoriesService turns geography into this before the evaluator sees it,
+   * so the routing table holds one fact per dimension and the coverage table
+   * stays the single place a place is described.
+   */
+  territoryId?: string | null | undefined;
 }
 
 /** The criteria of one rule, already normalised. */
 export interface RuleCriteria {
   sourceKey?: string | null | undefined;
   productId?: string | null | undefined;
+  territoryId?: string | null | undefined;
 }
 
 /**
@@ -70,6 +81,21 @@ const DIMENSIONS: readonly Dimension[] = [
     key: 'product',
     of: (criteria) => criteria.productId ?? undefined,
     from: (context) => context.productId ?? undefined,
+  },
+  /*
+   * Appended rather than inserted, and that is load-bearing.
+   *
+   * The criteria key is the concatenation of these entries in order, so every
+   * key written before territories existed becomes itself plus `|territory=*`
+   * — one constant suffix, which the migration applies to every row. Put
+   * territory in the middle and the migration would have to rebuild each key
+   * from columns instead, and a rule whose stored source spelling differed
+   * from what the generator produces today would silently change identity.
+   */
+  {
+    key: 'territory',
+    of: (criteria) => criteria.territoryId ?? undefined,
+    from: (context) => context.territoryId ?? undefined,
   },
 ];
 

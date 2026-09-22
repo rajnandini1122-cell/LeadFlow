@@ -124,6 +124,19 @@ export const TENANT_SCOPED_MODELS: Record<string, string> = {
    * foreign keys carrying the tenant underneath.
    */
   AssignmentRule: 'organizationId',
+  /*
+   * Territories, and the places they cover.
+   *
+   * A coverage table is a map of where a competitor sells — which pincodes
+   * they treat as one patch, which countries they bother with — so an unscoped
+   * read would be a leak of commercial strategy rather than of customer data.
+   * An unscoped WRITE would be worse: claiming a rival's territory name, or
+   * quietly taking ownership of a place they route on, would redirect their
+   * enquiries. Scoped fail-closed like everything else, with composite foreign
+   * keys carrying the tenant underneath so a bug is refused twice.
+   */
+  Territory: 'organizationId',
+  TerritoryCoverage: 'organizationId',
   // Plan is deliberately ABSENT: it is a global catalogue offered to every
   // tenant, and the public pricing page reads it with no tenant context at all.
   //
