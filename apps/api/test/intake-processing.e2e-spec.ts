@@ -816,6 +816,23 @@ describe('Automated intake processing', () => {
       // submissions from one person are still one customer.
       expect(outcomes.filter((outcome) => outcome.result === 'CONVERTED')).toHaveLength(1);
 
+      /*
+       * And the loser is reported as a DUPLICATE, not as an error.
+       *
+       * Which mechanism catches it depends on timing, and both are correct.
+       * If the second conversion starts after the first commits, the
+       * processing-time re-check sees the lead. If they overlap — which is
+       * what really happens against a database with more than one connection —
+       * both re-checks run before either lead exists, and the partial unique
+       * index refuses the second write. The index is the authority; the
+       * re-check is the courtesy.
+       *
+       * Either way the enquiry ends held for review rather than lost, and the
+       * salesperson is not asked to call the same person twice.
+       */
+      const loser = outcomes.find((outcome) => outcome.result !== 'CONVERTED');
+      expect(loser).toEqual({ result: 'DUPLICATE', code: 'DUPLICATE_LEAD' });
+
       const activeLeads = await asSystem('e2e active leads for mobile', () =>
         prisma().lead.count({
           where: {
@@ -827,6 +844,20 @@ describe('Automated intake processing', () => {
         }),
       );
       expect(activeLeads).toBe(1);
+
+      // Neither enquiry is left waiting: one converted, one is flagged, and
+      // nothing needs a human to notice it is stuck.
+      const statuses = await asSystem('e2e both statuses', () =>
+        prisma().integrationIntake.findMany({
+          where: { id: { in: [firstId, secondId] } },
+          select: { status: true, matchedLeadId: true },
+        }),
+      );
+      expect(statuses.map((row) => row.status).sort()).toEqual(['DUPLICATE', 'PROCESSED']);
+
+      // The duplicate names what it lost to, so a reviewer can open it.
+      const flagged = statuses.find((row) => row.status === 'DUPLICATE');
+      expect(flagged?.matchedLeadId).not.toBeNull();
     });
 
     /** One lead, one follow-up, one turn — whatever the caller did. */

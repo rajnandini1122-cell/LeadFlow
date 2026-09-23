@@ -110,7 +110,30 @@ export class IntakeProcessingService {
    * Must already be inside the intake's tenant context.
    */
   async process(intakeId: string): Promise<ProcessOutcome> {
-    const outcome = await this.repository.transaction(async (tx) => this.convert(tx, intakeId));
+    let outcome: ProcessOutcome;
+
+    try {
+      outcome = await this.repository.transaction(async (tx) => this.convert(tx, intakeId));
+    } catch (error) {
+      if (!(error instanceof LateDuplicate)) throw error;
+
+      /*
+       * The database caught the duplicate the read could not.
+       *
+       * Two enquiries from one person, processed at the same moment: both
+       * re-checks ran before either lead existed, both proceeded, and the
+       * partial unique index refused the second. That is the index doing
+       * exactly its job — the invariant never broke — but the refusal aborted
+       * the transaction, so recording the outcome needs a fresh one.
+       *
+       * A pre-check cannot close this window. Only the constraint can, which
+       * is why the constraint is the authority and this is the path that
+       * reports what it decided.
+       */
+      outcome = await this.repository.transaction(async (tx) =>
+        this.recordLateDuplicate(tx, intakeId, error.mobile),
+      );
+    }
 
     // Audit OUTSIDE the conversion transaction, deliberately. An audit write
     // that failed would otherwise roll back a perfectly good conversion, and
@@ -118,6 +141,45 @@ export class IntakeProcessingService {
     await this.recordAudit(intakeId, outcome);
 
     return outcome;
+  }
+
+  /**
+   * Records a duplicate that only the unique index could see.
+   *
+   * Runs in its own transaction because the conversion's was aborted by the
+   * constraint. The intake is back at RECEIVED — the rollback restored it — so
+   * this re-claims it exactly as a sweep would, and a second worker that got
+   * there first simply finds nothing to claim.
+   *
+   * If no active lead turns up for the number, the collision was something
+   * else and this does NOT pretend otherwise: the enquiry is left RECEIVED and
+   * reported as skipped, so the next sweep tries again rather than filing a
+   * customer under the wrong explanation.
+   */
+  private async recordLateDuplicate(
+    tx: PrismaTransaction,
+    intakeId: string,
+    mobile: string,
+  ): Promise<ProcessOutcome> {
+    if (!(await this.repository.claim(tx, intakeId))) {
+      return { result: 'SKIPPED', reason: 'claimed by another processor' };
+    }
+
+    const existing = await this.repository.activeLeadByMobile(tx, mobile);
+
+    if (!existing) {
+      this.logger.warn(
+        { intakeId },
+        'A unique violation aborted a conversion but no duplicate lead was found — leaving the enquiry to be retried',
+      );
+      return { result: 'SKIPPED', reason: 'transient conflict' };
+    }
+
+    return this.duplicate(tx, intakeId, {
+      code: BLOCK_CODE.DUPLICATE_LEAD,
+      reason: `An active lead (${existing.leadNumber}) was created for this number while this enquiry was being processed.`,
+      matchedLeadId: existing.id,
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -306,30 +368,46 @@ export class IntakeProcessingService {
 
     const scheduledAt = new Date(intake.receivedAt.getTime() + policy.slaMinutes * 60_000);
 
-    const leadId = await this.leads.createWithActivity({
-      leadNumber,
-      firstName: person.firstName,
-      lastName: person.lastName,
-      mobile,
-      email,
-      companyName: intake.company ?? undefined,
-      source: intake.source,
-      /*
-       * What the customer actually asked for, kept as they wrote it. NOT
-       * resolved to a catalogue product — see the evaluation above.
-       */
-      productInterest: intake.productInterest ?? undefined,
-      status: 'NEW',
-      priority: 'MEDIUM',
-      assignedToId: chosen.userId,
-      nextFollowUpAt: scheduledAt,
-      contactId: contact.id,
-      // Never. A duplicate website enquiry is not authorisation to create a
-      // second lead; that decision belongs to a person.
-      duplicateAcknowledged: false,
-      actorId: null,
-      tx,
-    });
+    /*
+     * The one write here that a concurrent conversion can legitimately refuse.
+     *
+     * Lead NUMBERS cannot collide — the advisory lock above serialises them —
+     * but two enquiries from the same person can reach this line at the same
+     * moment, and `leads_org_mobile_uniq` is what stops both becoming leads.
+     * Caught and re-thrown as a sentinel so the caller can record the duplicate
+     * in a transaction that has not been aborted.
+     */
+    let leadId: string;
+
+    try {
+      leadId = await this.leads.createWithActivity({
+        leadNumber,
+        firstName: person.firstName,
+        lastName: person.lastName,
+        mobile,
+        email,
+        companyName: intake.company ?? undefined,
+        source: intake.source,
+        /*
+         * What the customer actually asked for, kept as they wrote it. NOT
+         * resolved to a catalogue product — see the evaluation above.
+         */
+        productInterest: intake.productInterest ?? undefined,
+        status: 'NEW',
+        priority: 'MEDIUM',
+        assignedToId: chosen.userId,
+        nextFollowUpAt: scheduledAt,
+        contactId: contact.id,
+        // Never. A duplicate website enquiry is not authorisation to create a
+        // second lead; that decision belongs to a person.
+        duplicateAcknowledged: false,
+        actorId: null,
+        tx,
+      });
+    } catch (error) {
+      if (mobile && isUniqueViolation(error)) throw new LateDuplicate(mobile);
+      throw error;
+    }
 
     await this.followUps.create({
       leadId,
@@ -483,6 +561,29 @@ export class IntakeProcessingService {
       this.logger.error({ err: error, intakeId }, 'Could not record intake processing audit');
     }
   }
+}
+
+/**
+ * Thrown when the unique index refuses a lead because one already exists for
+ * that number. Carries the mobile so the caller can name the lead it lost to.
+ */
+class LateDuplicate extends Error {
+  constructor(readonly mobile: string) {
+    super('An active lead already exists for this mobile');
+    this.name = 'LateDuplicate';
+  }
+}
+
+/**
+ * Whether a write was refused by a unique index.
+ *
+ * P2002 only. The FIELDS are deliberately not parsed — Prisma's driver-adapter
+ * path has not always populated them, and a check that silently stopped
+ * matching would turn a duplicate into an unexplained 500. The caller
+ * establishes WHICH duplicate by re-reading, which cannot go stale.
+ */
+function isUniqueViolation(error: unknown): boolean {
+  return (error as { code?: string }).code === 'P2002';
 }
 
 /**
