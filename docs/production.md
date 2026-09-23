@@ -273,10 +273,31 @@ npx prisma migrate status --schema apps/api/prisma/schema.prisma
 DATABASE_URL=$DIRECT_DATABASE_URL npm run db:bootstrap -w apps/api
 ```
 
-**Where these run.** Not in the API or worker container. Both are built with
-`npm ci --omit=dev` and contain neither `tsx` nor the Prisma CLI, by design — a
-runtime image should not carry tooling that can rewrite the schema. Run them
-from the same approved one-off, build or CI context that runs the migrations.
+**Where these run.** From an approved one-off, build or CI context — the one
+that has devDependencies installed and `DIRECT_DATABASE_URL` configured. Not
+from the API or worker container.
+
+Two different reasons, and only the first is a guarantee:
+
+* **`db:bootstrap` cannot run there at all.** It executes through `tsx`, a
+  devDependency, and the runtime image is built with `npm ci --omit=dev`. The
+  Docker CI gate asserts `tsx` is absent, so this will not drift quietly.
+* **The Prisma CLI happens to be there, and that is not a contract.** `prisma`
+  is present in the runtime image as a transitive dependency of
+  `@prisma/client`, which is a production dependency — so `npx prisma migrate
+  deploy` would in fact work from inside the container today. Nobody chose
+  that and nothing pins it: a patch release of the client could drop it, and
+  no test in this repository would notice. **Do not build a deployment
+  procedure on it.**
+
+> An earlier version of this document stated the runtime image contained
+> neither tool. That was wrong about the Prisma CLI, and the Docker CI gate is
+> what proved it — the assertion written from that belief failed on its first
+> run. The dependency graph is
+> `@prisma/client@7 → prisma@7`, plus `typescript` alongside it.
+
+Keeping schema changes in one place is still the right practice; it is now a
+deliberate convention rather than something the image enforces.
 
 **`db:bootstrap` requires `DIRECT_DATABASE_URL` when `NODE_ENV=production`** and
 refuses to start without it, rather than quietly falling back to whichever URL

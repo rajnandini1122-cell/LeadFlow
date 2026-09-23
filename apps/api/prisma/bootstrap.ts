@@ -17,10 +17,20 @@ import { syncReferenceData } from './reference-data';
  *     npm run db:bootstrap      -w apps/api
  *
  * WHERE IT RUNS. Not in the production API or worker container. Those are
- * built with `npm ci --omit=dev` and contain neither `tsx` nor the Prisma CLI
- * by design — a runtime image should not carry the tooling that can rewrite
- * the schema. Run it from the same approved one-off, build or CI context that
- * runs the migrations, which has devDependencies available.
+ * built with `npm ci --omit=dev`, and `tsx` is a devDependency — so the script
+ * this file backs cannot be started there at all.
+ *
+ * The Prisma CLI is a different case, and the difference matters. It IS
+ * present in the runtime image, but only as a transitive dependency of
+ * `@prisma/client`, which is a production dependency. Nobody chose that and
+ * nothing guarantees it: a patch release of the client could drop it and no
+ * test here would notice. Treat it as an accident of the dependency graph
+ * rather than a runtime contract, and do not build a deployment procedure on
+ * top of it.
+ *
+ * So run this — and the migrations — from the same approved one-off, build or
+ * CI context, which has devDependencies available and the direct database
+ * connection configured.
  *
  * WHY IT IS NEEDED. A freshly migrated database has no system roles: no
  * migration inserts them, and the boot-time permission sync deliberately
