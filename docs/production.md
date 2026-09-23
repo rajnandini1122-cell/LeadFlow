@@ -116,16 +116,73 @@ Three properties are worth stating because each one is a decision:
   source *in the database*, so two identical requests arriving together produce
   one row and one receipt. The same id carrying a different payload is a 409
   rather than an overwrite.
-* **Intake does not create a Lead yet.** An active lead needs a next follow-up
-  date, and a lead needs an owner to be anybody's job. Both are policy —
-  how soon somebody calls a website enquiry, and who — and those belong to the
-  assignment workstream. Submissions are durable and auditable in
-  `integration_intakes`; `created_lead_id` is what will record the conversion.
+* **Intake stores the enquiry; converting it is a separate switch.** A
+  submission always lands durably in `integration_intakes` first. Whether it
+  then becomes a Lead — routed to a team, assigned to a salesperson and given
+  a first follow-up — is decided by `INTAKE_AUTO_PROCESSING_ENABLED`, which is
+  **off by default**. Enabling the intake boundary does not enable conversion,
+  and that separation is deliberate: see §2.1.
 
 Rotating the secret: set the new value and redeploy. There is no overlap window,
 so coordinate with whoever operates the website — a submission signed with the
 old secret is refused, and the website should retry it with the same event id
 once both sides agree, which is exactly what the idempotency key is for.
+
+### 2.1 Automatic conversion — the last switch to throw
+
+| Variable | Value | Why |
+|---|---|---|
+| `INTAKE_AUTO_PROCESSING_ENABLED` | **`false`** on first deploy | See below |
+
+With it on, the worker converts stored enquiries into leads by itself: it
+resolves the territory, matches the routing table, takes the next agent in the
+team's round-robin and creates the first follow-up.
+
+**Deploy with it off, every time.** `integration_intakes` is durable and may
+hold a backlog that arrived before this code existed, or while the automation
+was off. Switching it on is not a gradual change — the sweep works through the
+backlog, assigns every enquiry in it to a real salesperson and creates a
+follow-up for each. That is easy to do and extremely hard to undo: the leads
+are real, the assignments are real, and the reminders go to people's phones.
+
+The safe order is to deploy with it off, confirm enquiries are landing, read
+the backlog, and only then set it to `true` and redeploy. It also requires
+`WORKER_ENABLED=true` to do anything — conversion runs in the worker and never
+in an API replica.
+
+### The Central Admin control plane
+
+`ADMIN_CONTROL_ENABLED=true` opens one signed server-to-server surface for the
+CRAVION Central Admin backend. Disabled, every route under it answers **404** —
+not 401 and not 403, because either would confirm to a scanner that there is a
+control plane here and merely a secret to find.
+
+| Variable | Required when enabled | Notes |
+|---|---|---|
+| `ADMIN_CONTROL_ENABLED` | — | Default `false` |
+| `ADMIN_CONTROL_ORGANIZATION_ID` | yes | The one tenant this plane administers |
+| `ADMIN_CONTROL_SIGNING_SECRET` | yes | ≥32 chars, platform secret store only |
+
+Three properties, each a decision rather than an accident:
+
+* **A separate trust domain from the website intake, with its own secret.** The
+  website key lives in a public-facing site; this one can rewrite a tenant's
+  routing table. The two secrets are **enforced different at boot** — sharing
+  one would make a compromise of the first a compromise of the second, and
+  would make either impossible to rotate alone.
+* **Its signature binds more.** The website signs a timestamp, an event id and
+  the body. A control command also signs the **method and the path**, so a
+  captured `POST /teams` cannot be replayed against `POST /territories`, nor a
+  `GET` re-aimed at a `DELETE`.
+* **All or nothing.** Enabled with either value missing, the process refuses to
+  start. An enabled control surface with no tenant authenticates callers and
+  has nowhere to apply what they asked for; with no secret it authenticates
+  nobody while still existing. Both are worse than not starting.
+
+**Both integrations require the tenant to already exist.** The organization id
+is validated as a UUID at boot, not looked up. Point either at an organization
+that is not in the database and the process starts cleanly, then fails every
+request at a foreign key. Create the tenant first.
 
 ### Mail
 
@@ -198,6 +255,13 @@ latency.
 
 ## 4. Deploying
 
+Two Railway services from **one image**, configured as code in
+`infrastructure/deployment/`: `railway.api.toml` starts
+`node apps/api/dist/main.js` with a `/health` healthcheck, and
+`railway.worker.toml` starts `node apps/api/dist/worker.js` with **no**
+healthcheck, because the worker binds no port. Nothing deploys automatically —
+CI builds and tests, and has no deploy job.
+
 ```bash
 # 1. Build once. Both processes ship from this image.
 docker build -t leadflow:$GIT_SHA .
@@ -211,10 +275,53 @@ npx prisma migrate status --schema apps/api/prisma/schema.prisma
 # 4. Roll the API, then the worker.
 ```
 
+### The web app ships inside the API
+
+The API process serves the built React bundle from `apps/web/dist` at the same
+origin it answers `/api/v1` on. There is no second service and no CDN to
+configure: the image contains both, so they cannot disagree about the contract
+between them.
+
+That is not only convenience. The browser bundle calls the API with **relative**
+paths and holds its refresh token in an httpOnly `SameSite=Strict` cookie. Split
+across two origins, both stop working as designed — an absolute API URL baked in
+at build time, CORS, and a cookie that is no longer same-site.
+
+`/api/*`, `/health` and `/readiness` are excluded from the SPA fallback, so an
+unknown API route still answers the API's JSON 404 rather than an HTML page, and
+a missing fingerprinted asset still answers 404 rather than the shell. The
+boundary is asserted in `apps/api/test/web-hosting.e2e-spec.ts`.
+
+### Full production activation order
+
+For a first deployment, or any deployment alongside the CRAVION Admin and
+website components:
+
+| # | Step | Note |
+|---|---|---|
+| 0 | Provision PostgreSQL and Redis, run migrations, **create the CRAVION tenant** | Both integrations reference an organization that must already exist |
+| 1 | Deploy LeadFlow API + worker, **automation OFF** | `INTAKE_AUTO_PROCESSING_ENABLED=false`; intake and control plane may be enabled here, with their distinct secrets |
+| 2 | Deploy J8A.1 Website/UI Functions | They hold the secret LeadFlow validates, so LeadFlow must exist first |
+| 3 | Apply Admin schema 10 | |
+| 4 | Deploy the J2 Website relay | |
+| 5 | **Smoke test** | A signed intake lands in `integration_intakes` and stays unprocessed; a signed admin command round-trips; `/readiness` is ready; `workerProcess.status` is `HEALTHY` |
+| 6 | Set `INTAKE_AUTO_PROCESSING_ENABLED=true` and redeploy | **Only after** reviewing the intake backlog — see §2.1 |
+
+LeadFlow is first in every case: everything downstream authenticates *against*
+it, and while an integration is disabled its routes answer 404.
+
 Migrations run first because every migration in this repository is **additive** —
-26 of them, zero destructive statements, verified by scanning each one. Old code
-therefore keeps working against the new schema, which is what makes a rolling
-deploy safe and a rollback possible.
+**32** of them, latest `20260923140000_admin_control_plane`, zero destructive
+statements, verified by scanning each one. Old code therefore keeps working
+against the new schema, which is what makes a rolling deploy safe and a
+rollback possible.
+
+One caveat on how far back a rollback reaches. `20260922220000_territories`
+deterministically rewrites every `assignment_rules.criteria_key`, appending
+`|territory=*`. It is injective and semantics-preserving — no rule starts or
+stops matching anything — but code from **before** that migration computes
+two-segment keys and would no longer agree with the stored three-segment ones.
+Image rollback is therefore safe back to that deploy boundary, not past it.
 
 **That property is a rule, not an accident. Keep it.** The moment one migration
 drops a column, deploys stop being rollable and this section becomes wrong.
@@ -277,15 +384,44 @@ retained.
 1. **Error-rate spike** — `api.errorRate` on `/api/metrics`, thresholded against a
    week of real traffic.
 2. **Health-check failure** — `/readiness` non-200 twice consecutively.
+3. **Worker heartbeat not `HEALTHY`** — `workerProcess.status` on `/api/metrics`.
 
 More alerts than this get muted, and a muted alert is worse than none.
 
+### The worker heartbeat
+
+The worker binds no port, so nothing can probe it, and it fails **silently**: a
+sweep that stops running produces no error, no log and no failed request. The
+first evidence would otherwise be a customer who was never called.
+
+Process-local metrics could not answer this, and for a while appeared to. The
+worker recorded its sweep timestamp in the worker's memory while `/api/metrics`
+was served by the API — so the API reported the worker as `null` forever,
+whether it was thriving or gone.
+
+The heartbeat fixes that with **Redis as the authority**, because Redis is
+already mandatory infrastructure both processes share. The worker writes
+`leadflow:worker:heartbeat` every **30s** with a **90s TTL**; any API replica
+reads it.
+
+| `workerProcess.status` | Meaning | What to do |
+|---|---|---|
+| `HEALTHY` | Beat within 60s | Nothing |
+| `STALE` | Beat present but older than 60s | Worker is up and wedged — check its logs before it expires |
+| `MISSING` | No key: TTL expired, or it never started | **Page.** Nobody is being reminded of anything |
+| `UNKNOWN` | Redis unreachable | Look at Redis, not the worker — `/readiness` will also be failing |
+
+TTL expiry *is* the crash behaviour, and it is why this is not a database
+table: a dead worker stops refreshing and the key evaporates on its own.
+Nothing has to notice the death, and there is no row left behind reading
+"healthy". It also survives an API restart, because it is not the API's memory.
+
+Do **not** make the Railway healthcheck depend on it. `/health` stays liveness
+for the API process alone; a dead worker must page somebody, not restart the
+API.
+
 ### Watch, but do not page on
 
-- `worker.lastSweepAt` (on `/api/metrics`) — **the most important single value here.** A sweep that
-  stops running produces no errors and no logs. A timestamp that stops moving is
-  the only evidence, and a dead sweep means nobody is being reminded of
-  anything: the exact failure the worker exists to prevent.
 - `api.p95Ms` — latency drift.
 - `worker.failures` — per-tenant sweep failures. Non-zero and rising means one
   tenant has data the sweep cannot process.
@@ -315,7 +451,14 @@ reason.
 Before serving a paying customer:
 
 - [ ] API deploys and passes `/readiness`
-- [ ] Worker deploys with `WORKER_ENABLED=true`, and `worker.lastSweepAt` moves
+- [ ] The web app loads from the API origin, and a page refresh on a deep route
+      (e.g. `/leads/<id>`) still renders rather than 404ing
+- [ ] Worker deploys with `WORKER_ENABLED=true`, and `workerProcess.status` on
+      `/api/metrics` reads `HEALTHY` from an **API** replica
+- [ ] `INTAKE_AUTO_PROCESSING_ENABLED=false` on first deploy, and the intake
+      backlog reviewed before it is ever set to `true`
+- [ ] Both integration secrets set, different from each other, and the
+      configured organization ids exist in the database
 - [ ] Migrations run from CI against the production database
 - [ ] `RELEASE_SHA` set, so errors group by deploy
 - [ ] Managed Postgres with WAL archiving on
