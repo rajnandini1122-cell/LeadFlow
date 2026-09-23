@@ -230,11 +230,18 @@ export class TerritoriesRepository {
    * level: four round trips to answer one question would be four chances for
    * the table to change underneath, and the caller orders the results itself
    * anyway.
+   *
+   * Takes an optional transaction, for two reasons that both matter. The map an
+   * enquiry is routed by should be the map as it stands inside the transaction
+   * that acts on it — and, more bluntly, a query that went to the pool for its
+   * own connection while the caller's transaction held one would deadlock the
+   * moment the pool was exhausted, which on a single-connection database is
+   * immediately.
    */
-  async findLiveCoverage(coverageKeys: string[]) {
+  async findLiveCoverage(coverageKeys: string[], tx?: PrismaTransaction) {
     if (coverageKeys.length === 0) return [];
 
-    return this.prisma.client.territoryCoverage.findMany({
+    return (tx ?? this.prisma.client).territoryCoverage.findMany({
       // Archived territories release their coverage on the way out, so this
       // status filter should never exclude anything. It is here because
       // resolution is what decides where a customer's enquiry goes, and one

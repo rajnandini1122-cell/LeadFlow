@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { LeadPriority, LeadStatus } from '@leadflow/api-types';
 import type { ActivityType } from '../../generated/prisma/enums';
 import { sideEffectsFor } from './lead-status';
-import { PrismaService } from '../../common/prisma/prisma.service';
+import { PrismaService, type PrismaTransaction } from '../../common/prisma/prisma.service';
 import { TenantContextService } from '../../common/tenancy/tenant-context.service';
 import { AppConfig } from '../../common/config/config.module';
 
@@ -175,8 +175,8 @@ export class LeadsRepository {
    * race into a constraint violation the service retries, rather than two leads
    * silently sharing a number.
    */
-  async nextLeadNumber(): Promise<string> {
-    const latest = await this.prisma.client.lead.findFirst({
+  async nextLeadNumber(tx?: PrismaTransaction): Promise<string> {
+    const latest = await (tx ?? this.prisma.client).lead.findFirst({
       orderBy: { leadNumber: 'desc' },
       select: { leadNumber: true },
     });
@@ -186,10 +186,55 @@ export class LeadsRepository {
   }
 
   /**
+   * Serialises lead numbering for ONE tenant, for the life of a transaction.
+   *
+   * Read-then-write numbering is racy by construction: two transactions read
+   * LD-00019 and both try to write LD-00020. The interactive path survives that
+   * by catching the unique violation and retrying, which is fine when a person
+   * is waiting for a response — but inside the automated pipeline's single
+   * transaction a raised constraint aborts EVERYTHING, including the lead, the
+   * follow-up and the intake status, and the retry would have nothing left to
+   * retry into.
+   *
+   * An advisory lock is the narrow fix: it serialises numbering without locking
+   * any row, so concurrent conversions queue for the number and nothing else.
+   * It is transaction-scoped, so it is released on commit or rollback with
+   * nothing to clean up, and it is keyed per organization, so one tenant's
+   * traffic never waits on another's.
+   *
+   * The two-argument form takes a namespace and a key. The namespace is a
+   * constant private to lead numbering, so this can never collide with an
+   * advisory lock taken elsewhere for something else.
+   */
+  async lockLeadNumbering(tx: PrismaTransaction): Promise<void> {
+    const organizationId = this.tenantContext.requireOrganizationId();
+
+    /*
+     * $executeRaw, not $queryRaw, and that is not a style choice.
+     *
+     * pg_advisory_xact_lock returns `void`, and the driver adapter cannot
+     * deserialize a void column — $queryRaw fails at the point of reading a
+     * result there is no type for. $executeRaw is for statements whose result
+     * is not read, which is exactly what taking a lock is.
+     */
+    // eslint-disable-next-line no-restricted-syntax -- Prisma cannot express an advisory lock; organizationId is bound explicitly and covered by test/tenant-isolation.e2e-spec.ts
+    await tx.$executeRaw`
+      SELECT pg_advisory_xact_lock(${LEAD_NUMBER_LOCK_NAMESPACE}::int, hashtext(${organizationId}::text))
+    `;
+  }
+
+  /**
    * Creates the lead and its opening timeline entries in one transaction.
    *
    * Returns the id rather than the row: the caller re-reads through findById so
    * a created lead has exactly the same shape as every other lead read.
+   *
+   * A caller may supply its own transaction, and the automated intake pipeline
+   * does. That pipeline has to commit the lead, its activities, the first
+   * follow-up and the intake's PROCESSED status together or not at all — a
+   * lead whose follow-up was rolled back is exactly the "lead left behind"
+   * this product exists to prevent. Opening a nested transaction here would
+   * defeat that, so when one is passed it is used as-is.
    */
   async createWithActivity(input: {
     leadNumber: string;
@@ -224,11 +269,22 @@ export class LeadsRepository {
      * it the index refuses what the API just agreed to.
      */
     duplicateAcknowledged?: boolean | undefined;
-    actorId: string;
+    /**
+     * Null for a SYSTEM write.
+     *
+     * `created_by` and `updated_by` are nullable columns with no foreign key,
+     * so null records honestly that nobody typed this lead. `assigned_by` and
+     * the activity's `performed_by` DO have foreign keys to users, which is
+     * the concrete reason a synthetic actor id cannot be used here: it would
+     * not resolve to a row, and the insert would fail.
+     */
+    actorId: string | null;
+    /** Supplied when this write belongs to a caller's larger transaction. */
+    tx?: PrismaTransaction | undefined;
   }) {
     const organizationId = this.tenantContext.requireOrganizationId();
 
-    return this.prisma.client.$transaction(async (tx) => {
+    const run = async (tx: PrismaTransaction) => {
       const created = await tx.lead.create({
         data: {
           organizationId,
@@ -283,7 +339,9 @@ export class LeadsRepository {
       // Re-read through findById so the caller always gets the same shape as
       // every other lead read, including the assignedTo relation.
       return created.id;
-    });
+    };
+
+    return input.tx ? run(input.tx) : this.prisma.client.$transaction(run);
   }
 
   /**
@@ -617,3 +675,13 @@ export class LeadsRepository {
     });
   }
 }
+
+/**
+ * The advisory-lock namespace for lead numbering.
+ *
+ * Advisory locks share one global space per database, so an arbitrary integer
+ * could collide with a lock taken for a completely unrelated reason and produce
+ * a deadlock nobody could explain. A named constant used in exactly one place
+ * makes that impossible to do by accident.
+ */
+const LEAD_NUMBER_LOCK_NAMESPACE = 8317;

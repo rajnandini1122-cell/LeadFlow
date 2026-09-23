@@ -278,6 +278,41 @@ export const envSchema = z
      * to be visible to a rep watching for a due follow-up.
      */
     FOLLOW_UP_SWEEP_INTERVAL_SECONDS: z.coerce.number().int().positive().default(60),
+    /**
+     * Whether the worker converts website intakes into leads automatically.
+     *
+     * Default FALSE, and this default matters more than most. The intake table
+     * is durable and may hold a backlog of enquiries that arrived before this
+     * code existed; a deploy that switched processing on by itself would
+     * convert all of them at once, assign them round-robin to real
+     * salespeople, and create a follow-up for each — a change that is very
+     * easy to make and very hard to undo.
+     *
+     * Turning it on is therefore a deliberate, separate act from shipping the
+     * code that can do it.
+     */
+    INTAKE_AUTO_PROCESSING_ENABLED: z
+      .string()
+      .default('false')
+      .transform((value) => value === 'true'),
+    /**
+     * How often the intake sweep runs, in seconds.
+     *
+     * Sixty, matching the follow-up sweep. The first-response SLA is measured
+     * from when the enquiry ARRIVED, so a sweep interval does not eat into it
+     * — a minute of delay makes the follow-up a minute closer to due rather
+     * than pushing it a minute later.
+     */
+    INTAKE_SWEEP_INTERVAL_SECONDS: z.coerce.number().int().positive().default(60),
+    /**
+     * How many intakes one sweep claims.
+     *
+     * Bounded so a backlog is worked through in steady passes rather than one
+     * enormous transaction-per-row burst that competes with request traffic.
+     * Each row is its own transaction, so the batch size is about pacing, not
+     * about atomicity.
+     */
+    INTAKE_SWEEP_BATCH_SIZE: z.coerce.number().int().positive().max(500).default(25),
     OUTBOUND_RECOVERY_ENABLED: z
       .string()
       .default('true')

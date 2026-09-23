@@ -75,15 +75,9 @@ export class PrismaService implements OnModuleInit, OnModuleDestroy {
 }
 
 /**
- * The client handed to a `$transaction` callback.
- *
- * Repositories accept one so a caller can compose several writes into a single
- * atomic operation. It is the extended client minus the methods that would
- * start or end a connection — passing it around is what makes a repository
- * transaction-aware without letting anyone nest a second, independent
- * transaction inside an existing one.
+ * Re-exported so repositories can take the client and the transaction type from
+ * one import. The definition lives in ./transaction.ts, which services may
+ * import: naming a type is not reaching for the client, and the rule that
+ * guards this directory exists to stop the second.
  */
-export type PrismaTransaction = Omit<
-  PrismaService['client'],
-  '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'
->;
+export type { PrismaTransaction } from './transaction';

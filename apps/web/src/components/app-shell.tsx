@@ -99,6 +99,14 @@ export const NAV_ITEMS: NavItem[] = [
   // Directly above assignment rules, because that is the order they are used
   // in: a territory has to exist before a rule can route one.
   { to: '/territories', label: 'Territories', icon: '◈', permission: PERMISSIONS.TERRITORY_VIEW },
+  // The operations end of the same pipeline: what actually arrived, and where
+  // it went. Sits with the configuration it is used to debug.
+  {
+    to: '/website-enquiries',
+    label: 'Website enquiries',
+    icon: '✉',
+    permission: PERMISSIONS.INTEGRATION_INTAKE_VIEW,
+  },
   {
     to: '/assignment-rules',
     label: 'Assignment rules',

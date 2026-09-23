@@ -23,6 +23,7 @@ import {
 } from '../../components/ui';
 import { useAuth } from '../auth/auth-context';
 import { LeadConversationsCard } from '../omnichannel/lead-conversations-card';
+import { WebsiteEnquiryPanel } from '../intakes/website-enquiry-panel';
 import { useLead, type LeadActivity } from './use-leads';
 import {
   useAddNote,
@@ -202,6 +203,13 @@ export function LeadDetailPage(): React.JSX.Element {
             that predates omnichannel looks exactly as it did before.
           */}
           <LeadConversationsCard leadId={data.id} />
+
+          {/*
+            The customer's own words, for a lead that came from the website.
+            Renders nothing for a lead somebody created by hand, so every
+            existing lead looks exactly as it did before.
+          */}
+          <WebsiteEnquiryPanel leadId={data.id} />
         </div>
 
         <div className="space-y-6">

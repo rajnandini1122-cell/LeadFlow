@@ -35,9 +35,16 @@ export class AssignmentRulesRepository {
     return this.prisma.client.assignmentRule.findFirst({ where: { id }, include: RULE_INCLUDE });
   }
 
-  /** Active rules in evaluation order. Fallback excluded — it is asked last. */
-  async activeRules() {
-    return this.prisma.client.assignmentRule.findMany({
+  /**
+   * Active rules in evaluation order. Fallback excluded — it is asked last.
+   *
+   * Takes an optional transaction so the automated pipeline evaluates the
+   * routing table INSIDE the transaction that acts on the answer. Reading it
+   * outside would mean routing on a snapshot: a rule paused a millisecond
+   * later would still have sent the enquiry.
+   */
+  async activeRules(tx?: PrismaTransaction) {
+    return (tx ?? this.prisma.client).assignmentRule.findMany({
       where: { status: 'ACTIVE', isFallback: false },
       select: EVALUATION_SELECT,
       // priority is unique among these, so the tie-breakers can never be
@@ -47,8 +54,8 @@ export class AssignmentRulesRepository {
     });
   }
 
-  async activeFallback() {
-    return this.prisma.client.assignmentRule.findFirst({
+  async activeFallback(tx?: PrismaTransaction) {
+    return (tx ?? this.prisma.client).assignmentRule.findFirst({
       where: { status: 'ACTIVE', isFallback: true },
       select: EVALUATION_SELECT,
     });

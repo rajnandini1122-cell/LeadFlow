@@ -8,6 +8,7 @@ import {
 } from '@leadflow/api-types';
 import { AppException } from '../../common/errors/app.exception';
 import { AuditRepository } from '../../common/audit/audit.repository';
+import type { PrismaTransaction } from '../../common/prisma/transaction';
 import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
 import { TeamsService } from '../teams/teams.service';
 import { TerritoriesService } from '../territories/territories.service';
@@ -343,8 +344,16 @@ export class AssignmentRulesService {
     context: AssignmentContext,
     /** What the geography resolved to, for the answer. Never re-derived here. */
     territory?: { id: string; name: string } | null,
+    /**
+     * Supplied when the caller will ACT on the answer in the same transaction.
+     *
+     * The preview leaves this undefined — it only reports. The automated
+     * pipeline passes its transaction, so the rules it reads and the team it
+     * assigns from cannot change between the decision and the write.
+     */
+    tx?: PrismaTransaction,
   ): Promise<AssignmentPreviewResult> {
-    const rules = await this.repository.activeRules();
+    const rules = await this.repository.activeRules(tx);
     const matched = rules.find((rule) =>
       criteriaMatch(
         { sourceKey: rule.sourceKey, productId: rule.productId, territoryId: rule.territoryId },
@@ -352,7 +361,7 @@ export class AssignmentRulesService {
       ),
     );
 
-    const fallback = matched ? undefined : await this.repository.activeFallback();
+    const fallback = matched ? undefined : await this.repository.activeFallback(tx);
     const chosen = matched ?? fallback;
 
     if (!chosen) {
@@ -362,7 +371,7 @@ export class AssignmentRulesService {
       return { ...empty('NO_MATCH'), territory: territory ?? null };
     }
 
-    const agents = await this.teams.eligibleAgents(chosen.targetTeamId);
+    const agents = await this.teams.eligibleAgents(chosen.targetTeamId, tx);
 
     const result: AssignmentPreviewResult = {
       decision: agents.length === 0 ? 'NO_ELIGIBLE_AGENTS' : matched ? 'MATCHED' : 'FALLBACK_MATCHED',

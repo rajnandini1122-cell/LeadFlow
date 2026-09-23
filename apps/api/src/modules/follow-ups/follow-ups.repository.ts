@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import type { FollowUpStatus, FollowUpType } from '../../generated/prisma/enums';
-import { PrismaService } from '../../common/prisma/prisma.service';
+import { PrismaService, type PrismaTransaction } from '../../common/prisma/prisma.service';
 import { TenantContextService } from '../../common/tenancy/tenant-context.service';
 
 /** Statuses that still represent work owed. */
@@ -117,11 +117,24 @@ export class FollowUpsRepository {
     type: FollowUpType;
     title?: string | undefined;
     notes?: string | undefined;
-    actorId: string;
+    /**
+     * Null for a SYSTEM write. `created_by` is nullable with no foreign key,
+     * so the automated pipeline records that nobody scheduled this by hand.
+     */
+    actorId: string | null;
+    /**
+     * Supplied when this belongs to a caller's transaction.
+     *
+     * The automated pipeline needs the follow-up and the lead's
+     * `nextFollowUpAt` to commit together: a lead promising a next action that
+     * has no row behind it is the inconsistency the whole follow-up model
+     * exists to rule out.
+     */
+    tx?: PrismaTransaction | undefined;
   }) {
     const organizationId = this.tenantContext.requireOrganizationId();
 
-    return this.prisma.client.followUp.create({
+    return (input.tx ?? this.prisma.client).followUp.create({
       data: {
         organizationId,
         leadId: input.leadId ?? null,

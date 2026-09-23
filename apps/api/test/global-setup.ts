@@ -71,9 +71,18 @@ export default async function globalSetup(): Promise<void> {
   process.env['NODE_ENV'] = 'test';
   process.env['DATABASE_URL'] = url;
   process.env['DIRECT_DATABASE_URL'] = url;
-  // PGlite serves a single connection; a real Postgres does not need the cap
-  // but is unharmed by it, and keeping one value keeps the two paths identical.
-  process.env['DATABASE_POOL_MAX'] = '1';
+  /*
+   * PGlite serves ONE connection, so the pool must be capped at one there.
+   *
+   * A real Postgres must NOT be, and that distinction became load-bearing with
+   * the intake pipeline: its concurrency tests assert that two conversions
+   * racing for the same team take different rotation slots, and a pool of one
+   * would serialise them at the pool instead of at the row lock. The test would
+   * still pass, while testing nothing — the worst kind of green.
+   *
+   * So the cap follows the backend rather than being one value for both.
+   */
+  process.env['DATABASE_POOL_MAX'] = useExternalDatabase ? '10' : '1';
   process.env['REDIS_URL'] ??= 'redis://127.0.0.1:6379'; // replaced by an in-memory double
   process.env['JWT_ACCESS_SECRET'] = 'test-access-secret-at-least-32-characters-long';
   process.env['JWT_REFRESH_SECRET'] = 'test-refresh-secret-at-least-32-characters-diff';

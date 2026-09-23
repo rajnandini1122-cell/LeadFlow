@@ -12,7 +12,7 @@ import {
   Query,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { PERMISSIONS, type Paginated } from '@leadflow/api-types';
+import { PERMISSIONS, type LeadSourceIntake, type Paginated } from '@leadflow/api-types';
 import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
@@ -29,6 +29,7 @@ import { LeadMutationsService } from './lead-mutations.service';
 import { LeadImportService } from './import/lead-import.service';
 import { ImportLeadsDto, PreviewImportDto } from './dto/import-leads.dto';
 import { FollowUpsService } from '../follow-ups/follow-ups.service';
+import { IntakeOperationsService } from '../integrations/intake-processing/intake-operations.service';
 import { CreateFollowUpDto } from '../follow-ups/dto/follow-ups.dto';
 import { Inject, forwardRef } from '@nestjs/common';
 
@@ -48,6 +49,7 @@ export class LeadsController {
     private readonly imports: LeadImportService,
     @Inject(forwardRef(() => FollowUpsService))
     private readonly followUps: FollowUpsService,
+    private readonly intakes: IntakeOperationsService,
   ) {}
 
   @Get()
@@ -137,6 +139,32 @@ export class LeadsController {
     @CurrentUser() principal: TenantPrincipal,
   ) {
     return this.leads.findOne(id, principal);
+  }
+
+  /**
+   * The website enquiry this lead came from, if it came from one.
+   *
+   * Gated on seeing the LEAD rather than on the intake operations permission,
+   * and deliberately: the salesperson who has to answer this customer needs
+   * their actual words, and they have no business in the operations queue. The
+   * service still applies the same visibility rules as lead detail, so this
+   * cannot be used to read the enquiry behind somebody else's lead.
+   *
+   * Null rather than 404 when the lead was created by hand — "no enquiry
+   * behind it" is an answer, not a missing resource.
+   */
+  @Get(':id/source-intake')
+  @RequirePermissions(PERMISSIONS.LEAD_VIEW_OWN)
+  @ApiOperation({ summary: 'The website enquiry behind this lead' })
+  async sourceIntake(
+    @Param('id', new ParseUUIDPipe({ version: '7' })) id: string,
+    @CurrentUser() principal: TenantPrincipal,
+  ): Promise<LeadSourceIntake | null> {
+    // Re-reads the lead through the same path lead detail uses, so visibility
+    // is enforced once rather than reimplemented here.
+    await this.leads.findOne(id, principal);
+
+    return this.intakes.forLead(id);
   }
 
   @Patch(':id')

@@ -214,6 +214,7 @@ model Organization {
   assignmentRules     AssignmentRule[]
   territories         Territory[]
   territoryCoverage   TerritoryCoverage[]
+  teamAssignmentCursors TeamAssignmentCursor[]
 
   @@index([status])
   @@map("organizations")
@@ -235,6 +236,18 @@ model OrganizationSettings {
   /// Tenant-defined lead sources. Empty falls back to a neutral built-in list,
   /// so a new organization is usable before anyone configures anything.
   leadSources String[] @default([]) @map("lead_sources")
+
+  /// How long after a website enquiry ARRIVES its first follow-up is due.
+  ///
+  /// The first-response SLA, and business policy rather than code policy —
+  /// which is why it lives here and not as a constant in a service. 60 minutes
+  /// is CRAVION's initial commitment; an organization selling differently will
+  /// want a different number without a deploy.
+  ///
+  /// Measured from receivedAt, never from when a worker got round to it: a
+  /// delayed sweep should produce a follow-up that is honestly already due,
+  /// not one whose clock was quietly restarted.
+  websiteIntakeFirstFollowUpMinutes Int @default(60) @map("website_intake_first_follow_up_minutes")
 
   /// Omnichannel capture, opt-in per tenant.
   ///
@@ -316,6 +329,8 @@ model User {
   auditLogs         AuditLog[]
   assignedLeads     Lead[]               @relation("LeadAssignee")
   leadsAssignedByMe Lead[]               @relation("LeadAssigner")
+  /// Website enquiries that automatic assignment routed to this person.
+  assignedIntakes   IntegrationIntake[]  @relation("IntakeAssignee")
   followUps         FollowUp[]           @relation("FollowUpAssignee")
   ownedAccounts     Account[]            @relation("AccountOwner")
   notifications     Notification[]
@@ -641,7 +656,15 @@ model Lead {
   activities    LeadActivity[]
   followUps     FollowUp[]
   conversations Conversation[]
+  /// The website enquiries this lead was created from. Normally one; a list
+  /// because the relation is defined by the intake side, not because a lead is
+  /// expected to have several.
+  sourceIntakes IntegrationIntake[] @relation("IntakeConversion")
 
+  /// Lets an intake point a COMPOSITE foreign key at the lead it became and
+  /// carry the tenant into the key. `id` is unique on its own; this adds
+  /// nothing to the leads table itself.
+  @@unique([id, organizationId])
   @@unique([organizationId, leadNumber])
   @@index([organizationId, status])
   @@index([organizationId, assignedToId, status])
@@ -1863,6 +1886,18 @@ enum IntakeStatus {
   /// Accepted at the boundary but could not be processed. failure_reason says
   /// why, in words safe to store.
   FAILED
+  /// Durable, valid, and waiting on CONFIGURATION rather than on a fix.
+  ///
+  /// Distinct from FAILED on purpose. FAILED means something went wrong on our
+  /// side and the intake may need investigating; BLOCKED means the enquiry is
+  /// perfectly good and the routing table has no answer for it yet — no rule
+  /// matches, or the team it matches has nobody able to take work. The first is
+  /// an incident, the second is an administrator's to-do, and a queue that
+  /// cannot tell them apart teaches operators to ignore both.
+  ///
+  /// Retryable by design: fix the rule or staff the team, and the same durable
+  /// row is evaluated again.
+  BLOCKED
 
   @@map("intake_status")
 }
@@ -1938,7 +1973,51 @@ model IntegrationIntake {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
+  // --- how it was routed, for the operations queue --------------------------
+  //
+  // Identifiers only. Everything a person would recognise — the name, the
+  // message, the phone number — is already on this row above; copying any of it
+  // down here would be a second place to redact.
+
+  /// When processing last ran, whatever the outcome. Distinguishes "never
+  /// looked at" from "tried and blocked".
+  lastProcessingAt DateTime? @map("last_processing_at") @db.Timestamptz(6)
+  /// How many times processing has run. A row climbing this without reaching
+  /// PROCESSED is the one an operator should look at.
+  processingAttempts Int @default(0) @map("processing_attempts")
+  /// A short machine-readable outcome, e.g. NO_MATCH or NO_ELIGIBLE_AGENTS.
+  /// Paired with failure_reason, which says the same thing in words.
+  processingCode String? @map("processing_code") @db.VarChar(40)
+
+  resolvedTerritoryId    String? @map("resolved_territory_id") @db.Uuid
+  matchedAssignmentRuleId String? @map("matched_assignment_rule_id") @db.Uuid
+  assignedTeamId         String? @map("assigned_team_id") @db.Uuid
+  /// The TeamMember row chosen by the rotation, and the person behind it.
+  /// Both, because the membership is what the rotation ordered and the user is
+  /// who a person recognises.
+  assignedMembershipId String? @map("assigned_membership_id") @db.Uuid
+  assignedUserId       String? @map("assigned_user_id") @db.Uuid
+
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  /// The lead this became.
+  ///
+  /// A real relation rather than a bare id, so a lead can show the enquiry it
+  /// came from — the original message, the page, the time it arrived — without
+  /// copying four thousand characters into the CRM tables. Composite, so
+  /// another tenant's lead has nothing to match.
+  createdLead Lead? @relation("IntakeConversion", fields: [createdLeadId, organizationId], references: [id, organizationId], onDelete: SetNull)
+
+  /// Routing provenance. All SetNull: retiring a rule or a territory must not
+  /// delete the record of how an enquiry was handled while it was live.
+  resolvedTerritory    Territory?      @relation(fields: [resolvedTerritoryId, organizationId], references: [id, organizationId], onDelete: SetNull)
+  matchedAssignmentRule AssignmentRule? @relation(fields: [matchedAssignmentRuleId, organizationId], references: [id, organizationId], onDelete: SetNull)
+  assignedTeam         Team?           @relation("IntakeAssignedTeam", fields: [assignedTeamId, organizationId], references: [id, organizationId], onDelete: SetNull)
+  /// Who the rotation chose. A plain key, not a composite one: a user is
+  /// global in this product — one person may belong to several organizations —
+  /// so there is no tenant to carry into the key. The MEMBERSHIP above is the
+  /// tenant-scoped half of the same fact.
+  assignedUser         User?           @relation("IntakeAssignee", fields: [assignedUserId], references: [id], onDelete: SetNull)
 
   /// Idempotency, enforced by the database rather than by a prior read.
   /// Check-then-insert loses under concurrency: two identical requests both
@@ -1946,6 +2025,10 @@ model IntegrationIntake {
   @@unique([organizationId, source, externalEventId])
   /// The review queue: what is waiting, oldest first.
   @@index([organizationId, status, receivedAt])
+  /// The claim query: unprocessed rows across every tenant, oldest first. NOT
+  /// organization-first, and deliberately — the sweep asks "what is waiting
+  /// anywhere" before it enters any tenant's context.
+  @@index([status, receivedAt])
   @@map("integration_intakes")
 }
 
@@ -2011,6 +2094,10 @@ model Team {
   manager         OrganizationUser? @relation("TeamManager", fields: [managerMembershipId, organizationId], references: [id, organizationId], onDelete: NoAction)
   members         TeamMember[]
   assignmentRules AssignmentRule[]
+  /// Where this team's rotation has got to. At most one row — see the model.
+  assignmentCursor TeamAssignmentCursor?
+  /// Enquiries routed to this team, kept as routing provenance.
+  intakes         IntegrationIntake[] @relation("IntakeAssignedTeam")
 
   /// Lets TeamMember point a composite key here and inherit the tenant.
   @@unique([id, organizationId])
@@ -2180,7 +2267,13 @@ model AssignmentRule {
   /// Composite for the same reason, Restrict for the same reason: retiring a
   /// territory must not silently delete the routing that referenced it.
   territory    Territory?   @relation(fields: [territoryId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  /// Enquiries this rule routed, kept as routing provenance.
+  intakes      IntegrationIntake[]
 
+  /// Lets an intake point a COMPOSITE foreign key at the rule that routed it
+  /// and carry the tenant into the key. `id` is unique on its own; this adds
+  /// nothing to the assignment_rules table itself.
+  @@unique([id, organizationId])
   /// The evaluation query: this tenant's active rules, in precedence order.
   @@index([organizationId, status, priority])
   /// "Which rules point at this team?" — asked before a team may be archived.
@@ -2244,6 +2337,8 @@ model Territory {
   organization    Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   coverage        TerritoryCoverage[]
   assignmentRules AssignmentRule[]
+  /// Enquiries that resolved here, kept as routing provenance.
+  intakes         IntegrationIntake[]
 
   /// Lets coverage and rules point a COMPOSITE key here and inherit the tenant.
   @@unique([id, organizationId])
@@ -2302,4 +2397,56 @@ model TerritoryCoverage {
   /// The territory detail screen: this territory's live selectors.
   @@index([organizationId, territoryId, removedAt])
   @@map("territory_coverage")
+}
+
+// =============================================================================
+// ROUND-ROBIN — where each team's rotation has got to
+// =============================================================================
+
+/// One rotation position per team.
+///
+/// The cursor belongs to the TEAM, not to an assignment rule. Several rules may
+/// route to the same team — website enquiries, a product rule, a territory rule
+/// — and they share one rotation, because a salesperson experiences the work
+/// arriving, not the rule that sent it. A cursor per rule would give somebody
+/// three turns for being in a popular team.
+///
+/// It is a MONOTONIC SEQUENCE over the CURRENT candidate list, not a pointer at
+/// a person. That is what makes it survive membership changes with no migration
+/// and no rebuild: the chosen agent is
+///
+///     eligible[sequence % eligible.length]
+///
+/// against the eligible members ordered canonically at the moment of assignment.
+/// Somebody joining, leaving, being suspended or having assignment switched off
+/// changes the list, and the next selection simply uses the new one.
+///
+/// The cost, stated plainly: exact lifetime equal counts are NOT promised across
+/// membership changes. Fair deterministic rotation among the people currently
+/// eligible is, and that is the property a sales team actually asks for.
+///
+/// Holding a user id here instead would be worse in the specific way that
+/// matters: the moment that person left the team the cursor would point at
+/// nobody, and the rotation would need repairing rather than simply continuing.
+model TeamAssignmentCursor {
+  id             String @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String @map("organization_id") @db.Uuid
+  teamId         String @unique @map("team_id") @db.Uuid
+
+  /// How many assignments this team has made. Never decreases, never negative
+  /// — a CHECK constraint in the migration says so — and advances exactly once
+  /// per COMMITTED conversion. A conversion that rolls back consumes no turn.
+  sequence BigInt @default(0)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  /// Composite, so another tenant's team has nothing to match. Cascade: the
+  /// rotation position of a deleted team is not history worth keeping, unlike
+  /// the assignments it produced, which live on the leads.
+  team         Team         @relation(fields: [teamId, organizationId], references: [id, organizationId], onDelete: Cascade)
+
+  @@unique([teamId, organizationId])
+  @@map("team_assignment_cursors")
 }

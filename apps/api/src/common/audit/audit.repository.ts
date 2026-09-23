@@ -5,7 +5,18 @@ import { TenantContextService } from '../tenancy/tenant-context.service';
 export interface AuditEntry {
   action: string;
   organizationId?: string | undefined;
-  actorUserId?: string | undefined;
+  /**
+   * Who did it. Omitted means "whoever the request is running as".
+   *
+   * EXPLICIT NULL means the SYSTEM did it, and is honoured as null rather than
+   * falling back to the ambient principal. Background work runs under a
+   * synthetic principal whose userId is the organization's own id — a
+   * deliberate choice in job-context.ts — and `actor_user_id` has a foreign key
+   * to `users`, so letting that value through would make the insert fail and,
+   * because audit failures are swallowed, silently lose the record of every
+   * automated action.
+   */
+  actorUserId?: string | null | undefined;
   entityType?: string | undefined;
   entityId?: string | undefined;
   before?: unknown;
@@ -40,7 +51,12 @@ export class AuditRepository {
         data: {
           action: entry.action,
           organizationId: entry.organizationId ?? this.tenantContext.organizationId ?? null,
-          actorUserId: entry.actorUserId ?? this.tenantContext.userId ?? null,
+          // `in` rather than `??`, so an explicit null is kept as null instead
+          // of falling through to the ambient principal. See AuditEntry.
+          actorUserId:
+            'actorUserId' in entry
+              ? entry.actorUserId ?? null
+              : this.tenantContext.userId ?? null,
           entityType: entry.entityType ?? null,
           entityId: entry.entityId ?? null,
           before: (entry.before ?? null) as never,

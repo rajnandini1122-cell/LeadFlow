@@ -4,6 +4,8 @@ import { Injectable } from '@nestjs/common';
 import { AppConfig } from '../common/config/config.module';
 import { RedisService } from '../common/redis/redis.service';
 import { NotificationsModule } from '../modules/notifications/notifications.module';
+import { IntegrationsModule } from '../modules/integrations/integrations.module';
+import { IntakeQueue } from './intake-queue';
 import { FollowUpSweepService } from './follow-up-sweep.service';
 import { FollowUpSweepRepository } from './follow-up-sweep.repository';
 import { deterministicJobId } from './job-context';
@@ -137,8 +139,11 @@ export class FollowUpQueue implements OnApplicationBootstrap, OnModuleDestroy {
   // NotificationsModule exports both the repository (to create) and the
   // dispatch service (to deliver). The worker uses the same tenant-scoped
   // paths an HTTP request would.
-  imports: [NotificationsModule],
-  providers: [FollowUpQueue, FollowUpSweepService, FollowUpSweepRepository],
+  // IntegrationsModule re-exports the intake processing module, which owns the
+  // conversion. The queue here decides only WHEN a sweep runs — what is waiting
+  // is a question only the intake table can answer.
+  imports: [NotificationsModule, IntegrationsModule],
+  providers: [FollowUpQueue, FollowUpSweepService, FollowUpSweepRepository, IntakeQueue],
   exports: [FollowUpSweepService],
 })
 export class QueuesModule {}

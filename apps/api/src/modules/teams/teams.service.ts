@@ -9,6 +9,7 @@ import {
   type UserStatus,
 } from '@leadflow/api-types';
 import { AppException } from '../../common/errors/app.exception';
+import type { PrismaTransaction } from '../../common/prisma/transaction';
 import { AuditRepository } from '../../common/audit/audit.repository';
 import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
 import { TeamsRepository } from './teams.repository';
@@ -377,13 +378,38 @@ export class TeamsService {
    * answer to all three, and distinguishing them here would leak whether a
    * team id exists somewhere else.
    */
-  async eligibleAgents(teamId: string): Promise<TeamMemberView[]> {
-    const team = await this.repository.findById(teamId);
+  async eligibleAgents(teamId: string, tx?: PrismaTransaction): Promise<TeamMemberView[]> {
+    const team = await this.repository.findById(teamId, tx);
     if (!team) return [];
 
     return team.members
       .map((member) => toMemberView(member, team.status))
       .filter((member) => member.eligibleForAssignment);
+  }
+
+  /**
+   * The same answer, ordered for a rotation.
+   *
+   * Canonical order is `joinedAt` then `id`: both immutable once written, so
+   * the sequence a team goes round in does not change when somebody is renamed
+   * or their row is updated. Database natural order would be none of those
+   * things — it changes as rows are updated and vacuumed, which would make the
+   * rotation quietly non-deterministic.
+   *
+   * `id` breaks the tie because two people can be added in the same
+   * millisecond, and uuidv7 is itself time-ordered, so the tie-break follows
+   * insertion order rather than being arbitrary.
+   */
+  async eligibleAgentsInRotationOrder(
+    teamId: string,
+    tx?: PrismaTransaction,
+  ): Promise<TeamMemberView[]> {
+    const agents = await this.eligibleAgents(teamId, tx);
+
+    return [...agents].sort((a, b) => {
+      const byJoined = a.joinedAt.localeCompare(b.joinedAt);
+      return byJoined !== 0 ? byJoined : a.id.localeCompare(b.id);
+    });
   }
 
   /** A team in another organization is indistinguishable from one that is gone. */

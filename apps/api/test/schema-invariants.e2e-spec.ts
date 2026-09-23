@@ -477,4 +477,118 @@ describe('Database invariants', () => {
       }
     });
   });
+
+  /**
+   * Round-robin state, and the enquiry queue that feeds it.
+   *
+   * The rotation is `sequence % candidates.length`, so a negative sequence
+   * would index outside the array rather than wrapping — in PostgreSQL a
+   * negative left operand yields a negative remainder. And two cursor rows for
+   * one team would be two rotations, with row order deciding which answered.
+   */
+  describe('team assignment cursors', () => {
+    const insertTeam = async (organizationId: string, name: string): Promise<string> =>
+      withClient(async (client) => {
+        const result = await client.query(
+          `insert into teams (organization_id, name, name_key, updated_at)
+           values ($1, $2, $3, now()) returning id`,
+          [organizationId, name, name.toLowerCase()],
+        );
+        return result.rows[0].id as string;
+      });
+
+    const insertCursor = (organizationId: string, teamId: string, sequence: number) =>
+      attempt(
+        `insert into team_assignment_cursors (organization_id, team_id, sequence, updated_at)
+         values ($1, $2, $3, now())`,
+        [organizationId, teamId, sequence],
+      );
+
+    it('refuses a second cursor for one team', async () => {
+      const organizationId = await createOrg(`cursor-${Date.now()}`);
+      const teamId = await insertTeam(organizationId, 'Rotating');
+
+      expect(await insertCursor(organizationId, teamId, 0)).toBe('OK');
+      expect(await insertCursor(organizationId, teamId, 0)).toBe(
+        'team_assignment_cursors_team_id_key',
+      );
+    });
+
+    it('refuses a negative sequence', async () => {
+      const organizationId = await createOrg(`cursor-neg-${Date.now()}`);
+      const teamId = await insertTeam(organizationId, 'Backwards');
+
+      expect(await insertCursor(organizationId, teamId, -1)).toBe(
+        'team_assignment_cursors_sequence_chk',
+      );
+    });
+
+    it('refuses a cursor whose tenant disagrees with its team', async () => {
+      const a = await createOrg(`cursor-a-${Date.now()}`);
+      const b = await createOrg(`cursor-b-${Date.now()}`);
+      const theirs = await insertTeam(b, 'Theirs');
+
+      // The composite foreign key carries the tenant into the key, so one
+      // organization cannot create a rotation over another's team.
+      expect(await insertCursor(a, theirs, 0)).toBe(
+        'team_assignment_cursors_team_id_organization_id_fkey',
+      );
+    });
+
+    it('refuses a negative processing attempt count', async () => {
+      const organizationId = await createOrg(`intake-neg-${Date.now()}`);
+
+      const result = await attempt(
+        `insert into integration_intakes
+           (organization_id, source, external_event_id, event_type, payload_hash,
+            processing_attempts, updated_at)
+         values ($1, 'WEBSITE', $2, 'ENQUIRY', $3, -1, now())`,
+        [organizationId, `evt-${Date.now()}`, 'c'.repeat(64)],
+      );
+
+      expect(result).toBe('integration_intakes_processing_attempts_chk');
+    });
+
+    it('refuses a first-response SLA outside a practical range', async () => {
+      const organizationId = await createOrg(`sla-${Date.now()}`);
+
+      // Zero would mean "already overdue the instant it arrives", and the
+      // upper bound stops a typo turning a one-hour promise into a fortnight.
+      const zero = await attempt(
+        `insert into organization_settings
+           (organization_id, website_intake_first_follow_up_minutes, updated_at)
+         values ($1, 0, now())`,
+        [organizationId],
+      );
+      expect(zero).toBe('organization_settings_first_follow_up_minutes_chk');
+
+      const tooLong = await attempt(
+        `insert into organization_settings
+           (organization_id, website_intake_first_follow_up_minutes, updated_at)
+         values ($1, 99999, now())`,
+        [organizationId],
+      );
+      expect(tooLong).toBe('organization_settings_first_follow_up_minutes_chk');
+    });
+
+    it('keeps the objects the pipeline depends on', async () => {
+      const indexes = await withClient(async (client) => {
+        const result = await client.query(
+          `select indexname from pg_indexes where schemaname='public' and tablename in ('team_assignment_cursors','integration_intakes','leads')`,
+        );
+        return (result.rows as { indexname: string }[]).map((row) => row.indexname);
+      });
+
+      expect(indexes).toEqual(
+        expect.arrayContaining([
+          'team_assignment_cursors_team_id_key',
+          'team_assignment_cursors_team_id_organization_id_key',
+          // The claim query: what is waiting ANYWHERE, oldest first.
+          'integration_intakes_status_received_idx',
+          // Lets an intake point a composite key at the lead it became.
+          'leads_id_organization_id_key',
+        ]),
+      );
+    });
+  });
 });

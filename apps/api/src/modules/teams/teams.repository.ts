@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { PrismaService } from '../../common/prisma/prisma.service';
+import { PrismaService, type PrismaTransaction } from '../../common/prisma/prisma.service';
 import { TenantContextService } from '../../common/tenancy/tenant-context.service';
 import type { TeamStatus } from '../../generated/prisma/enums';
 
@@ -35,8 +35,21 @@ export class TeamsRepository {
     });
   }
 
-  async findById(id: string) {
-    return this.prisma.client.team.findFirst({ where: { id }, include: TEAM_INCLUDE });
+  /**
+   * One team with its live members.
+   *
+   * Takes an optional transaction so the assignment pipeline can read the
+   * candidate list INSIDE the transaction that assigns from it. Reading it
+   * outside would mean choosing from a snapshot: somebody suspended a
+   * millisecond later would still get the lead, and the check would have been
+   * decoration.
+   *
+   * The eligibility RULE itself is not duplicated anywhere — this returns the
+   * rows, and `isEligibleForAssignment` decides, exactly as it does for the
+   * HTTP path.
+   */
+  async findById(id: string, tx?: PrismaTransaction) {
+    return (tx ?? this.prisma.client).team.findFirst({ where: { id }, include: TEAM_INCLUDE });
   }
 
   /** Null when the unique index refused it — another ACTIVE team has the name. */

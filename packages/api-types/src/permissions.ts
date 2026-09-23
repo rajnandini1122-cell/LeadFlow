@@ -91,6 +91,20 @@ export const PERMISSIONS = {
   TERRITORY_VIEW: 'territory.view',
   TERRITORY_MANAGE: 'territory.manage',
 
+  /**
+   * The website intake queue — enquiries as they arrived, and what routing did
+   * with them.
+   *
+   * An operations surface rather than a CRM one, which is why it is its own
+   * noun. A row here may be an enquiry that became nobody's lead because no
+   * rule matched it, so it is visible to the people who maintain the routing
+   * table rather than to everyone with a pipeline. Managing means retrying a
+   * blocked enquiry after fixing the configuration — never rewriting what the
+   * customer sent.
+   */
+  INTEGRATION_INTAKE_VIEW: 'integration_intake.view',
+  INTEGRATION_INTAKE_MANAGE: 'integration_intake.manage',
+
   DASHBOARD_VIEW_OWN: 'dashboard.view.own',
   DASHBOARD_VIEW_TEAM: 'dashboard.view.team',
   DASHBOARD_VIEW_ALL: 'dashboard.view.all',
@@ -142,6 +156,9 @@ const MANAGER_PERMISSIONS: Permission[] = [
   PERMISSIONS.ASSIGNMENT_RULE_VIEW,
   // Sees the map their routing is written against, for the same reason.
   PERMISSIONS.TERRITORY_VIEW,
+  // Sees why enquiries did or did not reach their team. Retrying one is
+  // administration, because it depends on having fixed the configuration.
+  PERMISSIONS.INTEGRATION_INTAKE_VIEW,
   PERMISSIONS.DASHBOARD_VIEW_TEAM,
   PERMISSIONS.REPORT_VIEW,
 ];
@@ -161,6 +178,7 @@ const ADMIN_PERMISSIONS: Permission[] = [
   PERMISSIONS.TEAM_MANAGE,
   PERMISSIONS.ASSIGNMENT_RULE_MANAGE,
   PERMISSIONS.TERRITORY_MANAGE,
+  PERMISSIONS.INTEGRATION_INTAKE_MANAGE,
   PERMISSIONS.ORG_UPDATE,
   PERMISSIONS.DASHBOARD_VIEW_ALL,
 ];

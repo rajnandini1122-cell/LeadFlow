@@ -524,3 +524,117 @@ export interface TerritoryResolution {
   /** Which configured selector answered. Names the type, not the customer. */
   matchedCoverage: { id: string; type: TerritoryCoverageType; label: string } | null;
 }
+
+// --- website intake operations -----------------------------------------------
+
+export const INTAKE_STATUSES = [
+  'RECEIVED',
+  'DUPLICATE',
+  'PROCESSED',
+  'FAILED',
+  'BLOCKED',
+] as const;
+export type IntakeStatus = (typeof INTAKE_STATUSES)[number];
+
+/**
+ * An enquiry in the operations queue.
+ *
+ * Deliberately NOT a raw dump of the submission. What an operator needs is
+ * whether it became work and, if not, why — so the routing outcome is as
+ * prominent as the customer's name, and the signature, the payload hash and
+ * the event id are absent entirely.
+ */
+export interface IntegrationIntakeListItem {
+  id: string;
+  source: string;
+  status: IntakeStatus;
+  receivedAt: string;
+  name: string | null;
+  company: string | null;
+  /** What the customer asked for, in their words. Never a catalogue product. */
+  productInterest: string | null;
+  sourcePage: string | null;
+  /** A short code such as NO_MATCH. Null once converted. */
+  processingCode: string | null;
+  /** The same thing in words, for a person. */
+  failureReason: string | null;
+  processingAttempts: number;
+  lastProcessingAt: string | null;
+  processedAt: string | null;
+  territory: { id: string; name: string } | null;
+  rule: { id: string; name: string } | null;
+  team: { id: string; name: string } | null;
+  assignedTo: { id: string; fullName: string } | null;
+  createdLead: { id: string; leadNumber: string } | null;
+}
+
+export interface IntegrationIntakeDetail extends IntegrationIntakeListItem {
+  email: string | null;
+  phone: string | null;
+  country: string | null;
+  /** The customer's own words. The reason this row is the source record. */
+  message: string | null;
+  /**
+   * What this enquiry looked like a duplicate of.
+   *
+   * Ids only, and no relation behind them: these are a SIGNAL that a person
+   * reviews, not a link the system acted on. Nothing existing was changed on
+   * the strength of them.
+   */
+  matchedContactId: string | null;
+  matchedLeadId: string | null;
+}
+
+export interface IntegrationIntakeQuery {
+  status?: IntakeStatus;
+  source?: string;
+  /** ISO instants. Inclusive lower bound, exclusive upper. */
+  receivedFrom?: string;
+  receivedTo?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface IntegrationIntakePage {
+  items: IntegrationIntakeListItem[];
+  total: number;
+}
+
+/**
+ * What a retry did.
+ *
+ * Retry means "evaluate the SAME durable enquiry again", never "replace what
+ * the customer sent" — there is no payload in the request, and none accepted.
+ */
+export const INTAKE_RETRY_RESULTS = [
+  'CONVERTED',
+  'BLOCKED',
+  'DUPLICATE',
+  'ALREADY_PROCESSED',
+  'SKIPPED',
+] as const;
+export type IntakeRetryResult = (typeof INTAKE_RETRY_RESULTS)[number];
+
+export interface IntakeRetryResponse {
+  result: IntakeRetryResult;
+  intake: IntegrationIntakeDetail;
+}
+
+/**
+ * The website enquiry a lead came from.
+ *
+ * Read through the intake relation rather than copied onto the lead: the
+ * message can be four thousand characters, and one source record is easier to
+ * redact than a copy in every table that found it interesting.
+ */
+export interface LeadSourceIntake {
+  id: string;
+  source: string;
+  receivedAt: string;
+  sourcePage: string | null;
+  message: string | null;
+  productInterest: string | null;
+  territory: { id: string; name: string } | null;
+  rule: { id: string; name: string } | null;
+  team: { id: string; name: string } | null;
+}

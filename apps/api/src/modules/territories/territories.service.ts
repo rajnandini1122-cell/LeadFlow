@@ -9,6 +9,7 @@ import {
   type TerritoryStatus,
 } from '@leadflow/api-types';
 import { AppException } from '../../common/errors/app.exception';
+import type { PrismaTransaction } from '../../common/prisma/transaction';
 import { AuditRepository } from '../../common/audit/audit.repository';
 import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
 import { TerritoriesRepository } from './territories.repository';
@@ -336,13 +337,16 @@ export class TerritoriesService {
    * is no tie to break and no AMBIGUOUS outcome to report — the ambiguity was
    * made impossible by a unique index rather than resolved by a preference.
    */
-  async resolve(facts: LocationFacts): Promise<TerritoryResolution> {
+  async resolve(facts: LocationFacts, tx?: PrismaTransaction): Promise<TerritoryResolution> {
     const location = normalizeLocation(facts);
     const candidates = coverageCandidates(location);
 
     if (candidates.length === 0) return NO_TERRITORY;
 
-    const rows = await this.repository.findLiveCoverage(candidates.map((c) => c.key));
+    const rows = await this.repository.findLiveCoverage(
+      candidates.map((c) => c.key),
+      tx,
+    );
     if (rows.length === 0) return NO_TERRITORY;
 
     const byKey = new Map(rows.map((row) => [row.coverageKey, row]));

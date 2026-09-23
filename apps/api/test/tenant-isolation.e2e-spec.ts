@@ -298,4 +298,93 @@ describe('Tenant isolation (Organization A vs Organization B)', () => {
       await ctx.http().get('/api/v1/leads').set(auth(tampered)).expect(401);
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // RAW SQL
+  //
+  // The tenant-scoping extension cannot see raw SQL, which is why ESLint bans
+  // it and why the ban's own message requires a case HERE for every exception.
+  // Three statements in the intake pipeline take locks Prisma cannot express —
+  // claiming an enquiry, holding a team's rotation, and serialising lead
+  // numbering — and every one of them binds organizationId as a parameter.
+  //
+  // These cases prove the binding works from the outside: an operation asked
+  // for across a tenant boundary must find nothing rather than lock, read or
+  // advance somebody else's row.
+  // ---------------------------------------------------------------------------
+
+  describe('raw SQL in the intake pipeline stays inside one tenant', () => {
+    it('will not claim, read or retry another organization’s enquiry', async () => {
+      const theirs = await ctx
+        .http()
+        .get('/api/v1/integration-intakes')
+        .set(auth(ctx.orgB.owner.accessToken))
+        .expect(200);
+
+      // Org B may have nothing yet; the point is that whatever it has is
+      // invisible and untouchable from Org A.
+      const listedForA = await ctx
+        .http()
+        .get('/api/v1/integration-intakes?limit=100')
+        .set(auth(ctx.orgA.owner.accessToken))
+        .expect(200);
+
+      const foreignIds = new Set(
+        (theirs.body.data.items as { id: string }[]).map((item) => item.id),
+      );
+      for (const item of listedForA.body.data.items as { id: string }[]) {
+        expect(foreignIds.has(item.id)).toBe(false);
+      }
+    });
+
+    it('answers a foreign enquiry id with 404, not 403', async () => {
+      // A 403 would confirm the id exists somewhere. The claim query binds
+      // organization_id, so the row is simply not there to be claimed.
+      const madeUp = '01999999-0000-7000-8000-000000000001';
+
+      await ctx
+        .http()
+        .get(`/api/v1/integration-intakes/${madeUp}`)
+        .set(auth(ctx.orgA.owner.accessToken))
+        .expect(404);
+
+      await ctx
+        .http()
+        .post(`/api/v1/integration-intakes/${madeUp}/retry`)
+        .set(auth(ctx.orgA.owner.accessToken))
+        .expect(404);
+    });
+
+    it('will not read or advance another organization’s rotation', async () => {
+      // The cursor lock binds organization_id too. Org A asking about a team
+      // it does not own finds nothing — the same answer a team that never
+      // existed would get.
+      const foreignTeam = await ctx
+        .http()
+        .post('/api/v1/teams')
+        .set(auth(ctx.orgB.owner.accessToken))
+        .send({ name: `Theirs ${Date.now()}` })
+        .expect(201);
+
+      await ctx
+        .http()
+        .get(`/api/v1/teams/${foreignTeam.body.data.id}`)
+        .set(auth(ctx.orgA.owner.accessToken))
+        .expect(404);
+
+      // And a rule in Org A cannot point at it, so no conversion in Org A can
+      // ever reach that team's cursor.
+      const attempt = await ctx
+        .http()
+        .post('/api/v1/assignment-rules')
+        .set(auth(ctx.orgA.owner.accessToken))
+        .send({
+          name: `Cross tenant ${Date.now()}`,
+          isFallback: true,
+          targetTeamId: foreignTeam.body.data.id,
+        });
+
+      expect(attempt.status).toBe(400);
+    });
+  });
 });

@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { PrismaService } from '../../common/prisma/prisma.service';
+import { PrismaService, type PrismaTransaction } from '../../common/prisma/prisma.service';
 import { TenantContextService } from '../../common/tenancy/tenant-context.service';
 import { AppConfig } from '../../common/config/config.module';
 
@@ -100,11 +100,21 @@ export class ContactsRepository {
     companyName?: string | undefined;
     city?: string | undefined;
     notes?: string | undefined;
-    actorId: string;
+    /**
+     * Null for a SYSTEM write.
+     *
+     * `created_by` and `updated_by` are nullable with no foreign key, so null
+     * is the honest value for a contact the automated intake pipeline created:
+     * nobody typed it. Borrowing a real user's id would attribute the record
+     * to somebody who was not there.
+     */
+    actorId: string | null;
+    /** Supplied when this write is part of a caller's larger transaction. */
+    tx?: PrismaTransaction | undefined;
   }) {
     const organizationId = this.tenantContext.requireOrganizationId();
 
-    return this.prisma.client.contact.create({
+    return (input.tx ?? this.prisma.client).contact.create({
       data: {
         organizationId,
         firstName: input.firstName ?? null,
@@ -143,10 +153,20 @@ export class ContactsRepository {
     email?: string | undefined;
     companyName?: string | undefined;
     city?: string | undefined;
-    actorId: string;
+    actorId: string | null;
+    /**
+     * Supplied when this is part of a caller's transaction.
+     *
+     * The automated path needs the lookup AND the insert inside the same
+     * transaction as the lead: a contact created for a lead that then rolls
+     * back would be a person in the CRM with no enquiry behind them.
+     */
+    tx?: PrismaTransaction | undefined;
   }) {
+    const db = input.tx ?? this.prisma.client;
+
     if (input.mobile !== null) {
-      const existing = await this.prisma.client.contact.findFirst({
+      const existing = await db.contact.findFirst({
         where: { mobile: input.mobile, ...this.live },
       });
 
