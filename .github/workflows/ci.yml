@@ -278,12 +278,21 @@ jobs:
           run 'test -d apps/api/prisma/migrations'
 
           echo "--- production dependencies only ---"
-          # `npm ci --omit=dev` really omitted them. A runtime image carrying
-          # TypeScript, Jest or the Prisma CLI is a runtime image that can
-          # rewrite its own schema.
-          run 'test ! -d node_modules/typescript'
+          # `npm ci --omit=dev` really omitted them.
+          #
+          # Named individually rather than by a blanket rule, because "no
+          # development tooling" is not true and asserting it fails honestly:
+          # in Prisma 7 the production dependency @prisma/client pulls in
+          # `prisma` AND `typescript` transitively, so both are legitimately
+          # in the image. These four are dev-only with no production path to
+          # them, which is what makes them evidence.
           run 'test ! -d node_modules/jest'
-          run 'test ! -d node_modules/prisma'
+          run 'test ! -d node_modules/vite'
+          run 'test ! -d node_modules/eslint'
+          # tsx specifically: db:bootstrap and db:seed run through it, and its
+          # absence is why those are documented as running from a one-off
+          # context rather than from this image.
+          run 'test ! -d node_modules/tsx'
 
           echo "--- nothing from a developer machine ---"
           # A .env is gitignored and so cannot reach a clean checkout, but the
