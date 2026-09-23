@@ -170,13 +170,19 @@ export class LeadsRepository {
   /**
    * Next lead number for this organization, e.g. LD-00020.
    *
-   * Read-then-write is inherently racy: two concurrent creates can compute the
-   * same number. The unique index on (organization_id, lead_number) turns that
-   * race into a constraint violation the service retries, rather than two leads
-   * silently sharing a number.
+   * Read-then-write, and therefore only correct while the caller holds the
+   * tenant's numbering lock — which is why the only caller is
+   * `createWithActivity`, immediately after taking it. Called without that
+   * lock, two concurrent creates read the same maximum and choose the same
+   * number.
+   *
+   * Kept separate from the insert rather than inlined so the allocation rule
+   * — read the highest, add one, pad to five digits — is stated once and can
+   * be read on its own. The lock is what makes it safe; this is what makes
+   * it correct.
    */
-  async nextLeadNumber(tx?: PrismaTransaction): Promise<string> {
-    const latest = await (tx ?? this.prisma.client).lead.findFirst({
+  private async nextLeadNumber(tx: PrismaTransaction): Promise<string> {
+    const latest = await tx.lead.findFirst({
       orderBy: { leadNumber: 'desc' },
       select: { leadNumber: true },
     });
@@ -189,24 +195,33 @@ export class LeadsRepository {
    * Serialises lead numbering for ONE tenant, for the life of a transaction.
    *
    * Read-then-write numbering is racy by construction: two transactions read
-   * LD-00019 and both try to write LD-00020. The interactive path survives that
-   * by catching the unique violation and retrying, which is fine when a person
-   * is waiting for a response — but inside the automated pipeline's single
-   * transaction a raised constraint aborts EVERYTHING, including the lead, the
-   * follow-up and the intake status, and the retry would have nothing left to
-   * retry into.
+   * LD-00019 and both try to write LD-00020. This lock is what makes the
+   * allocation below it correct, and it is taken by `createWithActivity` on
+   * EVERY path — a person creating a lead by hand, a CSV import, and the
+   * automated website-intake pipeline.
    *
-   * An advisory lock is the narrow fix: it serialises numbering without locking
-   * any row, so concurrent conversions queue for the number and nothing else.
-   * It is transaction-scoped, so it is released on commit or rollback with
-   * nothing to clean up, and it is keyed per organization, so one tenant's
-   * traffic never waits on another's.
+   * That universality is the point. While only the automated path took it, a
+   * manual create running at the same moment could still pick the same
+   * number: the automated transaction then lost the unique violation and
+   * rolled back, leaving its enquiry retryable but its work wasted. A lock
+   * only one participant respects is not a lock.
+   *
+   * An advisory lock rather than a row lock: it serialises numbering without
+   * locking any lead, so concurrent creates queue for the number and nothing
+   * else. It is transaction-scoped, so it is released on commit or rollback
+   * with nothing to clean up — a failed create cannot strand the allocator —
+   * and keyed per organization, so one tenant's traffic never waits on
+   * another's.
+   *
+   * Re-entrant within a transaction: taking it twice is counted, not
+   * deadlocked, and both are released at the end. A caller that already
+   * holds it for its own reasons therefore costs nothing.
    *
    * The two-argument form takes a namespace and a key. The namespace is a
    * constant private to lead numbering, so this can never collide with an
    * advisory lock taken elsewhere for something else.
    */
-  async lockLeadNumbering(tx: PrismaTransaction): Promise<void> {
+  private async lockLeadNumbering(tx: PrismaTransaction): Promise<void> {
     const organizationId = this.tenantContext.requireOrganizationId();
 
     /*
@@ -235,9 +250,16 @@ export class LeadsRepository {
    * lead whose follow-up was rolled back is exactly the "lead left behind"
    * this product exists to prevent. Opening a nested transaction here would
    * defeat that, so when one is passed it is used as-is.
+   *
+   * THE LEAD NUMBER IS ALLOCATED HERE, not by the caller.
+   *
+   * This is the single place every lead is written — by hand, by CSV import,
+   * or by the intake pipeline — so it is the only place the tenant's
+   * numbering lock can be taken on behalf of all of them. A caller that
+   * computed its own number would be allocating outside the lock however
+   * carefully it was written, which is exactly the race this closes.
    */
   async createWithActivity(input: {
-    leadNumber: string;
     firstName: string;
     lastName?: string | undefined;
     /**
@@ -285,10 +307,21 @@ export class LeadsRepository {
     const organizationId = this.tenantContext.requireOrganizationId();
 
     const run = async (tx: PrismaTransaction) => {
+      /*
+       * Lock, then allocate, then insert — all on the SAME transaction.
+       *
+       * Every read here takes `tx`. A pooled read inside a transaction that
+       * already holds a connection deadlocks the moment the pool is empty,
+       * which on a single-connection database is immediately; this project
+       * has hit that more than once.
+       */
+      await this.lockLeadNumbering(tx);
+      const leadNumber = await this.nextLeadNumber(tx);
+
       const created = await tx.lead.create({
         data: {
           organizationId,
-          leadNumber: input.leadNumber,
+          leadNumber,
           firstName: input.firstName,
           lastName: input.lastName ?? null,
           mobile: input.mobile,

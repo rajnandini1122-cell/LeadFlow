@@ -344,12 +344,18 @@ export class LeadsService {
   }
 
   /**
-   * Retries on a lead-number collision.
+   * Creates the lead, and turns a mobile collision into a refusal.
    *
-   * `nextLeadNumber` reads the current maximum, so two simultaneous creates can
-   * pick the same value. The unique index rejects the loser; recomputing and
-   * retrying is simpler and cheaper than a per-tenant sequence table, and the
-   * window is microseconds wide.
+   * The lead NUMBER can no longer collide: `createWithActivity` allocates it
+   * under the tenant's numbering lock, on every path. What remains is the
+   * duplicate-mobile index, which is a business rule rather than a race —
+   * somebody created this customer between our check and our insert — and
+   * the caller needs to be told, not retried.
+   *
+   * The retry is kept, narrowed to the case it can still help: a P2002 that
+   * is NOT the mobile. That should now be unreachable, and the log line says
+   * so, because a constraint firing where none can is worth seeing rather
+   * than silently absorbing.
    */
   private async createWithRetry(
     dto: CreateLeadDto,
@@ -360,11 +366,8 @@ export class LeadsService {
     contactId: string,
     attempt = 1,
   ): Promise<string> {
-    const leadNumber = await this.repository.nextLeadNumber();
-
     try {
       return await this.repository.createWithActivity({
-        leadNumber,
         firstName: dto.firstName,
         lastName: dto.lastName,
         mobile,
@@ -404,16 +407,18 @@ export class LeadsService {
          * only runs on the rare collision path.
          */
         /*
-         * Only a mobile can collide on the duplicate index. Without one, a
-         * P2002 must be the lead-number race, which the retry below handles.
+         * Only a mobile can collide on the duplicate index, and since
+         * numbering moved under the tenant lock it is the only collision
+         * left. Established by re-querying rather than by parsing the error,
+         * which cannot go stale the way a parsed shape can.
          */
         const collidingLead =
           mobile === null ? null : await this.repository.findActiveByMobile(mobile);
 
         /*
          * An acknowledged duplicate is excluded from the index, so a P2002
-         * here cannot have come from the mobile. Treating it as one would turn
-         * a lead-number collision into a spurious DUPLICATE_LEAD.
+         * here cannot have come from the mobile. Treating it as one would
+         * report a duplicate to somebody who explicitly allowed one.
          */
         if (collidingLead && dto.allowDuplicate !== true) {
           // Another request created this customer between our duplicate check
@@ -425,8 +430,17 @@ export class LeadsService {
           );
         }
 
+        /*
+         * Unexpected now, and logged as such.
+         *
+         * Lead numbers are allocated under the tenant's advisory lock and
+         * cannot collide; an acknowledged duplicate is outside the mobile
+         * index. A P2002 reaching here means a constraint fired that this
+         * path does not know about, which is worth a loud line rather than a
+         * quiet retry.
+         */
         this.logger.warn(
-          `Lead number ${leadNumber} collided, retrying (attempt ${attempt})`,
+          `Unexpected unique violation creating a lead, retrying (attempt ${attempt})`,
         );
         return this.createWithRetry(
           dto,

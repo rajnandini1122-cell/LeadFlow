@@ -383,12 +383,6 @@ export class IntakeProcessingService {
       tx,
     });
 
-    // Serialised per tenant for the length of this transaction, so read-then-
-    // write numbering cannot raise a unique violation that would abort the
-    // whole conversion. See LeadsRepository.lockLeadNumbering.
-    await this.leads.lockLeadNumbering(tx);
-    const leadNumber = await this.leads.nextLeadNumber(tx);
-
     const scheduledAt = new Date(intake.receivedAt.getTime() + policy.slaMinutes * 60_000);
 
     /*
@@ -403,8 +397,14 @@ export class IntakeProcessingService {
     let leadId: string;
 
     try {
+      /*
+       * The lead number is allocated by createWithActivity, under the
+       * tenant's numbering lock, inside THIS transaction. It used to be taken
+       * here — but a lock only the automated path respected could not stop a
+       * manual create picking the same number, which is what made this
+       * conversion lose the race and roll back.
+       */
       leadId = await this.leads.createWithActivity({
-        leadNumber,
         firstName: person.firstName,
         lastName: person.lastName,
         mobile,
