@@ -27,8 +27,22 @@ export class TeamsRepository {
     return this.tenantContext.requireOrganizationId();
   }
 
-  async list(includeArchived: boolean) {
-    return this.prisma.client.team.findMany({
+  /**
+   * The client to write through.
+   *
+   * A caller's transaction when there is one, the pooled client otherwise. Two
+   * reasons a caller supplies one, and the second is not a preference: a
+   * control-plane mutation must commit together with the ledger row proving it
+   * happened, and a query that reached the pool for its own connection while
+   * the caller's transaction held one would deadlock as soon as the pool ran
+   * out — which on a single-connection database is immediately.
+   */
+  private db(tx?: PrismaTransaction) {
+    return tx ?? this.prisma.client;
+  }
+
+  async list(includeArchived: boolean, tx?: PrismaTransaction) {
+    return this.db(tx).team.findMany({
       where: includeArchived ? {} : { status: 'ACTIVE' },
       include: TEAM_INCLUDE,
       orderBy: [{ status: 'asc' }, { name: 'asc' }],
@@ -49,17 +63,20 @@ export class TeamsRepository {
    * HTTP path.
    */
   async findById(id: string, tx?: PrismaTransaction) {
-    return (tx ?? this.prisma.client).team.findFirst({ where: { id }, include: TEAM_INCLUDE });
+    return this.db(tx).team.findFirst({ where: { id }, include: TEAM_INCLUDE });
   }
 
   /** Null when the unique index refused it — another ACTIVE team has the name. */
-  async create(input: {
-    name: string;
-    nameKey: string;
-    description?: string | undefined;
-    managerMembershipId?: string | undefined;
-  }) {
-    const created = await this.prisma.client.team.createManyAndReturn({
+  async create(
+    input: {
+      name: string;
+      nameKey: string;
+      description?: string | undefined;
+      managerMembershipId?: string | undefined;
+    },
+    tx?: PrismaTransaction,
+  ) {
+    const created = await this.db(tx).team.createManyAndReturn({
       skipDuplicates: true,
       data: [
         {
@@ -93,9 +110,10 @@ export class TeamsRepository {
       managerMembershipId?: string | null;
       status?: TeamStatus;
     },
+    tx?: PrismaTransaction,
   ): Promise<'UPDATED' | 'NAME_TAKEN'> {
     try {
-      await this.prisma.client.team.updateMany({ where: { id }, data: changes });
+      await this.db(tx).team.updateMany({ where: { id }, data: changes });
       return 'UPDATED';
     } catch (error) {
       if ((error as { code?: string }).code === 'P2002') return 'NAME_TAKEN';
@@ -104,8 +122,8 @@ export class TeamsRepository {
   }
 
   /** The membership behind a user id, in THIS organization. */
-  async findMembership(userId: string) {
-    return this.prisma.client.organizationUser.findFirst({
+  async findMembership(userId: string, tx?: PrismaTransaction) {
+    return this.db(tx).organizationUser.findFirst({
       where: { userId },
       select: {
         id: true,
@@ -117,8 +135,8 @@ export class TeamsRepository {
   }
 
   /** Every member of this organization, with the teams they belong to. */
-  async listMembershipsWithTeams() {
-    return this.prisma.client.organizationUser.findMany({
+  async listMembershipsWithTeams(tx?: PrismaTransaction) {
+    return this.db(tx).organizationUser.findMany({
       where: { status: { not: 'REMOVED' } },
       select: {
         id: true,
@@ -145,16 +163,19 @@ export class TeamsRepository {
    * — and this is one scoped count, not a second opinion about what a rule
    * means.
    */
-  async activeRulesTargeting(teamId: string): Promise<{ id: string; name: string }[]> {
-    return this.prisma.client.assignmentRule.findMany({
+  async activeRulesTargeting(
+    teamId: string,
+    tx?: PrismaTransaction,
+  ): Promise<{ id: string; name: string }[]> {
+    return this.db(tx).assignmentRule.findMany({
       where: { targetTeamId: teamId, status: 'ACTIVE' },
       select: { id: true, name: true },
       orderBy: { priority: 'asc' },
     });
   }
 
-  async findActiveMember(teamId: string, membershipId: string) {
-    return this.prisma.client.teamMember.findFirst({
+  async findActiveMember(teamId: string, membershipId: string, tx?: PrismaTransaction) {
+    return this.db(tx).teamMember.findFirst({
       where: { teamId, organizationMembershipId: membershipId, removedAt: null },
       select: { id: true },
     });
@@ -169,8 +190,8 @@ export class TeamsRepository {
    * both write, and the second row would be a person counted twice in every
    * future assignment calculation.
    */
-  async addMember(input: { teamId: string; membershipId: string }) {
-    const created = await this.prisma.client.teamMember.createManyAndReturn({
+  async addMember(input: { teamId: string; membershipId: string }, tx?: PrismaTransaction) {
+    const created = await this.db(tx).teamMember.createManyAndReturn({
       skipDuplicates: true,
       data: [
         {
@@ -186,8 +207,12 @@ export class TeamsRepository {
   }
 
   /** Soft removal: history is kept, and re-adding later is a new row. */
-  async removeMember(teamId: string, teamMemberId: string): Promise<number> {
-    const result = await this.prisma.client.teamMember.updateMany({
+  async removeMember(
+    teamId: string,
+    teamMemberId: string,
+    tx?: PrismaTransaction,
+  ): Promise<number> {
+    const result = await this.db(tx).teamMember.updateMany({
       where: { id: teamMemberId, teamId, removedAt: null },
       data: { removedAt: new Date() },
     });
@@ -199,8 +224,9 @@ export class TeamsRepository {
     teamId: string,
     teamMemberId: string,
     assignmentEnabled: boolean,
+    tx?: PrismaTransaction,
   ): Promise<number> {
-    const result = await this.prisma.client.teamMember.updateMany({
+    const result = await this.db(tx).teamMember.updateMany({
       where: { id: teamMemberId, teamId, removedAt: null },
       data: { assignmentEnabled },
     });
@@ -208,8 +234,8 @@ export class TeamsRepository {
     return result.count;
   }
 
-  async findMemberRow(teamId: string, teamMemberId: string) {
-    return this.prisma.client.teamMember.findFirst({
+  async findMemberRow(teamId: string, teamMemberId: string, tx?: PrismaTransaction) {
+    return this.db(tx).teamMember.findFirst({
       where: { id: teamMemberId, teamId },
       select: { id: true, organizationMembershipId: true, removedAt: true },
     });
@@ -223,12 +249,15 @@ export class TeamsRepository {
    * in it — a contradiction that reads as data corruption to whoever finds it,
    * and one that a failed second statement would leave behind permanently.
    */
-  async removeMemberAndClearManager(input: {
-    teamId: string;
-    teamMemberId: string;
-    membershipId: string;
-  }): Promise<number> {
-    return this.prisma.client.$transaction(async (tx) => {
+  async removeMemberAndClearManager(
+    input: {
+      teamId: string;
+      teamMemberId: string;
+      membershipId: string;
+    },
+    outer?: PrismaTransaction,
+  ): Promise<number> {
+    const run = async (tx: PrismaTransaction) => {
       const removed = await tx.teamMember.updateMany({
         where: { id: input.teamMemberId, teamId: input.teamId, removedAt: null },
         data: { removedAt: new Date() },
@@ -242,7 +271,11 @@ export class TeamsRepository {
       }
 
       return removed.count;
-    });
+    };
+
+    // A caller's transaction is used as-is rather than nested inside a second
+    // one: the atomicity this method needs is already theirs to provide.
+    return outer ? run(outer) : this.prisma.client.$transaction(run);
   }
 }
 

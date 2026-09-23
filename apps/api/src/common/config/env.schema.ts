@@ -402,6 +402,44 @@ export const envSchema = z
       .optional(),
 
     /**
+     * The Central Admin control plane.
+     *
+     * A SEPARATE TRUST DOMAIN from the website intake above, with its own
+     * secret, and that separation is the point rather than tidiness: the
+     * website's secret is held by a public-facing site, while this one can
+     * change a tenant's routing table. Sharing one key would mean a compromise
+     * of the first became a compromise of the second, and there would be no way
+     * to rotate one without breaking the other.
+     *
+     * Default OFF. A deployment that has not deliberately turned this on does
+     * not have the route at all.
+     */
+    ADMIN_CONTROL_ENABLED: z
+      .string()
+      .default('false')
+      .transform((value) => value === 'true'),
+    /**
+     * The one tenant this control plane administers.
+     *
+     * Configuration, never the request. A signature proves who is calling; it
+     * says nothing about which organization they may touch, so a body naming an
+     * organization is ignored and a caller cannot reach a second tenant by
+     * asking.
+     */
+    ADMIN_CONTROL_ORGANIZATION_ID: z.string().uuid().optional(),
+    /**
+     * The shared secret the Central Admin backend signs with.
+     *
+     * 32 characters minimum, like every other key here: a short HMAC key is a
+     * guessable HMAC key. Never logged, never returned by any endpoint, and
+     * never compared with `===`.
+     */
+    ADMIN_CONTROL_SIGNING_SECRET: z
+      .string()
+      .min(32, 'must be at least 32 characters')
+      .optional(),
+
+    /**
      * How many reverse proxies sit in front of this process.
      *
      * Express derives `req.ip` — which is what every rate limit and audit row
@@ -503,6 +541,55 @@ export const envSchema = z
           });
         }
       }
+    }
+
+    /*
+     * The control plane is all-or-nothing too, and for a sharper reason than
+     * the website integration: an enabled control surface with no configured
+     * tenant would be a route that authenticates callers and then has nowhere
+     * to apply what they asked for, and an enabled one with no secret would
+     * authenticate nobody while still existing. Either is worse than not
+     * starting.
+     */
+    if (env.ADMIN_CONTROL_ENABLED) {
+      for (const [name, value] of Object.entries({
+        ADMIN_CONTROL_ORGANIZATION_ID: env.ADMIN_CONTROL_ORGANIZATION_ID,
+        ADMIN_CONTROL_SIGNING_SECRET: env.ADMIN_CONTROL_SIGNING_SECRET,
+      })) {
+        if (!value) {
+          ctx.addIssue({
+            code: 'custom',
+            path: [name],
+            message:
+              'is required when ADMIN_CONTROL_ENABLED=true — an enabled ' +
+              'control plane with nothing configured is a live endpoint that ' +
+              'refuses every request',
+          });
+        }
+      }
+    }
+
+    /*
+     * The two integrations must not share a secret.
+     *
+     * They are different trust domains held by different systems: the website
+     * key lives in a public-facing site, this one can rewrite a tenant's
+     * routing. Reusing one key would make a compromise of the first a
+     * compromise of the second, and would make either impossible to rotate
+     * alone. Caught at boot rather than in a review.
+     */
+    if (
+      env.ADMIN_CONTROL_SIGNING_SECRET &&
+      env.ADMIN_CONTROL_SIGNING_SECRET === env.WEBSITE_INTAKE_SIGNING_SECRET
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['ADMIN_CONTROL_SIGNING_SECRET'],
+        message:
+          'must differ from WEBSITE_INTAKE_SIGNING_SECRET — they are separate ' +
+          'trust domains, and one key would make a compromise of either a ' +
+          'compromise of both',
+      });
     }
 
     /*

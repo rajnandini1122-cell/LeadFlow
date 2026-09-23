@@ -11,7 +11,7 @@ import {
 import { AppException } from '../../common/errors/app.exception';
 import type { PrismaTransaction } from '../../common/prisma/transaction';
 import { AuditRepository } from '../../common/audit/audit.repository';
-import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
+import { auditAttribution, type MutationActor } from '../../common/audit/mutation-actor';
 import { TeamsRepository } from './teams.repository';
 import { isAssignableRole, isEligibleForAssignment } from './agent-eligibility';
 import { teamNameKey } from './team-name';
@@ -61,13 +61,13 @@ export class TeamsService {
     private readonly audit: AuditRepository,
   ) {}
 
-  async list(includeArchived: boolean): Promise<TeamListItem[]> {
-    const teams = await this.repository.list(includeArchived);
+  async list(includeArchived: boolean, tx?: PrismaTransaction): Promise<TeamListItem[]> {
+    const teams = await this.repository.list(includeArchived, tx);
     return teams.map((team) => toListItem(team));
   }
 
-  async findOne(id: string): Promise<TeamDetail> {
-    const team = await this.requireTeam(id);
+  async findOne(id: string, tx?: PrismaTransaction): Promise<TeamDetail> {
+    const team = await this.requireTeam(id, tx);
 
     return {
       ...toListItem(team),
@@ -75,15 +75,24 @@ export class TeamsService {
     };
   }
 
-  async create(dto: CreateTeamDto, principal: TenantPrincipal): Promise<TeamDetail> {
-    const manager = dto.managerUserId ? await this.requireManager(dto.managerUserId) : undefined;
+  async create(
+    dto: CreateTeamDto,
+    actor: MutationActor,
+    tx?: PrismaTransaction,
+  ): Promise<TeamDetail> {
+    const manager = dto.managerUserId
+      ? await this.requireManager(dto.managerUserId, tx)
+      : undefined;
 
-    const created = await this.repository.create({
-      name: dto.name,
-      nameKey: teamNameKey(dto.name),
-      description: dto.description,
-      ...(manager ? { managerMembershipId: manager.id } : {}),
-    });
+    const created = await this.repository.create(
+      {
+        name: dto.name,
+        nameKey: teamNameKey(dto.name),
+        description: dto.description,
+        ...(manager ? { managerMembershipId: manager.id } : {}),
+      },
+      tx,
+    );
 
     if (!created) {
       // The partial unique index refused it. Archived teams are excluded from
@@ -98,8 +107,9 @@ export class TeamsService {
       action: TEAM_AUDIT.CREATED,
       entityType: 'Team',
       entityId: created.id,
-      actorUserId: principal.userId,
+      ...auditAttribution(actor),
       after: { name: dto.name, managerMembershipId: manager?.id ?? null },
+      tx,
     });
 
     /*
@@ -109,13 +119,20 @@ export class TeamsService {
      * a bug to everyone who sees it and makes "who is in this team" two
      * different answers depending on which column you read.
      */
-    if (manager) await this.repository.addMember({ teamId: created.id, membershipId: manager.id });
+    if (manager) {
+      await this.repository.addMember({ teamId: created.id, membershipId: manager.id }, tx);
+    }
 
-    return this.findOne(created.id);
+    return this.findOne(created.id, tx);
   }
 
-  async update(id: string, dto: UpdateTeamDto, principal: TenantPrincipal): Promise<TeamDetail> {
-    const team = await this.requireTeam(id);
+  async update(
+    id: string,
+    dto: UpdateTeamDto,
+    actor: MutationActor,
+    tx?: PrismaTransaction,
+  ): Promise<TeamDetail> {
+    const team = await this.requireTeam(id, tx);
 
     const changes: Parameters<TeamsRepository['update']>[1] = {};
     const auditBefore: Record<string, unknown> = {};
@@ -134,7 +151,7 @@ export class TeamsService {
 
     let managerChanged = false;
     if (dto.managerUserId !== undefined) {
-      const manager = dto.managerUserId ? await this.requireManager(dto.managerUserId) : null;
+      const manager = dto.managerUserId ? await this.requireManager(dto.managerUserId, tx) : null;
       const nextManagerId = manager?.id ?? null;
 
       if (nextManagerId !== team.managerMembershipId) {
@@ -145,7 +162,7 @@ export class TeamsService {
       }
 
       // Same reasoning as create: the manager belongs in the team.
-      if (manager) await this.repository.addMember({ teamId: id, membershipId: manager.id });
+      if (manager) await this.repository.addMember({ teamId: id, membershipId: manager.id }, tx);
     }
 
     let statusChanged: 'ARCHIVED' | 'REACTIVATED' | undefined;
@@ -164,7 +181,7 @@ export class TeamsService {
        * archives or retargets them first.
        */
       if (dto.status === 'ARCHIVED') {
-        const routing = await this.repository.activeRulesTargeting(id);
+        const routing = await this.repository.activeRulesTargeting(id, tx);
 
         if (routing.length > 0) {
           throw AppException.validation(
@@ -187,7 +204,7 @@ export class TeamsService {
     }
 
     if (Object.keys(changes).length > 0) {
-      const result = await this.repository.update(id, changes);
+      const result = await this.repository.update(id, changes, tx);
 
       if (result === 'NAME_TAKEN') {
         throw AppException.conflict(
@@ -204,9 +221,10 @@ export class TeamsService {
           : TEAM_AUDIT.UPDATED,
         entityType: 'Team',
         entityId: id,
-        actorUserId: principal.userId,
+        ...auditAttribution(actor),
         before: auditBefore,
         after: auditAfter,
+        tx,
       });
 
       if (managerChanged) {
@@ -214,24 +232,26 @@ export class TeamsService {
           action: TEAM_AUDIT.MANAGER_CHANGED,
           entityType: 'Team',
           entityId: id,
-          actorUserId: principal.userId,
+          ...auditAttribution(actor),
           // Membership ids, not names or addresses: an audit row answers "who
           // changed what" and does not need to carry a colleague's details.
           before: { managerMembershipId: team.managerMembershipId },
           after: { managerMembershipId: changes.managerMembershipId ?? null },
+          tx,
         });
       }
     }
 
-    return this.findOne(id);
+    return this.findOne(id, tx);
   }
 
   async addMember(
     teamId: string,
     dto: AddTeamMemberDto,
-    principal: TenantPrincipal,
+    actor: MutationActor,
+    tx?: PrismaTransaction,
   ): Promise<TeamDetail> {
-    const team = await this.requireTeam(teamId);
+    const team = await this.requireTeam(teamId, tx);
 
     if (team.status !== 'ACTIVE') {
       // An archived team is history. Adding to it would create a membership
@@ -241,8 +261,8 @@ export class TeamsService {
       });
     }
 
-    const membership = await this.requireActiveMembership(dto.userId);
-    const added = await this.repository.addMember({ teamId, membershipId: membership.id });
+    const membership = await this.requireActiveMembership(dto.userId, 'userId', tx);
+    const added = await this.repository.addMember({ teamId, membershipId: membership.id }, tx);
 
     /*
      * Null means the unique index refused the row: they are already in this
@@ -255,21 +275,23 @@ export class TeamsService {
         action: TEAM_AUDIT.MEMBER_ADDED,
         entityType: 'Team',
         entityId: teamId,
-        actorUserId: principal.userId,
+        ...auditAttribution(actor),
         after: { membershipId: membership.id, teamMemberId: added.id },
+        tx,
       });
     }
 
-    return this.findOne(teamId);
+    return this.findOne(teamId, tx);
   }
 
   async removeMember(
     teamId: string,
     teamMemberId: string,
-    principal: TenantPrincipal,
+    actor: MutationActor,
+    tx?: PrismaTransaction,
   ): Promise<TeamDetail> {
-    const team = await this.requireTeam(teamId);
-    const row = await this.repository.findMemberRow(teamId, teamMemberId);
+    const team = await this.requireTeam(teamId, tx);
+    const row = await this.repository.findMemberRow(teamId, teamMemberId, tx);
 
     // A row from another tenant, another team, or nothing at all: one answer.
     if (!row) throw this.memberNotFound();
@@ -287,39 +309,45 @@ export class TeamsService {
        * atomic version the simpler correct one.
        */
       const removed = isManager
-        ? await this.repository.removeMemberAndClearManager({
-            teamId,
-            teamMemberId,
-            membershipId: row.organizationMembershipId,
-          })
-        : await this.repository.removeMember(teamId, teamMemberId);
+        ? await this.repository.removeMemberAndClearManager(
+            {
+              teamId,
+              teamMemberId,
+              membershipId: row.organizationMembershipId,
+            },
+            tx,
+          )
+        : await this.repository.removeMember(teamId, teamMemberId, tx);
 
       if (removed > 0) {
         await this.audit.record({
           action: TEAM_AUDIT.MEMBER_REMOVED,
           entityType: 'Team',
           entityId: teamId,
-          actorUserId: principal.userId,
+          ...auditAttribution(actor),
           before: { membershipId: row.organizationMembershipId, wasManager: isManager },
+          tx,
         });
       }
     }
 
-    return this.findOne(teamId);
+    return this.findOne(teamId, tx);
   }
 
   async setMemberAssignment(
     teamId: string,
     teamMemberId: string,
     dto: UpdateTeamMemberDto,
-    principal: TenantPrincipal,
+    actor: MutationActor,
+    tx?: PrismaTransaction,
   ): Promise<TeamDetail> {
-    await this.requireTeam(teamId);
+    await this.requireTeam(teamId, tx);
 
     const updated = await this.repository.setAssignmentEnabled(
       teamId,
       teamMemberId,
       dto.assignmentEnabled,
+      tx,
     );
 
     if (updated === 0) throw this.memberNotFound();
@@ -328,11 +356,12 @@ export class TeamsService {
       action: TEAM_AUDIT.MEMBER_ASSIGNMENT_CHANGED,
       entityType: 'Team',
       entityId: teamId,
-      actorUserId: principal.userId,
+      ...auditAttribution(actor),
       after: { teamMemberId, assignmentEnabled: dto.assignmentEnabled },
+      tx,
     });
 
-    return this.findOne(teamId);
+    return this.findOne(teamId, tx);
   }
 
   /**
@@ -342,8 +371,8 @@ export class TeamsService {
    * read: nothing here is a password hash, a session, a token or an
    * integration credential.
    */
-  async agents(): Promise<TeamAgentCandidate[]> {
-    const memberships = await this.repository.listMembershipsWithTeams();
+  async agents(tx?: PrismaTransaction): Promise<TeamAgentCandidate[]> {
+    const memberships = await this.repository.listMembershipsWithTeams(tx);
 
     return memberships.map((membership) => ({
       membershipId: membership.id,
@@ -413,8 +442,8 @@ export class TeamsService {
   }
 
   /** A team in another organization is indistinguishable from one that is gone. */
-  private async requireTeam(id: string) {
-    const team = await this.repository.findById(id);
+  private async requireTeam(id: string, tx?: PrismaTransaction) {
+    const team = await this.repository.findById(id, tx);
     if (!team) throw AppException.notFound(ERROR_CODES.NOT_FOUND, 'Team not found.');
 
     return team;
@@ -428,12 +457,16 @@ export class TeamsService {
    * the status check is a real rule: naming somebody suspended or removed as
    * manager would create a team nobody is responsible for.
    */
-  private async requireManager(userId: string) {
-    return this.requireActiveMembership(userId, 'managerUserId');
+  private async requireManager(userId: string, tx?: PrismaTransaction) {
+    return this.requireActiveMembership(userId, 'managerUserId', tx);
   }
 
-  private async requireActiveMembership(userId: string, field = 'userId') {
-    const membership = await this.repository.findMembership(userId);
+  private async requireActiveMembership(
+    userId: string,
+    field = 'userId',
+    tx?: PrismaTransaction,
+  ) {
+    const membership = await this.repository.findMembership(userId, tx);
 
     if (!membership || membership.status === 'REMOVED') {
       // 400, not 404: the caller supplied a value that is not usable. It says

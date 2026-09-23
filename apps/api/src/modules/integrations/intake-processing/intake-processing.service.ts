@@ -182,6 +182,29 @@ export class IntakeProcessingService {
     });
   }
 
+  /**
+   * The same conversion, inside a transaction the caller already owns.
+   *
+   * For a control-plane retry, where the command ledger row and the mutation
+   * it records must commit together. Two differences from `process`, both
+   * consequences of not owning the transaction:
+   *
+   *   the audit row is written by the caller's transaction too, so it rolls
+   *   back with everything else;
+   *
+   *   a LateDuplicate is NOT recovered here. Recovering it needs a fresh
+   *   transaction, and this one is aborted. It propagates instead, the
+   *   caller's unit of work rolls back, and the retry that follows finds the
+   *   now-committed lead through the ordinary pre-check. Freeing the request
+   *   id is the correct outcome: nothing happened.
+   */
+  async processWithin(tx: PrismaTransaction, intakeId: string): Promise<ProcessOutcome> {
+    const outcome = await this.convert(tx, intakeId);
+    await this.recordAudit(intakeId, outcome, tx);
+
+    return outcome;
+  }
+
   // ---------------------------------------------------------------------------
 
   private async convert(tx: PrismaTransaction, intakeId: string): Promise<ProcessOutcome> {
@@ -514,7 +537,11 @@ export class IntakeProcessingService {
    * find and redact. The actor is null because the system did this; borrowing
    * a real user's id would attribute it to somebody who was asleep.
    */
-  private async recordAudit(intakeId: string, outcome: ProcessOutcome): Promise<void> {
+  private async recordAudit(
+    intakeId: string,
+    outcome: ProcessOutcome,
+    tx?: PrismaTransaction,
+  ): Promise<void> {
     try {
       if (outcome.result === 'CONVERTED') {
         await this.audit.record({
@@ -523,6 +550,7 @@ export class IntakeProcessingService {
           entityId: intakeId,
           actorUserId: null,
           after: { leadId: outcome.leadId, teamId: outcome.teamId },
+          tx,
         });
 
         await this.audit.record({
@@ -531,6 +559,7 @@ export class IntakeProcessingService {
           entityId: outcome.leadId,
           actorUserId: null,
           after: { intakeId, teamId: outcome.teamId, assignedToId: outcome.userId },
+          tx,
         });
         return;
       }
@@ -542,6 +571,7 @@ export class IntakeProcessingService {
           entityId: intakeId,
           actorUserId: null,
           after: { code: outcome.code },
+          tx,
         });
         return;
       }
@@ -553,6 +583,7 @@ export class IntakeProcessingService {
           entityId: intakeId,
           actorUserId: null,
           after: { code: outcome.code },
+          tx,
         });
       }
     } catch (error) {

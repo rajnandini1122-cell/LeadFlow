@@ -19,6 +19,7 @@ import {
 } from '@leadflow/api-types';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
+import { userActor } from '../../common/audit/mutation-actor';
 import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
 import { TerritoriesService } from './territories.service';
 import {
@@ -86,7 +87,7 @@ export class TerritoriesController {
     @Body() dto: CreateTerritoryDto,
     @CurrentUser() principal: TenantPrincipal,
   ): Promise<TerritoryDetail> {
-    return this.territories.create(dto, principal);
+    return this.territories.create(dto, userActor(principal));
   }
 
   @Patch(':id')
@@ -102,7 +103,7 @@ export class TerritoriesController {
     @Body() dto: UpdateTerritoryDto,
     @CurrentUser() principal: TenantPrincipal,
   ): Promise<TerritoryDetail> {
-    return this.territories.update(id, dto, principal);
+    return this.territories.update(id, dto, userActor(principal));
   }
 
   @Post(':id/coverage')
@@ -118,7 +119,7 @@ export class TerritoriesController {
     @Body() dto: AddTerritoryCoverageDto,
     @CurrentUser() principal: TenantPrincipal,
   ): Promise<TerritoryDetail> {
-    return this.territories.addCoverage(id, dto, principal);
+    return this.territories.addCoverage(id, dto, userActor(principal));
   }
 
   /**
@@ -144,6 +145,6 @@ export class TerritoriesController {
     @Param('coverageId', ParseUUIDPipe) coverageId: string,
     @CurrentUser() principal: TenantPrincipal,
   ): Promise<TerritoryDetail> {
-    return this.territories.removeCoverage(id, coverageId, principal);
+    return this.territories.removeCoverage(id, coverageId, userActor(principal));
   }
 }

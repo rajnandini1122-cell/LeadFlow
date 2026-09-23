@@ -9,7 +9,7 @@ import {
 import { AppException } from '../../common/errors/app.exception';
 import { AuditRepository } from '../../common/audit/audit.repository';
 import type { PrismaTransaction } from '../../common/prisma/transaction';
-import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
+import { auditAttribution, type MutationActor } from '../../common/audit/mutation-actor';
 import { TeamsService } from '../teams/teams.service';
 import { TerritoriesService } from '../territories/territories.service';
 import { AssignmentRulesRepository, type RuleConflict } from './assignment-rules.repository';
@@ -61,18 +61,19 @@ export class AssignmentRulesService {
     private readonly audit: AuditRepository,
   ) {}
 
-  async list(): Promise<AssignmentRuleView[]> {
-    const rules = await this.repository.list();
+  async list(tx?: PrismaTransaction): Promise<AssignmentRuleView[]> {
+    const rules = await this.repository.list(undefined, tx);
     return rules.map(toView);
   }
 
-  async findOne(id: string): Promise<AssignmentRuleView> {
-    return toView(await this.requireRule(id));
+  async findOne(id: string, tx?: PrismaTransaction): Promise<AssignmentRuleView> {
+    return toView(await this.requireRule(id, tx));
   }
 
   async create(
     dto: CreateAssignmentRuleDto,
-    principal: TenantPrincipal,
+    actor: MutationActor,
+    tx?: PrismaTransaction,
   ): Promise<AssignmentRuleView> {
     const isFallback = dto.isFallback === true;
     const sourceKey = normalizeSourceKey(dto.source);
@@ -102,11 +103,11 @@ export class AssignmentRulesService {
       });
     }
 
-    const team = await this.requireActiveTeam(dto.targetTeamId);
-    if (dto.productId) await this.requireProduct(dto.productId);
-    if (dto.territoryId) await this.requireActiveTerritory(dto.territoryId);
+    const team = await this.requireActiveTeam(dto.targetTeamId, tx);
+    if (dto.productId) await this.requireProduct(dto.productId, tx);
+    if (dto.territoryId) await this.requireActiveTerritory(dto.territoryId, tx);
 
-    const priority = dto.priority ?? (await this.repository.nextPriority());
+    const priority = dto.priority ?? (await this.repository.nextPriority(tx));
 
     const created = await this.repository.create({
       name: dto.name,
@@ -120,7 +121,7 @@ export class AssignmentRulesService {
       isFallback,
       criteriaKey: criteriaKey(criteria),
       targetTeamId: team.id,
-    });
+    }, tx);
 
     if ('conflict' in created) throw conflictError(created);
 
@@ -128,7 +129,7 @@ export class AssignmentRulesService {
       action: RULE_AUDIT.CREATED,
       entityType: 'AssignmentRule',
       entityId: created.id,
-      actorUserId: principal.userId,
+      ...auditAttribution(actor),
       after: {
         name: dto.name,
         priority,
@@ -138,17 +139,19 @@ export class AssignmentRulesService {
         territoryId: dto.territoryId ?? null,
         targetTeamId: team.id,
       },
+      tx,
     });
 
-    return this.findOne(created.id);
+    return this.findOne(created.id, tx);
   }
 
   async update(
     id: string,
     dto: UpdateAssignmentRuleDto,
-    principal: TenantPrincipal,
+    actor: MutationActor,
+    tx?: PrismaTransaction,
   ): Promise<AssignmentRuleView> {
-    const rule = await this.requireRule(id);
+    const rule = await this.requireRule(id, tx);
 
     if (rule.status === 'ARCHIVED' && dto.status !== undefined) {
       /*
@@ -216,9 +219,9 @@ export class AssignmentRulesService {
         });
       }
 
-      if (productId && productId !== rule.productId) await this.requireProduct(productId);
+      if (productId && productId !== rule.productId) await this.requireProduct(productId, tx);
       if (nextTerritoryId && nextTerritoryId !== rule.territoryId) {
-        await this.requireActiveTerritory(nextTerritoryId);
+        await this.requireActiveTerritory(nextTerritoryId, tx);
       }
 
       if (dto.source !== undefined) {
@@ -243,7 +246,7 @@ export class AssignmentRulesService {
 
     let targetChanged = false;
     if (dto.targetTeamId !== undefined && dto.targetTeamId !== rule.targetTeamId) {
-      const team = await this.requireActiveTeam(dto.targetTeamId);
+      const team = await this.requireActiveTeam(dto.targetTeamId, tx);
       changes.targetTeamId = team.id;
       targetChanged = true;
       before['targetTeamId'] = rule.targetTeamId;
@@ -255,11 +258,11 @@ export class AssignmentRulesService {
       // Activating points live routing at this team, so the team must be able
       // to receive work now — not merely when the rule was written.
       if (dto.status === 'ACTIVE') {
-        await this.requireActiveTeam(changes.targetTeamId ?? rule.targetTeamId);
+        await this.requireActiveTeam(changes.targetTeamId ?? rule.targetTeamId, tx);
         // And the territory, for the same reason: a rule brought back to
         // life pointing at a retired scope would match nothing and read as
         // broken rather than as retired.
-        if (nextTerritoryId) await this.requireActiveTerritory(nextTerritoryId);
+        if (nextTerritoryId) await this.requireActiveTerritory(nextTerritoryId, tx);
       }
 
       changes.status = dto.status;
@@ -282,12 +285,15 @@ export class AssignmentRulesService {
       const willBeActive = (changes.status ?? rule.status) === 'ACTIVE';
 
       if (willBeActive) {
-        const clash = await this.repository.conflictingRule({
-          excludeId: id,
-          criteriaKey: changes.criteriaKey ?? (changes.status ? rule.criteriaKey : undefined),
-          priority: changes.priority ?? (changes.status ? rule.priority : undefined),
-          isFallback: rule.isFallback,
-        });
+        const clash = await this.repository.conflictingRule(
+          {
+            excludeId: id,
+            criteriaKey: changes.criteriaKey ?? (changes.status ? rule.criteriaKey : undefined),
+            priority: changes.priority ?? (changes.status ? rule.priority : undefined),
+            isFallback: rule.isFallback,
+          },
+          tx,
+        );
 
         if (clash) throw conflictError(clash);
       }
@@ -300,6 +306,7 @@ export class AssignmentRulesService {
         // paused rule may keep pointing at an archived territory: that is a
         // record of where work used to go, not a live decision.
         willBeActive && nextTerritoryId ? nextTerritoryId : undefined,
+        tx,
       );
       if (result !== 'UPDATED') throw conflictError(result);
 
@@ -307,9 +314,10 @@ export class AssignmentRulesService {
         action: statusAction ? RULE_AUDIT[statusAction] : RULE_AUDIT.UPDATED,
         entityType: 'AssignmentRule',
         entityId: id,
-        actorUserId: principal.userId,
+        ...auditAttribution(actor),
         before,
         after,
+        tx,
       });
 
       if (targetChanged) {
@@ -317,14 +325,15 @@ export class AssignmentRulesService {
           action: RULE_AUDIT.TARGET_CHANGED,
           entityType: 'AssignmentRule',
           entityId: id,
-          actorUserId: principal.userId,
+          ...auditAttribution(actor),
           before: { targetTeamId: rule.targetTeamId },
           after: { targetTeamId: changes.targetTeamId },
+          tx,
         });
       }
     }
 
-    return this.findOne(id);
+    return this.findOne(id, tx);
   }
 
   /**
@@ -453,8 +462,8 @@ export class AssignmentRulesService {
   }
 
   /** A rule in another organization is indistinguishable from one that is gone. */
-  private async requireRule(id: string) {
-    const rule = await this.repository.findById(id);
+  private async requireRule(id: string, tx?: PrismaTransaction) {
+    const rule = await this.repository.findById(id, tx);
     if (!rule) throw AppException.notFound(ERROR_CODES.NOT_FOUND, 'Assignment rule not found.');
 
     return rule;
@@ -468,8 +477,8 @@ export class AssignmentRulesService {
    * would refuse the row even if it were. The message says the id is not
    * usable and never that it belongs to somebody else.
    */
-  private async requireActiveTeam(teamId: string) {
-    const team = await this.repository.findTeam(teamId);
+  private async requireActiveTeam(teamId: string, tx?: PrismaTransaction) {
+    const team = await this.repository.findTeam(teamId, tx);
 
     if (!team) {
       throw AppException.validation('That team could not be found.', {
@@ -486,8 +495,8 @@ export class AssignmentRulesService {
     return team;
   }
 
-  private async requireProduct(productId: string) {
-    const product = await this.repository.findProduct(productId);
+  private async requireProduct(productId: string, tx?: PrismaTransaction) {
+    const product = await this.repository.findProduct(productId, tx);
 
     if (!product) {
       throw AppException.validation('That product could not be found.', {
@@ -511,8 +520,8 @@ export class AssignmentRulesService {
    * lock the write takes inside its transaction, because between this read and
    * that write another administrator may archive the territory.
    */
-  private async requireActiveTerritory(territoryId: string) {
-    const territory = await this.repository.findTerritory(territoryId);
+  private async requireActiveTerritory(territoryId: string, tx?: PrismaTransaction) {
+    const territory = await this.repository.findTerritory(territoryId, tx);
 
     if (!territory) {
       throw AppException.validation('That territory could not be found.', {

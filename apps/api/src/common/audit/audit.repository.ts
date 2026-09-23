@@ -1,6 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import type { PrismaTransaction } from '../prisma/transaction';
 import { TenantContextService } from '../tenancy/tenant-context.service';
+import { auditAttribution, type MutationActor } from './mutation-actor';
 
 export interface AuditEntry {
   action: string;
@@ -17,12 +19,32 @@ export interface AuditEntry {
    * automated action.
    */
   actorUserId?: string | null | undefined;
+  /**
+   * Who did it, when they are not a LeadFlow user.
+   *
+   * An opaque reference supplied by a trusted external system — the control
+   * plane passes the administrator's own identity from the system that
+   * authenticated them. Deliberately separate from `actorUserId`, which has a
+   * foreign key to `users`: an external reference put there would either fail
+   * the key or, worse, collide with somebody real.
+   */
+  externalActorRef?: string | null | undefined;
   entityType?: string | undefined;
   entityId?: string | undefined;
   before?: unknown;
   after?: unknown;
   ipAddress?: string | undefined;
   userAgent?: string | undefined;
+  /**
+   * Supplied when this audit row belongs to a caller's transaction.
+   *
+   * Two reasons, and the second is not optional. A control-plane mutation and
+   * the record of it should commit together or not at all. And a write that
+   * reached the pool for its own connection while the caller's transaction held
+   * one would deadlock the moment the pool was exhausted — which on a
+   * single-connection database is immediately.
+   */
+  tx?: PrismaTransaction | undefined;
 }
 
 /**
@@ -45,9 +67,14 @@ export class AuditRepository {
     private readonly tenantContext: TenantContextService,
   ) {}
 
+  /** Records an entry attributed to whoever the actor says. */
+  async recordFor(actor: MutationActor, entry: Omit<AuditEntry, 'actorUserId' | 'externalActorRef'>): Promise<void> {
+    return this.record({ ...entry, ...auditAttribution(actor) });
+  }
+
   async record(entry: AuditEntry): Promise<void> {
     try {
-      await this.prisma.client.auditLog.create({
+      await (entry.tx ?? this.prisma.client).auditLog.create({
         data: {
           action: entry.action,
           organizationId: entry.organizationId ?? this.tenantContext.organizationId ?? null,
@@ -57,6 +84,7 @@ export class AuditRepository {
             'actorUserId' in entry
               ? entry.actorUserId ?? null
               : this.tenantContext.userId ?? null,
+          externalActorRef: entry.externalActorRef ?? null,
           entityType: entry.entityType ?? null,
           entityId: entry.entityId ?? null,
           before: (entry.before ?? null) as never,

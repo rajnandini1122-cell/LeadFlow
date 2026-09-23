@@ -215,6 +215,7 @@ model Organization {
   territories         Territory[]
   territoryCoverage   TerritoryCoverage[]
   teamAssignmentCursors TeamAssignmentCursor[]
+  adminControlCommands  AdminControlCommand[]
 
   @@index([status])
   @@map("organizations")
@@ -518,6 +519,18 @@ model AuditLog {
   id             String  @id @default(dbgenerated("uuidv7()")) @db.Uuid
   organizationId String? @map("organization_id") @db.Uuid
   actorUserId    String? @map("actor_user_id") @db.Uuid
+  /// Who did it, when they are not a LeadFlow user.
+  ///
+  /// An opaque reference supplied by a trusted external system — the control
+  /// plane passes the administrator's identity from whatever authenticated
+  /// them. It never goes in actor_user_id, which has a foreign key to `users`:
+  /// an external reference there would either fail the key or collide with
+  /// somebody real.
+  ///
+  /// Both columns null means the SYSTEM did it. The pair is already
+  /// unambiguous, which is why there is no third column naming the kind — that
+  /// would be a second source of truth able to disagree with the first.
+  externalActorRef String? @map("external_actor_ref") @db.VarChar(200)
 
   action     String  @db.VarChar(80)
   entityType String? @map("entity_type") @db.VarChar(60)
@@ -538,6 +551,9 @@ model AuditLog {
   @@index([organizationId, createdAt(sort: Desc)])
   @@index([actorUserId, createdAt(sort: Desc)])
   @@index([action, createdAt(sort: Desc)])
+  /// "What has this administrator changed?" — the external equivalent of the
+  /// actor index above. Mostly NULL, so the btree stays small.
+  @@index([externalActorRef, createdAt(sort: Desc)])
   @@map("audit_logs")
 }
 
@@ -2449,4 +2465,67 @@ model TeamAssignmentCursor {
 
   @@unique([teamId, organizationId])
   @@map("team_assignment_cursors")
+}
+
+// =============================================================================
+// CENTRAL ADMIN CONTROL PLANE — what an external administrator asked for
+// =============================================================================
+
+/// One command accepted from the Central Admin control plane.
+///
+/// The IDEMPOTENCY LEDGER, and the audit of who asked. A row exists if and only
+/// if the mutation it describes committed, because the row is written INSIDE the
+/// same transaction as that mutation. That is the whole design, and it rules out
+/// both of the orderings that look reasonable and are not:
+///
+///   claim, commit, then mutate — a crash in between permanently records a
+///   request that never ran, and the retry is refused as a duplicate of nothing;
+///
+///   mutate, commit, then claim — a crash in between loses the record, and the
+///   retry performs the mutation a second time.
+///
+/// Neither can happen here. A failure rolls the row back with the mutation, so
+/// the request id is free to be tried again; a success records both together.
+///
+/// It holds identifiers and a digest, never a payload. The customer data an
+/// administrator's command touches already lives in the tables it touched, and a
+/// copy here would be a second place to find and redact.
+model AdminControlCommand {
+  id             String @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String @map("organization_id") @db.Uuid
+
+  /// The caller's own id for this command — the idempotency key, carried in a
+  /// signed header so it cannot be altered in flight.
+  requestId String @map("request_id") @db.VarChar(120)
+
+  /// The external administrator this is attributable to. Opaque: not a
+  /// LeadFlow user id, not an email, not a permission.
+  actorRef String @map("actor_ref") @db.VarChar(200)
+
+  /// What was asked, in the terms the signature covered. A retry that differs
+  /// in ANY of these is a different command wearing the same id, and is
+  /// refused rather than answered with the first one's result.
+  method      String @db.VarChar(10)
+  path        String @db.VarChar(300)
+  payloadHash String @map("payload_hash") @db.Char(64)
+
+  /// The allowlisted operation, e.g. "team.create". A name from a fixed set,
+  /// never a controller or method chosen by the caller.
+  action String @db.VarChar(60)
+
+  /// What it produced, so a retry can re-read the authoritative record rather
+  /// than replaying the mutation or storing a copy of the response.
+  entityType String? @map("entity_type") @db.VarChar(40)
+  entityId   String? @map("entity_id") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  /// The idempotency guarantee itself. Per tenant, because two organizations
+  /// choosing the same request id are not the same command.
+  @@unique([organizationId, requestId])
+  /// "What has this administrator done lately?"
+  @@index([organizationId, createdAt(sort: Desc)])
+  @@map("admin_control_commands")
 }

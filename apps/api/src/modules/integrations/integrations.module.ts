@@ -4,6 +4,7 @@ import { WebsiteIntakeController } from './website/website-intake.controller';
 import { WebsiteIntakeService } from './website/website-intake.service';
 import { WebsiteIntakeRepository } from './website/website-intake.repository';
 import { IntakeProcessingModule } from './intake-processing/intake-processing.module';
+import { AdminControlModule } from './admin-control/admin-control.module';
 
 /**
  * Inbound integration boundaries.
@@ -19,9 +20,14 @@ import { IntakeProcessingModule } from './intake-processing/intake-processing.mo
  * boundary above authenticates, stores and answers; the processing module
  * converts. A website request must not wait on the CRM pipeline, and a failure
  * in routing must not lose an enquiry that is already durable.
+ *
+ * The admin control plane is a THIRD boundary, and a separate trust domain from
+ * the website: its own secret, its own signing contract, its own configured
+ * tenant. A compromise of the public site's key must not become a way to
+ * rewrite a tenant's routing table.
  */
 @Module({
-  imports: [IntakeProcessingModule],
+  imports: [IntakeProcessingModule, AdminControlModule],
   controllers: [WebsiteIntakeController],
   providers: [WebsiteIntakeService, WebsiteIntakeRepository, AuditRepository],
   exports: [WebsiteIntakeService, IntakeProcessingModule],

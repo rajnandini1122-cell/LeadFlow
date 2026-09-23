@@ -21,8 +21,21 @@ export class AssignmentRulesRepository {
     private readonly tenantContext: TenantContextService,
   ) {}
 
-  async list(statuses?: AssignmentRuleStatus[]) {
-    return this.prisma.client.assignmentRule.findMany({
+  /**
+   * The client to write through.
+   *
+   * A caller's transaction when there is one, the pooled client otherwise.
+   * The control plane supplies one so a mutation and the ledger row proving
+   * it happened commit together — and because a query that reached the pool
+   * for its own connection while the caller's transaction held one would
+   * deadlock as soon as the pool ran out.
+   */
+  private db(tx?: PrismaTransaction) {
+    return tx ?? this.prisma.client;
+  }
+
+  async list(statuses?: AssignmentRuleStatus[], tx?: PrismaTransaction) {
+    return this.db(tx).assignmentRule.findMany({
       where: statuses ? { status: { in: statuses } } : {},
       include: RULE_INCLUDE,
       // The order an administrator reads the table in, and the order it runs:
@@ -31,8 +44,8 @@ export class AssignmentRulesRepository {
     });
   }
 
-  async findById(id: string) {
-    return this.prisma.client.assignmentRule.findFirst({ where: { id }, include: RULE_INCLUDE });
+  async findById(id: string, tx?: PrismaTransaction) {
+    return this.db(tx).assignmentRule.findFirst({ where: { id }, include: RULE_INCLUDE });
   }
 
   /**
@@ -44,7 +57,7 @@ export class AssignmentRulesRepository {
    * later would still have sent the enquiry.
    */
   async activeRules(tx?: PrismaTransaction) {
-    return (tx ?? this.prisma.client).assignmentRule.findMany({
+    return this.db(tx).assignmentRule.findMany({
       where: { status: 'ACTIVE', isFallback: false },
       select: EVALUATION_SELECT,
       // priority is unique among these, so the tie-breakers can never be
@@ -55,15 +68,15 @@ export class AssignmentRulesRepository {
   }
 
   async activeFallback(tx?: PrismaTransaction) {
-    return (tx ?? this.prisma.client).assignmentRule.findFirst({
+    return this.db(tx).assignmentRule.findFirst({
       where: { status: 'ACTIVE', isFallback: true },
       select: EVALUATION_SELECT,
     });
   }
 
   /** The next free precedence, so a caller need not pick one. */
-  async nextPriority(): Promise<number> {
-    const last = await this.prisma.client.assignmentRule.findFirst({
+  async nextPriority(tx?: PrismaTransaction): Promise<number> {
+    const last = await this.db(tx).assignmentRule.findFirst({
       where: { status: 'ACTIVE', isFallback: false },
       select: { priority: true },
       orderBy: { priority: 'desc' },
@@ -105,10 +118,10 @@ export class AssignmentRulesRepository {
     isFallback: boolean;
     criteriaKey: string;
     targetTeamId: string;
-  }): Promise<{ id: string } | RuleConflict> {
+  }, outer?: PrismaTransaction): Promise<{ id: string } | RuleConflict> {
     const organizationId = this.tenantContext.requireOrganizationId();
 
-    return this.prisma.client.$transaction(async (tx) => {
+    const run = async (tx: PrismaTransaction) => {
       if (input.territoryId) {
         const territory = await lockActiveTerritory(tx, input.territoryId);
         if (!territory) return { conflict: 'TERRITORY_UNAVAILABLE' } as const;
@@ -136,7 +149,12 @@ export class AssignmentRulesRepository {
       });
 
       return created ?? this.explainConflict(tx, input);
-    });
+    };
+
+    // A caller's transaction is used as-is. The territory lock this takes is
+    // theirs to hold for the rest of their unit of work, which is stronger
+    // than holding it only for this insert.
+    return outer ? run(outer) : this.prisma.client.$transaction(run);
   }
 
   /**
@@ -200,19 +218,22 @@ export class AssignmentRulesRepository {
      * than routing.
      */
     lockTerritoryId?: string | undefined,
+    outer?: PrismaTransaction,
   ): Promise<'UPDATED' | RuleConflict> {
-    try {
-      return await this.prisma.client.$transaction(async (tx) => {
-        if (lockTerritoryId) {
-          const territory = await lockActiveTerritory(tx, lockTerritoryId);
-          if (!territory) return { conflict: 'TERRITORY_UNAVAILABLE' } as const;
-        }
+    const run = async (tx: PrismaTransaction) => {
+      if (lockTerritoryId) {
+        const territory = await lockActiveTerritory(tx, lockTerritoryId);
+        if (!territory) return { conflict: 'TERRITORY_UNAVAILABLE' } as const;
+      }
 
-        // updateMany, so the tenant scope is part of the WHERE: another
-        // organization's rule matches nothing rather than being checked for.
-        await tx.assignmentRule.updateMany({ where: { id }, data: changes });
-        return 'UPDATED' as const;
-      });
+      // updateMany, so the tenant scope is part of the WHERE: another
+      // organization's rule matches nothing rather than being checked for.
+      await tx.assignmentRule.updateMany({ where: { id }, data: changes });
+      return 'UPDATED' as const;
+    };
+
+    try {
+      return await (outer ? run(outer) : this.prisma.client.$transaction(run));
     } catch (error) {
       const conflict = conflictOf(error, isFallback);
       if (conflict) return conflict;
@@ -230,14 +251,17 @@ export class AssignmentRulesRepository {
    * under concurrency — this read is what turns the ordinary case into a
    * message an administrator can act on.
    */
-  async conflictingRule(input: {
-    excludeId: string;
-    criteriaKey?: string | undefined;
-    priority?: number | undefined;
-    isFallback: boolean;
-  }): Promise<RuleConflict | undefined> {
+  async conflictingRule(
+    input: {
+      excludeId: string;
+      criteriaKey?: string | undefined;
+      priority?: number | undefined;
+      isFallback: boolean;
+    },
+    tx?: PrismaTransaction,
+  ): Promise<RuleConflict | undefined> {
     if (input.isFallback) {
-      const fallback = await this.prisma.client.assignmentRule.findFirst({
+      const fallback = await this.db(tx).assignmentRule.findFirst({
         where: { status: 'ACTIVE', isFallback: true, id: { not: input.excludeId } },
         select: { id: true },
       });
@@ -245,7 +269,7 @@ export class AssignmentRulesRepository {
     }
 
     if (input.criteriaKey !== undefined) {
-      const sameCriteria = await this.prisma.client.assignmentRule.findFirst({
+      const sameCriteria = await this.db(tx).assignmentRule.findFirst({
         where: {
           status: 'ACTIVE',
           isFallback: false,
@@ -258,7 +282,7 @@ export class AssignmentRulesRepository {
     }
 
     if (input.priority !== undefined && !input.isFallback) {
-      const samePriority = await this.prisma.client.assignmentRule.findFirst({
+      const samePriority = await this.db(tx).assignmentRule.findFirst({
         where: {
           status: 'ACTIVE',
           isFallback: false,
@@ -274,16 +298,16 @@ export class AssignmentRulesRepository {
   }
 
   /** The team a rule may target: same tenant, and its current status. */
-  async findTeam(teamId: string) {
-    return this.prisma.client.team.findFirst({
+  async findTeam(teamId: string, tx?: PrismaTransaction) {
+    return this.db(tx).team.findFirst({
       where: { id: teamId },
       select: { id: true, name: true, status: true },
     });
   }
 
   /** The product a rule may reference: same tenant, and whether it is offered. */
-  async findProduct(productId: string) {
-    return this.prisma.client.product.findFirst({
+  async findProduct(productId: string, tx?: PrismaTransaction) {
+    return this.db(tx).product.findFirst({
       where: { id: productId },
       select: { id: true, name: true, sku: true, active: true },
     });
@@ -298,8 +322,8 @@ export class AssignmentRulesRepository {
    * mistake into a message; the lock inside the write transaction is what
    * decides the race.
    */
-  async findTerritory(territoryId: string) {
-    return this.prisma.client.territory.findFirst({
+  async findTerritory(territoryId: string, tx?: PrismaTransaction) {
+    return this.db(tx).territory.findFirst({
       where: { id: territoryId },
       select: { id: true, name: true, status: true },
     });

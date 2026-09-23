@@ -14,6 +14,7 @@ import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { PERMISSIONS, type TeamAgentCandidate, type TeamDetail, type TeamListItem } from '@leadflow/api-types';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
+import { userActor } from '../../common/audit/mutation-actor';
 import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
 import { TeamsService } from './teams.service';
 import {
@@ -86,7 +87,7 @@ export class TeamsController {
     @Body() dto: CreateTeamDto,
     @CurrentUser() principal: TenantPrincipal,
   ): Promise<TeamDetail> {
-    return this.teams.create(dto, principal);
+    return this.teams.create(dto, userActor(principal));
   }
 
   @Patch(':id')
@@ -102,7 +103,7 @@ export class TeamsController {
     @Body() dto: UpdateTeamDto,
     @CurrentUser() principal: TenantPrincipal,
   ): Promise<TeamDetail> {
-    return this.teams.update(id, dto, principal);
+    return this.teams.update(id, dto, userActor(principal));
   }
 
   @Post(':id/members')
@@ -118,7 +119,7 @@ export class TeamsController {
     @Body() dto: AddTeamMemberDto,
     @CurrentUser() principal: TenantPrincipal,
   ): Promise<TeamDetail> {
-    return this.teams.addMember(id, dto, principal);
+    return this.teams.addMember(id, dto, userActor(principal));
   }
 
   @Patch(':id/members/:memberId')
@@ -135,7 +136,7 @@ export class TeamsController {
     @Body() dto: UpdateTeamMemberDto,
     @CurrentUser() principal: TenantPrincipal,
   ): Promise<TeamDetail> {
-    return this.teams.setMemberAssignment(id, memberId, dto, principal);
+    return this.teams.setMemberAssignment(id, memberId, dto, userActor(principal));
   }
 
   /**
@@ -154,6 +155,6 @@ export class TeamsController {
     @Param('memberId', ParseUUIDPipe) memberId: string,
     @CurrentUser() principal: TenantPrincipal,
   ): Promise<TeamDetail> {
-    return this.teams.removeMember(id, memberId, principal);
+    return this.teams.removeMember(id, memberId, userActor(principal));
   }
 }

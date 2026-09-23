@@ -10,6 +10,7 @@ import {
   type LeadSourceIntake,
 } from '@leadflow/api-types';
 import { AppException } from '../../../common/errors/app.exception';
+import type { PrismaTransaction } from '../../../common/prisma/transaction';
 import { IntakeOperationsRepository } from './intake-operations.repository';
 import { IntakeProcessingService } from './intake-processing.service';
 import type { IntakeQueryDto } from './dto/intake-operations.dto';
@@ -37,7 +38,7 @@ export class IntakeOperationsService {
     private readonly processing: IntakeProcessingService,
   ) {}
 
-  async list(query: IntakeQueryDto): Promise<IntegrationIntakePage> {
+  async list(query: IntakeQueryDto, tx?: PrismaTransaction): Promise<IntegrationIntakePage> {
     const page = await this.repository.list({
       status: query.status as IntakeStatus | undefined,
       source: query.source,
@@ -45,13 +46,13 @@ export class IntakeOperationsService {
       receivedTo: query.receivedTo ? new Date(query.receivedTo) : undefined,
       limit: query.limit ?? 25,
       offset: query.offset ?? 0,
-    });
+    }, tx);
 
     return { items: page.items.map(toListItem), total: page.total };
   }
 
-  async findOne(id: string): Promise<IntegrationIntakeDetail> {
-    return toDetail(await this.require(id));
+  async findOne(id: string, tx?: PrismaTransaction): Promise<IntegrationIntakeDetail> {
+    return toDetail(await this.require(id, tx));
   }
 
   /**
@@ -63,8 +64,8 @@ export class IntakeOperationsService {
    * somebody else just converted reports the existing lead rather than making
    * a second one.
    */
-  async retry(id: string): Promise<IntakeRetryResponse> {
-    const intake = await this.require(id);
+  async retry(id: string, tx?: PrismaTransaction): Promise<IntakeRetryResponse> {
+    const intake = await this.require(id, tx);
 
     if (intake.status === 'DUPLICATE') {
       /*
@@ -90,13 +91,23 @@ export class IntakeOperationsService {
      * idempotent, and giving retry a second way in would mean two paths to the
      * same write with only one of them locked.
      */
-    await this.repository.reopen(id);
+    await this.repository.reopen(id, tx);
 
-    const outcome = await this.processing.process(id);
+    /*
+     * Inside the caller's transaction when there is one.
+     *
+     * The control plane owns a transaction that must also hold the ledger
+     * row, so the conversion has to join it rather than open its own — two
+     * transactions would mean the lead could commit while the record of the
+     * command asking for it rolled back.
+     */
+    const outcome = tx
+      ? await this.processing.processWithin(tx, id)
+      : await this.processing.process(id);
 
     return {
       result: outcome.result as IntakeRetryResult,
-      intake: toDetail(await this.require(id)),
+      intake: toDetail(await this.require(id, tx)),
     };
   }
 
@@ -119,8 +130,8 @@ export class IntakeOperationsService {
   }
 
   /** Another organization's intake is indistinguishable from one that is gone. */
-  private async require(id: string) {
-    const intake = await this.repository.findById(id);
+  private async require(id: string, tx?: PrismaTransaction) {
+    const intake = await this.repository.findById(id, tx);
     if (!intake) throw AppException.notFound(ERROR_CODES.NOT_FOUND, 'Enquiry not found.');
 
     return intake;

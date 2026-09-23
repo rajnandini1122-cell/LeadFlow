@@ -25,21 +25,37 @@ export class TerritoriesRepository {
     return this.tenantContext.requireOrganizationId();
   }
 
-  async list(includeArchived: boolean) {
-    return this.prisma.client.territory.findMany({
+  /**
+   * The client to write through.
+   *
+   * A caller's transaction when there is one, the pooled client otherwise.
+   * The control plane supplies one so a mutation and the ledger row proving
+   * it happened commit together — and because a query that reached the pool
+   * for its own connection while the caller's transaction held one would
+   * deadlock as soon as the pool ran out.
+   */
+  private db(tx?: PrismaTransaction) {
+    return tx ?? this.prisma.client;
+  }
+
+  async list(includeArchived: boolean, tx?: PrismaTransaction) {
+    return this.db(tx).territory.findMany({
       where: includeArchived ? {} : { status: 'ACTIVE' },
       include: TERRITORY_INCLUDE,
       orderBy: [{ status: 'asc' }, { name: 'asc' }],
     });
   }
 
-  async findById(id: string) {
-    return this.prisma.client.territory.findFirst({ where: { id }, include: TERRITORY_INCLUDE });
+  async findById(id: string, tx?: PrismaTransaction) {
+    return this.db(tx).territory.findFirst({ where: { id }, include: TERRITORY_INCLUDE });
   }
 
   /** Null when the partial unique index refused it — the name is live already. */
-  async create(input: { name: string; nameKey: string; description?: string | undefined }) {
-    const created = await this.prisma.client.territory.createManyAndReturn({
+  async create(
+    input: { name: string; nameKey: string; description?: string | undefined },
+    tx?: PrismaTransaction,
+  ) {
+    const created = await this.db(tx).territory.createManyAndReturn({
       skipDuplicates: true,
       data: [
         {
@@ -65,9 +81,10 @@ export class TerritoriesRepository {
   async update(
     id: string,
     changes: { name?: string; nameKey?: string; description?: string | null },
+    tx?: PrismaTransaction,
   ): Promise<'UPDATED' | 'NAME_TAKEN'> {
     try {
-      await this.prisma.client.territory.updateMany({ where: { id }, data: changes });
+      await this.db(tx).territory.updateMany({ where: { id }, data: changes });
       return 'UPDATED';
     } catch (error) {
       if ((error as { code?: string }).code === 'P2002') return 'NAME_TAKEN';
@@ -104,9 +121,9 @@ export class TerritoriesRepository {
    */
   async archiveIfUnused(
     id: string,
+    outer?: PrismaTransaction,
   ): Promise<'ARCHIVED' | 'NOT_ACTIVE' | { blockedBy: { id: string; name: string }[] }> {
-    try {
-      return await this.prisma.client.$transaction(async (tx) => {
+    const run = async (tx: PrismaTransaction) => {
         const archived = await tx.territory.updateMany({
           where: { id, status: 'ACTIVE' },
           data: { status: 'ARCHIVED' },
@@ -130,8 +147,21 @@ export class TerritoriesRepository {
           data: { removedAt: new Date() },
         });
 
-        return 'ARCHIVED' as const;
-      });
+      return 'ARCHIVED' as const;
+    };
+
+    try {
+      /*
+       * A caller's transaction is used as-is rather than nested inside a
+       * second one. The lock ordering that makes this safe is unchanged
+       * either way: the territory row is written before the rules are read.
+       *
+       * Note that the rollback which normally undoes a refused archive
+       * becomes the CALLER's rollback when they supply a transaction — so a
+       * caller must treat the blocked result as fatal to their own unit of
+       * work, which the control plane does by turning it into an error.
+       */
+      return await (outer ? run(outer) : this.prisma.client.$transaction(run));
     } catch (error) {
       if (error instanceof TerritoryInUse) return { blockedBy: error.rules };
       throw error;
@@ -139,13 +169,17 @@ export class TerritoriesRepository {
   }
 
   /** Brings an archived territory back. Its coverage is still there. */
-  async reactivate(id: string): Promise<'UPDATED' | 'NAME_TAKEN'> {
-    return this.updateStatus(id, 'ACTIVE');
+  async reactivate(id: string, tx?: PrismaTransaction): Promise<'UPDATED' | 'NAME_TAKEN'> {
+    return this.updateStatus(id, 'ACTIVE', tx);
   }
 
-  private async updateStatus(id: string, status: TerritoryStatus): Promise<'UPDATED' | 'NAME_TAKEN'> {
+  private async updateStatus(
+    id: string,
+    status: TerritoryStatus,
+    tx?: PrismaTransaction,
+  ): Promise<'UPDATED' | 'NAME_TAKEN'> {
     try {
-      await this.prisma.client.territory.updateMany({ where: { id }, data: { status } });
+      await this.db(tx).territory.updateMany({ where: { id }, data: { status } });
       return 'UPDATED';
     } catch (error) {
       // Reactivating re-enters the partial index, so the name may now be taken
@@ -168,14 +202,17 @@ export class TerritoriesRepository {
    * aborts the statement, and on the in-process PGlite the development suite
    * runs against that takes the connection down with it.
    */
-  async addCoverage(input: {
-    territoryId: string;
-    selector: CoverageSelector;
-    coverageKey: string;
-  }) {
+  async addCoverage(
+    input: {
+      territoryId: string;
+      selector: CoverageSelector;
+      coverageKey: string;
+    },
+    tx?: PrismaTransaction,
+  ) {
     const { selector } = input;
 
-    const created = await this.prisma.client.territoryCoverage.createManyAndReturn({
+    const created = await this.db(tx).territoryCoverage.createManyAndReturn({
       skipDuplicates: true,
       data: [
         {
@@ -199,23 +236,27 @@ export class TerritoriesRepository {
   }
 
   /** Who currently owns this place. Asked only to explain a refusal. */
-  async findLiveCoverageByKey(coverageKey: string) {
-    return this.prisma.client.territoryCoverage.findFirst({
+  async findLiveCoverageByKey(coverageKey: string, tx?: PrismaTransaction) {
+    return this.db(tx).territoryCoverage.findFirst({
       where: { coverageKey, removedAt: null },
       select: { id: true, territory: { select: { id: true, name: true } } },
     });
   }
 
-  async findCoverageRow(territoryId: string, coverageId: string) {
-    return this.prisma.client.territoryCoverage.findFirst({
+  async findCoverageRow(territoryId: string, coverageId: string, tx?: PrismaTransaction) {
+    return this.db(tx).territoryCoverage.findFirst({
       where: { id: coverageId, territoryId },
       select: { id: true, type: true, coverageKey: true, removedAt: true },
     });
   }
 
   /** Soft removal: the place stops resolving here, and the history stays. */
-  async removeCoverage(territoryId: string, coverageId: string): Promise<number> {
-    const result = await this.prisma.client.territoryCoverage.updateMany({
+  async removeCoverage(
+    territoryId: string,
+    coverageId: string,
+    tx?: PrismaTransaction,
+  ): Promise<number> {
+    const result = await this.db(tx).territoryCoverage.updateMany({
       where: { id: coverageId, territoryId, removedAt: null },
       data: { removedAt: new Date() },
     });
@@ -241,7 +282,7 @@ export class TerritoriesRepository {
   async findLiveCoverage(coverageKeys: string[], tx?: PrismaTransaction) {
     if (coverageKeys.length === 0) return [];
 
-    return (tx ?? this.prisma.client).territoryCoverage.findMany({
+    return this.db(tx).territoryCoverage.findMany({
       // Archived territories release their coverage on the way out, so this
       // status filter should never exclude anything. It is here because
       // resolution is what decides where a customer's enquiry goes, and one
@@ -269,8 +310,11 @@ export class TerritoriesRepository {
    * modules import each other, and this is one scoped list, not a second
    * opinion about what a rule means.
    */
-  async activeRulesTargeting(territoryId: string): Promise<{ id: string; name: string }[]> {
-    return this.prisma.client.assignmentRule.findMany({
+  async activeRulesTargeting(
+    territoryId: string,
+    tx?: PrismaTransaction,
+  ): Promise<{ id: string; name: string }[]> {
+    return this.db(tx).assignmentRule.findMany({
       where: { territoryId, status: 'ACTIVE' },
       select: { id: true, name: true },
       orderBy: { priority: 'asc' },

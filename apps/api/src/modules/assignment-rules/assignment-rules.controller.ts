@@ -7,6 +7,7 @@ import {
 } from '@leadflow/api-types';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
+import { userActor } from '../../common/audit/mutation-actor';
 import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
 import { AssignmentRulesService } from './assignment-rules.service';
 import {
@@ -75,7 +76,7 @@ export class AssignmentRulesController {
     @Body() dto: CreateAssignmentRuleDto,
     @CurrentUser() principal: TenantPrincipal,
   ): Promise<AssignmentRuleView> {
-    return this.rules.create(dto, principal);
+    return this.rules.create(dto, userActor(principal));
   }
 
   /**
@@ -98,6 +99,6 @@ export class AssignmentRulesController {
     @Body() dto: UpdateAssignmentRuleDto,
     @CurrentUser() principal: TenantPrincipal,
   ): Promise<AssignmentRuleView> {
-    return this.rules.update(id, dto, principal);
+    return this.rules.update(id, dto, userActor(principal));
   }
 }

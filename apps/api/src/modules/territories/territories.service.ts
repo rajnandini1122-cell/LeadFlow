@@ -11,7 +11,7 @@ import {
 import { AppException } from '../../common/errors/app.exception';
 import type { PrismaTransaction } from '../../common/prisma/transaction';
 import { AuditRepository } from '../../common/audit/audit.repository';
-import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
+import { auditAttribution, type MutationActor } from '../../common/audit/mutation-actor';
 import { TerritoriesRepository } from './territories.repository';
 import { territoryNameKey } from './territory-name';
 import {
@@ -69,13 +69,13 @@ export class TerritoriesService {
     private readonly audit: AuditRepository,
   ) {}
 
-  async list(includeArchived: boolean): Promise<TerritoryListItem[]> {
-    const territories = await this.repository.list(includeArchived);
+  async list(includeArchived: boolean, tx?: PrismaTransaction): Promise<TerritoryListItem[]> {
+    const territories = await this.repository.list(includeArchived, tx);
     return territories.map(toListItem);
   }
 
-  async findOne(id: string): Promise<TerritoryDetail> {
-    const territory = await this.requireTerritory(id);
+  async findOne(id: string, tx?: PrismaTransaction): Promise<TerritoryDetail> {
+    const territory = await this.requireTerritory(id, tx);
 
     return {
       ...toListItem(territory),
@@ -83,12 +83,19 @@ export class TerritoriesService {
     };
   }
 
-  async create(dto: CreateTerritoryDto, principal: TenantPrincipal): Promise<TerritoryDetail> {
-    const created = await this.repository.create({
-      name: dto.name,
-      nameKey: territoryNameKey(dto.name),
-      description: dto.description,
-    });
+  async create(
+    dto: CreateTerritoryDto,
+    actor: MutationActor,
+    tx?: PrismaTransaction,
+  ): Promise<TerritoryDetail> {
+    const created = await this.repository.create(
+      {
+        name: dto.name,
+        nameKey: territoryNameKey(dto.name),
+        description: dto.description,
+      },
+      tx,
+    );
 
     if (!created) {
       // The partial unique index refused it. Archived territories are outside
@@ -103,19 +110,21 @@ export class TerritoriesService {
       action: TERRITORY_AUDIT.CREATED,
       entityType: 'Territory',
       entityId: created.id,
-      actorUserId: principal.userId,
+      ...auditAttribution(actor),
       after: { name: dto.name },
+      tx,
     });
 
-    return this.findOne(created.id);
+    return this.findOne(created.id, tx);
   }
 
   async update(
     id: string,
     dto: UpdateTerritoryDto,
-    principal: TenantPrincipal,
+    actor: MutationActor,
+    tx?: PrismaTransaction,
   ): Promise<TerritoryDetail> {
-    const territory = await this.requireTerritory(id);
+    const territory = await this.requireTerritory(id, tx);
 
     const changes: Parameters<TerritoriesRepository['update']>[1] = {};
     const before: Record<string, unknown> = {};
@@ -131,7 +140,7 @@ export class TerritoriesService {
     if (dto.description !== undefined) changes.description = dto.description ?? null;
 
     if (Object.keys(changes).length > 0) {
-      const result = await this.repository.update(id, changes);
+      const result = await this.repository.update(id, changes, tx);
 
       if (result === 'NAME_TAKEN') {
         throw AppException.conflict(
@@ -144,17 +153,18 @@ export class TerritoriesService {
         action: TERRITORY_AUDIT.UPDATED,
         entityType: 'Territory',
         entityId: id,
-        actorUserId: principal.userId,
+        ...auditAttribution(actor),
         before,
         after,
+        tx,
       });
     }
 
     if (dto.status !== undefined && dto.status !== territory.status) {
-      await this.changeStatus(id, dto.status, principal);
+      await this.changeStatus(id, dto.status, actor, tx);
     }
 
-    return this.findOne(id);
+    return this.findOne(id, tx);
   }
 
   /**
@@ -170,10 +180,11 @@ export class TerritoriesService {
   private async changeStatus(
     id: string,
     status: TerritoryStatus,
-    principal: TenantPrincipal,
+    actor: MutationActor,
+    tx?: PrismaTransaction,
   ): Promise<void> {
     if (status === 'ARCHIVED') {
-      const result = await this.repository.archiveIfUnused(id);
+      const result = await this.repository.archiveIfUnused(id, tx);
 
       if (typeof result === 'object') {
         throw AppException.validation('Assignment rules still route work to this territory.', {
@@ -191,18 +202,19 @@ export class TerritoriesService {
         action: TERRITORY_AUDIT.ARCHIVED,
         entityType: 'Territory',
         entityId: id,
-        actorUserId: principal.userId,
+        ...auditAttribution(actor),
         before: { status: 'ACTIVE' },
         // Said out loud in the audit trail, because it is the part that
         // surprises people: the places this territory covered are released on
         // the way out, and reactivating does not take them back — somebody
         // else may have claimed them in between.
         after: { status: 'ARCHIVED', coverageReleased: true },
+        tx,
       });
       return;
     }
 
-    const result = await this.repository.reactivate(id);
+    const result = await this.repository.reactivate(id, tx);
 
     if (result === 'NAME_TAKEN') {
       throw AppException.conflict(
@@ -215,18 +227,20 @@ export class TerritoriesService {
       action: TERRITORY_AUDIT.REACTIVATED,
       entityType: 'Territory',
       entityId: id,
-      actorUserId: principal.userId,
+      ...auditAttribution(actor),
       before: { status: 'ARCHIVED' },
       after: { status: 'ACTIVE' },
+      tx,
     });
   }
 
   async addCoverage(
     territoryId: string,
     dto: AddTerritoryCoverageDto,
-    principal: TenantPrincipal,
+    actor: MutationActor,
+    tx?: PrismaTransaction,
   ): Promise<TerritoryDetail> {
-    const territory = await this.requireTerritory(territoryId);
+    const territory = await this.requireTerritory(territoryId, tx);
 
     if (territory.status !== 'ACTIVE') {
       // An archived territory is history. A place added to it could never
@@ -239,11 +253,14 @@ export class TerritoriesService {
     const selector = this.buildSelector(dto);
     const key = coverageKey(selector);
 
-    const added = await this.repository.addCoverage({
-      territoryId,
-      selector,
-      coverageKey: key,
-    });
+    const added = await this.repository.addCoverage(
+      {
+        territoryId,
+        selector,
+        coverageKey: key,
+      },
+      tx,
+    );
 
     if (!added) {
       /*
@@ -254,12 +271,12 @@ export class TerritoriesService {
        * because "that is taken" without saying by whom is a message that sends
        * somebody hunting through every territory.
        */
-      const owner = await this.repository.findLiveCoverageByKey(key);
+      const owner = await this.repository.findLiveCoverageByKey(key, tx);
 
       if (owner?.territory.id === territoryId) {
         // Already ours. The caller asked for a state that already holds, and a
         // 409 on a double-click would make success look like failure.
-        return this.findOne(territoryId);
+        return this.findOne(territoryId, tx);
       }
 
       throw AppException.conflict(
@@ -274,13 +291,14 @@ export class TerritoriesService {
       action: TERRITORY_AUDIT.COVERAGE_ADDED,
       entityType: 'Territory',
       entityId: territoryId,
-      actorUserId: principal.userId,
+      ...auditAttribution(actor),
       // The selector, not a customer: an audit row answers "who changed the
       // map" and needs no enquiry attached to it.
       after: { coverageId: added.id, type: selector.type, coverageKey: key },
+      tx,
     });
 
-    return this.findOne(territoryId);
+    return this.findOne(territoryId, tx);
   }
 
   /**
@@ -295,10 +313,11 @@ export class TerritoriesService {
   async removeCoverage(
     territoryId: string,
     coverageId: string,
-    principal: TenantPrincipal,
+    actor: MutationActor,
+    tx?: PrismaTransaction,
   ): Promise<TerritoryDetail> {
-    await this.requireTerritory(territoryId);
-    const row = await this.repository.findCoverageRow(territoryId, coverageId);
+    await this.requireTerritory(territoryId, tx);
+    const row = await this.repository.findCoverageRow(territoryId, coverageId, tx);
 
     // Another tenant's row, another territory's row, or nothing at all: one
     // answer, so the response never says whether an id exists elsewhere.
@@ -307,20 +326,21 @@ export class TerritoriesService {
     }
 
     if (!row.removedAt) {
-      const removed = await this.repository.removeCoverage(territoryId, coverageId);
+      const removed = await this.repository.removeCoverage(territoryId, coverageId, tx);
 
       if (removed > 0) {
         await this.audit.record({
           action: TERRITORY_AUDIT.COVERAGE_REMOVED,
           entityType: 'Territory',
           entityId: territoryId,
-          actorUserId: principal.userId,
+          ...auditAttribution(actor),
           before: { coverageId, type: row.type, coverageKey: row.coverageKey },
+          tx,
         });
       }
     }
 
-    return this.findOne(territoryId);
+    return this.findOne(territoryId, tx);
   }
 
   /**
@@ -450,8 +470,8 @@ export class TerritoriesService {
   }
 
   /** A territory in another organization is indistinguishable from one that is gone. */
-  private async requireTerritory(id: string) {
-    const territory = await this.repository.findById(id);
+  private async requireTerritory(id: string, tx?: PrismaTransaction) {
+    const territory = await this.repository.findById(id, tx);
     if (!territory) throw AppException.notFound(ERROR_CODES.NOT_FOUND, 'Territory not found.');
 
     return territory;

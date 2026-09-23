@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../../common/prisma/prisma.service';
+import type { PrismaTransaction } from '../../../common/prisma/transaction';
 import type { IntakeStatus } from '../../../generated/prisma/enums';
 
 /**
@@ -17,6 +18,11 @@ import type { IntakeStatus } from '../../../generated/prisma/enums';
 export class IntakeOperationsRepository {
   constructor(private readonly prisma: PrismaService) {}
 
+  /** A caller's transaction when there is one, the pooled client otherwise. */
+  private db(tx?: PrismaTransaction) {
+    return tx ?? this.prisma.client;
+  }
+
   async list(query: {
     status?: IntakeStatus | undefined;
     source?: string | undefined;
@@ -24,7 +30,7 @@ export class IntakeOperationsRepository {
     receivedTo?: Date | undefined;
     limit: number;
     offset: number;
-  }) {
+  }, tx?: PrismaTransaction) {
     const where = {
       ...(query.status ? { status: query.status } : {}),
       ...(query.source ? { source: query.source } : {}),
@@ -39,7 +45,7 @@ export class IntakeOperationsRepository {
     };
 
     const [items, total] = await Promise.all([
-      this.prisma.client.integrationIntake.findMany({
+      this.db(tx).integrationIntake.findMany({
         where,
         select: LIST_SELECT,
         // Newest first: an operations queue is read to find out what just
@@ -49,14 +55,14 @@ export class IntakeOperationsRepository {
         take: query.limit,
         skip: query.offset,
       }),
-      this.prisma.client.integrationIntake.count({ where }),
+      this.db(tx).integrationIntake.count({ where }),
     ]);
 
     return { items, total };
   }
 
-  async findById(id: string) {
-    return this.prisma.client.integrationIntake.findFirst({
+  async findById(id: string, tx?: PrismaTransaction) {
+    return this.db(tx).integrationIntake.findFirst({
       where: { id },
       select: DETAIL_SELECT,
     });
@@ -71,8 +77,8 @@ export class IntakeOperationsRepository {
    * how retry hands the row to exactly the same locked path a sweep uses,
    * rather than opening a second way in.
    */
-  async reopen(id: string): Promise<number> {
-    const result = await this.prisma.client.integrationIntake.updateMany({
+  async reopen(id: string, tx?: PrismaTransaction): Promise<number> {
+    const result = await this.db(tx).integrationIntake.updateMany({
       where: { id, status: { in: ['BLOCKED', 'FAILED'] } },
       data: { status: 'RECEIVED' },
     });
