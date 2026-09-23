@@ -8,6 +8,7 @@ import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
 import { AppModule } from './app.module';
 import { AppConfig } from './common/config/config.module';
+import { serveWebApp, webDistPath } from './common/web/spa';
 
 /**
  * HTTP entrypoint.
@@ -91,6 +92,18 @@ async function bootstrap(): Promise<void> {
     SwaggerModule.setup('api/docs', app, document);
   }
 
+  /*
+   * The web app, from this same process and therefore this same origin.
+   *
+   * Registered AFTER everything above so the API's own configuration — the
+   * prefix, the versioning, CORS — is already in place, and BEFORE listen()
+   * because that is when Nest mounts its router.
+   *
+   * Mounts only when a build is actually present, so a development run where
+   * Vite serves the app on its own port is unaffected.
+   */
+  const servingWeb = serveWebApp(app, webDistPath(__dirname));
+
   // Let in-flight requests finish before the process exits during a deploy.
   app.enableShutdownHooks();
 
@@ -99,6 +112,11 @@ async function bootstrap(): Promise<void> {
 
   const logger = app.get(Logger);
   logger.log(`LeadFlow API listening on :${port} [${config.get('NODE_ENV')}]`);
+  logger.log(
+    servingWeb
+      ? 'Serving the web app from this origin'
+      : 'No web build found — API only (expected in development)',
+  );
   if (!config.isProduction) logger.log(`API docs at http://localhost:${port}/api/docs`);
 }
 

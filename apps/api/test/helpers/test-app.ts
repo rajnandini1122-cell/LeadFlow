@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import { ValidationPipe, VersioningType, type INestApplication } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { Test } from '@nestjs/testing';
@@ -17,6 +18,17 @@ import { AppConfig } from '../../src/common/config/config.module';
 import { RedisService } from '../../src/common/redis/redis.service';
 import { PrismaClient } from '../../src/generated/prisma/client';
 import { InMemoryRedis, asRedisService } from './in-memory-redis';
+import { serveWebApp } from '../../src/common/web/spa';
+
+/**
+ * A stand-in for `apps/web/dist`.
+ *
+ * Deliberately a fixture rather than the real build. The E2E job does not run
+ * the web build, so pointing at the real directory would make these
+ * assertions silently skip themselves on CI — present, green, and proving
+ * nothing.
+ */
+export const WEB_FIXTURE_ROOT = join(__dirname, '..', 'fixtures', 'web');
 
 export interface SeededUser {
   id: string;
@@ -344,6 +356,18 @@ export async function createTestContext(): Promise<TestContext> {
   app.useGlobalPipes(
     new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }),
   );
+
+  /*
+   * Also must match main.ts — the third thing in this list, and the one with
+   * the sharpest failure mode.
+   *
+   * The production image serves the SPA from this same origin, so a mistake in
+   * the exclusions turns an API route into an HTML page. The suite mounts the
+   * same helper against a fixture bundle rather than the real build, which is
+   * what lets it assert the boundary WITHOUT requiring the web app to have been
+   * built first — the E2E job does not build it.
+   */
+  serveWebApp(app, WEB_FIXTURE_ROOT);
 
   await app.init();
 

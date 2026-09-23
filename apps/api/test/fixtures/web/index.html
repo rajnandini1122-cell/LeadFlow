@@ -1,0 +1,22 @@
+<!doctype html>
+<!--
+  A stand-in for the real Vite build, used only by the E2E suite.
+
+  It exists so the SPA-hosting boundary can be asserted without requiring
+  `npm run build -w apps/web` to have run first: the E2E job does not build the
+  web app, and a test that pointed at the real dist would quietly assert
+  nothing on CI.
+
+  The marker below is what the assertions match on, so a test cannot pass by
+  accidentally receiving some other HTML.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>LeadFlow</title>
+    <script type="module" crossorigin src="/assets/app.js"></script>
+  </head>
+  <body>
+    <div id="root" data-testid="leadflow-spa-shell"></div>
+  </body>
+</html>
