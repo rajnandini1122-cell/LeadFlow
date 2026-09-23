@@ -2,6 +2,7 @@ import { Global, Module } from '@nestjs/common';
 import { AppConfig } from '../config/config.module';
 import { ErrorReporter } from './error-reporter';
 import { MetricsService } from './metrics.service';
+import { WorkerHeartbeatService } from './worker-heartbeat.service';
 
 /**
  * Production observability.
@@ -14,6 +15,14 @@ import { MetricsService } from './metrics.service';
 @Module({
   providers: [
     MetricsService,
+    /*
+     * Registered in BOTH processes, doing opposite jobs from one class: the
+     * worker writes the heartbeat, the API reads it. Which role a process
+     * plays is decided by WORKER_ENABLED inside the service, not by wiring it
+     * into two different modules — one class means the writer and the reader
+     * cannot disagree about the key, the shape, or the staleness threshold.
+     */
+    WorkerHeartbeatService,
     {
       provide: ErrorReporter,
       inject: [AppConfig],
@@ -35,6 +44,6 @@ import { MetricsService } from './metrics.service';
         ),
     },
   ],
-  exports: [MetricsService, ErrorReporter],
+  exports: [MetricsService, ErrorReporter, WorkerHeartbeatService],
 })
 export class ObservabilityModule {}

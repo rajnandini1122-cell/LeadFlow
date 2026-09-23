@@ -147,6 +147,17 @@ export class MetricsService {
 
   private lastSweepAt: string | null = null;
 
+  /**
+   * The last sweep this PROCESS ran, for the heartbeat to publish.
+   *
+   * Still process-local, and that is correct: only the worker sweeps, so only
+   * the worker has a real answer. The heartbeat is what carries it across to
+   * the API, which has no sweeps of its own to report.
+   */
+  get lastSweep(): string | null {
+    return this.lastSweepAt;
+  }
+
   recordSweep(result: { failures: number }): void {
     this.increment(METRIC.WORKER_SWEEPS);
     if (result.failures > 0) this.increment(METRIC.WORKER_FAILURES, result.failures);

@@ -10,6 +10,7 @@ import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { RedisService } from '../../common/redis/redis.service';
 import { MetricsService } from '../../common/observability/metrics.service';
+import { WorkerHeartbeatService } from '../../common/observability/worker-heartbeat.service';
 import { Public } from '../auth/decorators/public.decorator';
 import { raw } from '../../common/interceptors/response-envelope.interceptor';
 import { withTimeout } from '../../common/utils/with-timeout';
@@ -43,6 +44,7 @@ export class HealthController {
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
     private readonly metrics: MetricsService,
+    private readonly heartbeat: WorkerHeartbeatService,
   ) {}
 
   @Public()
@@ -65,8 +67,24 @@ export class HealthController {
    */
   @Get('metrics')
   @ApiOperation({ summary: 'Operational metrics — requests, worker, notifications' })
-  metricsSnapshot() {
-    return raw(this.metrics.snapshot());
+  async metricsSnapshot() {
+    /*
+     * `workerProcess` is the SHARED answer; `worker` above it is this
+     * process's own counters and is left exactly as it was.
+     *
+     * Both are reported because they answer different questions. On an API
+     * replica the in-process block is necessarily empty — an API does not
+     * sweep — which is precisely why it could never be the thing to alert on.
+     * `workerProcess` comes from Redis and is the same answer whichever
+     * replica is asked.
+     *
+     * ALERT ON `workerProcess.status`. Anything but HEALTHY means nobody is
+     * being reminded of anything.
+     */
+    return raw({
+      ...this.metrics.snapshot(),
+      workerProcess: await this.heartbeat.read(),
+    });
   }
 
   @Public()
