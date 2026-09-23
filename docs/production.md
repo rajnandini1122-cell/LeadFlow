@@ -251,6 +251,73 @@ Connection pool: start at `DATABASE_POOL_MAX=10` per API replica. Saturation
 shows up in `database.query_failures` on `/api/metrics` before it shows up as
 latency.
 
+### 3.1 Preparing a fresh database
+
+Migrations create the schema. They do **not** create the reference data the
+application needs to function: permissions, the four system roles with their
+grants, and the plan catalogue. Those are defined in code, and a separate,
+deliberate step copies them into the database.
+
+Without that step a freshly migrated database has no OWNER role, so
+`POST /api/v1/auth/register` fails and the deployment cannot create its first
+organization at all.
+
+```bash
+# 1. Schema.
+DATABASE_URL=$DIRECT_DATABASE_URL npm run db:migrate:deploy -w apps/api
+
+# 2. Verify nothing is pending.
+npx prisma migrate status --schema apps/api/prisma/schema.prisma
+
+# 3. Reference data. Idempotent — safe to re-run on every deploy.
+DATABASE_URL=$DIRECT_DATABASE_URL npm run db:bootstrap -w apps/api
+```
+
+**Where these run.** Not in the API or worker container. Both are built with
+`npm ci --omit=dev` and contain neither `tsx` nor the Prisma CLI, by design — a
+runtime image should not carry tooling that can rewrite the schema. Run them
+from the same approved one-off, build or CI context that runs the migrations.
+
+**`db:bootstrap` requires `DIRECT_DATABASE_URL` when `NODE_ENV=production`** and
+refuses to start without it, rather than quietly falling back to whichever URL
+happens to be set. It creates no organization, no user and no business data;
+it prints the organization and user counts afterwards so the run says plainly
+that it changed neither.
+
+> ### ⚠️ Never run `db:seed` against production
+>
+> `npm run db:seed` is the DEVELOPMENT seed. It creates demo organizations
+> (*Northwind Supply*, *Meridian Foods*) staffed by demo users who share one
+> password — working credentials nobody chose, in the same tenant table as real
+> customers.
+>
+> It refuses to run when `NODE_ENV=production`, exiting non-zero before it
+> writes anything. Do not work around that. Production's path is
+> `db:bootstrap`, which shares the same reference-data code and creates no
+> tenant data.
+
+### 3.2 Creating the first organization
+
+Through the application's supported registration flow, not a script:
+
+1. Start the API with both integrations and automation **off**.
+2. Register the organization at `POST /api/v1/auth/register` (or the web sign-up
+   page), with a password the owner chooses.
+3. Read back the new organization's UUID — from the registration response, or
+   `GET /api/v1/organizations/current` as that owner.
+4. Set that UUID as `WEBSITE_INTAKE_ORGANIZATION_ID` and
+   `ADMIN_CONTROL_ORGANIZATION_ID` when enabling those integrations, and
+   redeploy.
+
+The bootstrap deliberately does not create this organization. A script that
+invented an owner account would be inventing a credential, and a credential a
+script chose is one that lives in a script.
+
+**Both integration organization ids are UUID-format-validated only, never
+looked up.** Point either at an organization that does not exist and the process
+starts cleanly, then fails every request at a foreign key. Create the tenant
+first, then configure the id.
+
 ---
 
 ## 4. Deploying
@@ -299,13 +366,20 @@ website components:
 
 | # | Step | Note |
 |---|---|---|
-| 0 | Provision PostgreSQL and Redis, run migrations, **create the CRAVION tenant** | Both integrations reference an organization that must already exist |
-| 1 | Deploy LeadFlow API + worker, **automation OFF** | `INTAKE_AUTO_PROCESSING_ENABLED=false`; intake and control plane may be enabled here, with their distinct secrets |
+| 0a | Provision PostgreSQL and Redis; configure `DATABASE_URL` and `DIRECT_DATABASE_URL` | |
+| 0b | `db:migrate:deploy`, then `prisma migrate status` | Schema only — see §3.1 |
+| 0c | **`db:bootstrap`** | Reference data. Without it registration fails on a missing OWNER role |
+| 1 | Deploy LeadFlow API + worker, **automation and both integrations OFF** | `INTAKE_AUTO_PROCESSING_ENABLED=false` |
+| 1b | **Create the CRAVION organization** through the registration flow, and capture its UUID | See §3.2. Not created by any script |
 | 2 | Deploy J8A.1 Website/UI Functions | They hold the secret LeadFlow validates, so LeadFlow must exist first |
 | 3 | Apply Admin schema 10 | |
 | 4 | Deploy the J2 Website relay | |
 | 5 | **Smoke test** | A signed intake lands in `integration_intakes` and stays unprocessed; a signed admin command round-trips; `/readiness` is ready; `workerProcess.status` is `HEALTHY` |
 | 6 | Set `INTAKE_AUTO_PROCESSING_ENABLED=true` and redeploy | **Only after** reviewing the intake backlog — see §2.1 |
+
+Steps 2–4 need the CRAVION organization's real UUID from step 1b, configured as
+`WEBSITE_INTAKE_ORGANIZATION_ID` / `ADMIN_CONTROL_ORGANIZATION_ID` with their
+two distinct signing secrets.
 
 LeadFlow is first in every case: everything downstream authenticates *against*
 it, and while an integration is disabled its routes answer 404.
@@ -450,6 +524,9 @@ reason.
 
 Before serving a paying customer:
 
+- [ ] `db:bootstrap` run against the production database, and `db:seed` **never**
+- [ ] The CRAVION organization created through the registration flow, and its
+      real UUID configured for both integrations
 - [ ] API deploys and passes `/readiness`
 - [ ] The web app loads from the API origin, and a page refresh on a deep route
       (e.g. `/leads/<id>`) still renders rather than 404ing
