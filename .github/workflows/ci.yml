@@ -216,3 +216,89 @@ jobs:
       - run: npm ci
       - run: npm run build -w packages/api-types
       - run: npm run build -w apps/web
+
+  docker:
+    name: Production Docker image build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Plain `docker build`, no Buildx and no third-party actions. Docker is
+      # preinstalled on the runner, nothing is pushed, and a gate whose job is
+      # to prove the production image assembles should have as little between
+      # it and the real thing as possible.
+      #
+      # The context is the REPOSITORY ROOT, not the Dockerfile's directory:
+      # every COPY in it names a root-relative path (package.json,
+      # packages/api-types/, apps/api/). Building from
+      # infrastructure/deployment/ would fail on the first COPY.
+      #
+      # No secrets, no registry credentials, no Railway token. The image is
+      # built and inspected locally on the runner and then discarded.
+      - name: Build the production image
+        run: |
+          docker build \
+            --file infrastructure/deployment/Dockerfile \
+            --tag leadflow-ci:${{ github.sha }} \
+            .
+
+      # Building proves the Dockerfile parses and every COPY resolved. These
+      # assertions prove the RESULT is the image we think it is — the
+      # difference between "docker exited 0" and "this can actually run".
+      #
+      # Deliberately static. Starting the API would need a database, Redis and
+      # real secrets, so a gate that tried would either need production
+      # credentials or would be testing a misconfiguration. `sh -c test` reads
+      # files and starts nothing.
+      - name: Check the image contains what production needs
+        run: |
+          set -euo pipefail
+          image=leadflow-ci:${{ github.sha }}
+
+          run() { docker run --rm --entrypoint sh "$image" -c "$1"; }
+
+          echo "--- both process entrypoints ---"
+          # One image, two roles. The worker command is as load-bearing as the
+          # API's: Railway overrides CMD to run it.
+          run 'test -f apps/api/dist/main.js'
+          run 'test -f apps/api/dist/worker.js'
+
+          echo "--- the web app the API serves same-origin ---"
+          # Without this the SPA 404s in production while every other check
+          # stays green, because the API itself is perfectly healthy.
+          run 'test -f apps/web/dist/index.html'
+          run 'test -d apps/web/dist/assets'
+
+          echo "--- Prisma runtime ---"
+          run 'test -d apps/api/src/generated/prisma'
+          run 'test -d node_modules/@prisma/client'
+          run 'test -d node_modules/@prisma/adapter-pg'
+          # Migrations ship with the image so a deploy can apply them from the
+          # same artefact that will run against them.
+          run 'test -d apps/api/prisma/migrations'
+
+          echo "--- production dependencies only ---"
+          # `npm ci --omit=dev` really omitted them. A runtime image carrying
+          # TypeScript, Jest or the Prisma CLI is a runtime image that can
+          # rewrite its own schema.
+          run 'test ! -d node_modules/typescript'
+          run 'test ! -d node_modules/jest'
+          run 'test ! -d node_modules/prisma'
+
+          echo "--- nothing from a developer machine ---"
+          # A .env is gitignored and so cannot reach a clean checkout, but the
+          # build stage does `COPY . .` and this is the cheap proof that
+          # nothing local rode along into the final image.
+          run 'test ! -f .env'
+
+          echo "--- runs as a non-root user ---"
+          user=$(docker image inspect --format '{{.Config.User}}' "$image")
+          echo "USER=${user}"
+          test "${user}" = "node"
+
+          echo "--- default command ---"
+          cmd=$(docker image inspect --format '{{json .Config.Cmd}}' "$image")
+          echo "CMD=${cmd}"
+          test "${cmd}" = '["node","apps/api/dist/main.js"]'
+
+          echo "all image assertions passed"
