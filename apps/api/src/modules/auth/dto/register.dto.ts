@@ -8,6 +8,12 @@ import {
   MaxLength,
   MinLength,
 } from 'class-validator';
+import {
+  IsCountryCode,
+  IsCurrencyCode,
+  IsLocaleTag,
+  IsTimezoneId,
+} from '../../../common/validation/locale.validators';
 import { SLUG_PATTERN } from '../../organizations/slug';
 
 export class RegisterDto {
@@ -56,19 +62,50 @@ export class RegisterDto {
   @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   lastName!: string;
 
+  /*
+   * The three tenant identity settings a new organization can state at
+   * registration. Each is optional; the configured deployment default applies
+   * when it is absent.
+   *
+   * They are validated against the same ICU-backed rules as the settings
+   * screen, which they previously were not: a length cap accepted country
+   * "ZZ", timezone "xyz" and currency "zzz", so an organization could be
+   * created with values its own settings page would then refuse to save, and
+   * every date bucket and phone number in it would be read against nonsense.
+   */
+
+  /** IANA zone. Decides what "today" means in every report and follow-up. */
   @IsOptional()
   @IsString()
   @MaxLength(64)
+  @IsTimezoneId()
   timezone?: string;
 
+  /** ISO 4217. Formats every amount the tenant sees. */
   @IsOptional()
   @IsString()
   @MaxLength(3)
+  @IsCurrencyCode()
   currency?: string;
 
+  /** BCP 47. Number, date and currency formatting conventions. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(16)
+  @IsLocaleTag()
+  locale?: string;
+
+  /**
+   * ISO 3166-1 alpha-2, and the one with teeth.
+   *
+   * It decides how every local phone number this tenant ever enters is read
+   * into E.164, and duplicate detection compares the canonical form — so the
+   * wrong country here silently stops recognising the same customer twice.
+   */
   @IsOptional()
   @IsString()
   @MaxLength(2)
+  @IsCountryCode()
   country?: string;
 
   @IsOptional()

@@ -1,6 +1,7 @@
 import { createTestContext, PASSWORD, type TestContext } from './helpers/test-app';
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import { TenantContextService } from '../src/common/tenancy/tenant-context.service';
+import { fixtureMobile } from './helpers/phone-fixtures';
 
 /**
  * Workstream 4 — closed and archived leads must not remain operational work.
@@ -22,11 +23,7 @@ describe('Closing a lead reconciles its follow-ups', () => {
   const unique = (prefix: string): string =>
     `${prefix}.${Date.now()}.${Math.floor(Math.random() * 1_000_000)}`;
 
-  let counter = 0;
-  const mobile = (): string => {
-    counter += 1;
-    return `4155596${String(1000 + counter)}`;
-  };
+  const mobile = (): string => fixtureMobile();
 
   const inDays = (days: number): string => new Date(Date.now() + days * 86_400_000).toISOString();
 

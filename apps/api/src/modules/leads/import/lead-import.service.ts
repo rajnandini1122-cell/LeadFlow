@@ -235,8 +235,15 @@ export class LeadImportService {
       (values.nextFollowUpAt as string | undefined) ?? dto.defaultNextFollowUpAt,
     );
 
+    /*
+     * No lead number here either.
+     *
+     * This path had no collision handling at all: a bulk import racing
+     * anything else would have surfaced a unique violation as a 500 partway
+     * through a file, with some rows imported and some not. It now allocates
+     * under the same tenant lock as every other create.
+     */
     await this.leads.createWithActivity({
-      leadNumber: await this.leads.nextLeadNumber(),
       firstName: values.firstName as string,
       lastName: values.lastName,
       mobile,

@@ -68,6 +68,30 @@ export class UpdateLeadDto {
   @MaxLength(60)
   source?: string;
 
+  /**
+   * The standardised product this enquiry is for.
+   *
+   * Optional, and separate from productInterest below. This is the grouping key
+   * every product KPI uses; the free text is what the customer actually asked
+   * for. Both are kept — "White Onion Powder" cannot carry "500 kg monthly,
+   * food manufacturing use", and losing that detail would cost more than the
+   * grouping gains.
+   */
+  @IsOptional()
+  @IsUUID('7', { message: 'must be a valid product id' })
+  productId?: string;
+
+  /**
+   * The customer this opportunity belongs to.
+   *
+   * Null detaches it, which is the honest option when a lead turns out to have
+   * been filed under the wrong company — better than leaving it attached to a
+   * customer whose figures it then distorts.
+   */
+  @IsOptional()
+  @IsUUID('7', { message: 'must be a valid account id' })
+  accountId?: string;
+
   @IsOptional()
   @IsString()
   @MaxLength(200)

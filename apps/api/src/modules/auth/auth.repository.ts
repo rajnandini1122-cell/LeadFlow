@@ -49,7 +49,24 @@ export class AuthRepository {
         mobile: true,
         avatarUrl: true,
         status: true,
+        // Which Google account created this one, if any. Decides whether
+        // Google is a valid way back in — see AuthService.loginWithGoogle.
+        googleSubject: true,
       },
+    });
+  }
+
+  /**
+   * Adopts an account that has never been used.
+   *
+   * Only ever called for a row with no password and no existing Google link:
+   * an invitation nobody accepted. Anything else would be attaching a Google
+   * identity to an account somebody already owns.
+   */
+  async linkGoogleAccount(userId: string, googleSubject: string): Promise<void> {
+    await this.prisma.client.user.update({
+      where: { id: userId },
+      data: { googleSubject },
     });
   }
 
@@ -148,6 +165,49 @@ export class AuthRepository {
     );
   }
 
+  /**
+   * Whether a rotated session was consumed recently enough to treat a late
+   * arrival as a lost race rather than a replay.
+   *
+   * Both halves of the comparison come from PostgreSQL: `revoked_at` was
+   * written by the database when the rotation committed, and `clock_timestamp()`
+   * is read now. No application clock takes part, so two API replicas whose
+   * clocks disagree still reach the same verdict.
+   *
+   * A session whose revocation is somehow in the future answers `true` — the
+   * difference is negative, which is inside any interval. That is the safe
+   * direction: it withholds family revocation rather than inventing it.
+   */
+  async isWithinRotationReuseInterval(input: {
+    sessionId: string;
+    organizationId: string;
+    intervalMs: number;
+  }): Promise<boolean> {
+    return this.tenantContext.runAsSystem(
+      'refresh: ask the database whether a rotated token is still inside the reuse interval',
+      async () => {
+        /*
+         * Raw SQL, deliberately and narrowly: Prisma cannot express
+         * `clock_timestamp()`, and reading the database's own clock is the
+         * entire point. Every value is bound as a parameter, and the row is
+         * pinned to its organization as the lint rule requires.
+         */
+        // eslint-disable-next-line no-restricted-syntax
+        const rows = await this.prisma.client.$queryRaw<{ within: boolean }[]>`
+          SELECT clock_timestamp() - "revoked_at"
+                 <= (${input.intervalMs}::double precision / 1000) * interval '1 second'
+                 AS within
+            FROM "sessions"
+           WHERE "id" = ${input.sessionId}::uuid
+             AND "organization_id" = ${input.organizationId}::uuid
+             AND "revoked_at" IS NOT NULL
+        `;
+
+        return rows[0]?.within ?? false;
+      },
+    );
+  }
+
   async rotateSession(input: {
     currentSessionId: string;
     organizationId: string;
@@ -170,29 +230,40 @@ export class AuthRepository {
         /*
          * Consume FIRST, and conditionally.
          *
-         * `revokedAt: null` in the WHERE clause is the whole fix. The previous
-         * version read the session as live in the service, then created the
-         * child and unconditionally revoked the parent — so several concurrent
-         * requests each passed that earlier read and each minted a session,
-         * turning one refresh token into several valid ones.
+         * `revoked_at IS NULL` in the WHERE clause is what guarantees one
+         * child per token. An earlier version read the session as live in the
+         * service, then created the child and unconditionally revoked the
+         * parent — so several concurrent requests each passed that earlier
+         * read and each minted a session, turning one refresh token into
+         * several valid ones.
          *
          * Postgres evaluates this predicate against the committed row at write
          * time, so exactly one caller can match. Everyone else updates zero
          * rows and is told so.
+         *
+         * Raw SQL for one reason: `revoked_at` must be the DATABASE's clock.
+         * It is the instant the reuse interval is measured from, and two API
+         * replicas can disagree about the time while the database cannot
+         * disagree with itself. Prisma cannot express `clock_timestamp()`.
+         * Every value below is a bound parameter, and the row is pinned to its
+         * organization as the lint rule requires.
          */
-        const consumed = await tx.session.updateMany({
-          where: { id: input.currentSessionId, revokedAt: null },
-          data: {
-            revokedAt: new Date(),
-            revokedReason: 'ROTATED',
-            replacedById: replacementId,
-          },
-        });
+        // eslint-disable-next-line no-restricted-syntax
+        const consumed = await tx.$queryRaw<{ id: string }[]>`
+          UPDATE "sessions"
+             SET "revoked_at" = clock_timestamp(),
+                 "revoked_reason" = 'ROTATED',
+                 "replaced_by_id" = ${replacementId}::uuid
+           WHERE "id" = ${input.currentSessionId}::uuid
+             AND "organization_id" = ${input.organizationId}::uuid
+             AND "revoked_at" IS NULL
+          RETURNING "id"
+        `;
 
         // Lost the race. Returning null rather than throwing keeps the
         // decision about HOW to answer with the service, which is the only
         // place that can tell a concurrent loser from a replayed leak.
-        if (consumed.count === 0) return null;
+        if (consumed.length === 0) return null;
 
         return tx.session.create({
           data: {

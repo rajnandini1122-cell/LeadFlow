@@ -4,7 +4,6 @@ import type { UserListItem } from '@leadflow/api-types';
 import { apiGet } from '../../lib/api-client';
 import { formatCurrencyCompact, formatDate, formatRelative } from '../../lib/format';
 import {
-  Avatar,
   Card,
   CardHeader,
   EmptyState,
@@ -14,6 +13,7 @@ import {
   SkeletonRows,
   StatTile,
 } from '../../components/ui';
+import { UserAvatar } from '../../components/user-avatar';
 import { useAuth } from '../auth/auth-context';
 import { DateRangePicker, RangeSummary } from '../reports/date-range-picker';
 import {
@@ -202,7 +202,7 @@ export function TeamPage(): React.JSX.Element {
           <ul className="divide-y divide-slate-100">
             {members.map((member) => (
               <li key={member.id} className="flex flex-wrap items-center gap-4 px-5 py-3.5">
-                <Avatar name={member.fullName} />
+                <UserAvatar name={member.fullName} avatarUrl={member.avatarUrl} />
 
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">

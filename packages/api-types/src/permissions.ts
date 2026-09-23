@@ -15,6 +15,19 @@ export const PERMISSIONS = {
   LEAD_DELETE: 'lead.delete',
   LEAD_ASSIGN: 'lead.assign',
 
+  ACCOUNT_VIEW: 'account.view',
+  ACCOUNT_CREATE: 'account.create',
+  ACCOUNT_UPDATE: 'account.update',
+  /** Merging is destructive and irreversible, so it is separate from update. */
+  ACCOUNT_MERGE: 'account.merge',
+  /**
+   * Reclassifying a relationship — PROSPECT to CUSTOMER, or a customer to
+   * former. Separate from ACCOUNT_UPDATE because it is what every retention
+   * and acquisition figure is counted from, so changing it rewrites reported
+   * history in a way that editing an address does not.
+   */
+  ACCOUNT_STATUS_CHANGE: 'account.status.change',
+
   CONTACT_VIEW: 'contact.view',
   CONTACT_UPDATE: 'contact.update',
   /** Merging is destructive and irreversible, so it is separate from update. */
@@ -39,6 +52,59 @@ export const PERMISSIONS = {
   ORG_VIEW: 'org.view',
   ORG_UPDATE: 'org.update',
 
+  /**
+   * Sales teams.
+   *
+   * A noun of their own rather than a stretch of `org.update`, because every
+   * other noun in this catalogue has its own verbs and teams will shortly be
+   * what assignment rules are written against. Reading is separated from
+   * managing on the same line USER_VIEW and USER_UPDATE already draw: a
+   * manager needs to see the structure they work in; restructuring it is
+   * administration.
+   */
+  TEAM_VIEW: 'team.view',
+  TEAM_MANAGE: 'team.manage',
+
+  /**
+   * Assignment rules — which team handles which work.
+   *
+   * Separate from team.manage, and not an overload of it, because they are
+   * materially different powers: staffing a team decides who does the work,
+   * while the routing table decides which customers reach which team at all.
+   * Somebody trusted to add a colleague to Pune Sales is not automatically
+   * trusted to send every website enquiry there.
+   */
+  ASSIGNMENT_RULE_VIEW: 'assignment_rule.view',
+  ASSIGNMENT_RULE_MANAGE: 'assignment_rule.manage',
+
+  /**
+   * Territories — the geography routing is written against.
+   *
+   * Its own noun rather than part of assignment_rule.manage, because the two
+   * can be delegated separately and usually are: redrawing which pincodes
+   * belong to which territory changes where every future enquiry from those
+   * places lands, whether or not the person doing it may touch a single rule.
+   * Read is separated from manage on the line the catalogue already draws — a
+   * manager whose region stops receiving enquiries needs to see the map;
+   * redrawing it is administration.
+   */
+  TERRITORY_VIEW: 'territory.view',
+  TERRITORY_MANAGE: 'territory.manage',
+
+  /**
+   * The website intake queue — enquiries as they arrived, and what routing did
+   * with them.
+   *
+   * An operations surface rather than a CRM one, which is why it is its own
+   * noun. A row here may be an enquiry that became nobody's lead because no
+   * rule matched it, so it is visible to the people who maintain the routing
+   * table rather than to everyone with a pipeline. Managing means retrying a
+   * blocked enquiry after fixing the configuration — never rewriting what the
+   * customer sent.
+   */
+  INTEGRATION_INTAKE_VIEW: 'integration_intake.view',
+  INTEGRATION_INTAKE_MANAGE: 'integration_intake.manage',
+
   DASHBOARD_VIEW_OWN: 'dashboard.view.own',
   DASHBOARD_VIEW_TEAM: 'dashboard.view.team',
   DASHBOARD_VIEW_ALL: 'dashboard.view.all',
@@ -54,6 +120,16 @@ const SALES_REP_PERMISSIONS: Permission[] = [
   PERMISSIONS.LEAD_VIEW_OWN,
   PERMISSIONS.LEAD_CREATE,
   PERMISSIONS.CONTACT_VIEW,
+  PERMISSIONS.ACCOUNT_VIEW,
+  /*
+   * A rep creating a lead for a company nobody has dealt with before must be
+   * able to record that company. Withholding this would mean either a lead
+   * with no customer attached, or a rep waiting on a manager mid-call — and
+   * the first is how the free-text company field became unusable in the first
+   * place. Duplicate candidates are surfaced on create, so the risk this
+   * carries is a suggestion, not a silent second record.
+   */
+  PERMISSIONS.ACCOUNT_CREATE,
   PERMISSIONS.LEAD_UPDATE,
   PERMISSIONS.ACTIVITY_CREATE,
   PERMISSIONS.ACTIVITY_VIEW,
@@ -68,8 +144,21 @@ const MANAGER_PERMISSIONS: Permission[] = [
   PERMISSIONS.LEAD_VIEW_TEAM,
   PERMISSIONS.LEAD_ASSIGN,
   PERMISSIONS.CONTACT_UPDATE,
+  PERMISSIONS.ACCOUNT_UPDATE,
+  PERMISSIONS.ACCOUNT_STATUS_CHANGE,
   PERMISSIONS.FOLLOW_UP_VIEW_TEAM,
   PERMISSIONS.USER_VIEW,
+  // Sees the teams and who is in them. Cannot restructure them -- being
+  // responsible for a team is a business role, not an administrative one.
+  PERMISSIONS.TEAM_VIEW,
+  // Sees how work is routed -- a manager whose team stops receiving enquiries
+  // needs to be able to find out why. Changing it is administration.
+  PERMISSIONS.ASSIGNMENT_RULE_VIEW,
+  // Sees the map their routing is written against, for the same reason.
+  PERMISSIONS.TERRITORY_VIEW,
+  // Sees why enquiries did or did not reach their team. Retrying one is
+  // administration, because it depends on having fixed the configuration.
+  PERMISSIONS.INTEGRATION_INTAKE_VIEW,
   PERMISSIONS.DASHBOARD_VIEW_TEAM,
   PERMISSIONS.REPORT_VIEW,
 ];
@@ -79,12 +168,17 @@ const ADMIN_PERMISSIONS: Permission[] = [
   PERMISSIONS.LEAD_VIEW_ALL,
   PERMISSIONS.LEAD_DELETE,
   PERMISSIONS.CONTACT_MERGE,
+  PERMISSIONS.ACCOUNT_MERGE,
   PERMISSIONS.LEAD_IMPORT,
   PERMISSIONS.USER_INVITE,
   PERMISSIONS.USER_UPDATE,
   PERMISSIONS.USER_SUSPEND,
   PERMISSIONS.USER_REMOVE,
   PERMISSIONS.ROLE_ASSIGN,
+  PERMISSIONS.TEAM_MANAGE,
+  PERMISSIONS.ASSIGNMENT_RULE_MANAGE,
+  PERMISSIONS.TERRITORY_MANAGE,
+  PERMISSIONS.INTEGRATION_INTAKE_MANAGE,
   PERMISSIONS.ORG_UPDATE,
   PERMISSIONS.DASHBOARD_VIEW_ALL,
 ];

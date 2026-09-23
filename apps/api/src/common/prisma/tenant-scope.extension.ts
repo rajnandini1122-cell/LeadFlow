@@ -42,11 +42,106 @@ export const TENANT_SCOPED_MODELS: Record<string, string> = {
   Session: 'organizationId',
   Lead: 'organizationId',
   LeadActivity: 'organizationId',
+  /*
+   * The customer relationship.
+   *
+   * An account id is what leads, contacts and follow-ups reference and what
+   * every customer KPI groups by. An unscoped read would expose one tenant's
+   * entire customer list AND let a foreign account be attached to a local
+   * lead, which would file that revenue under the wrong company. Scoped on
+   * exactly the same fail-closed terms as leads.
+   */
+  Account: 'organizationId',
+  /*
+   * Notifications.
+   *
+   * A notification body quotes customer names and deal values, so a leak here
+   * is a leak of exactly what a competitor would want. Scoped on the same
+   * fail-closed terms as everything else — and the background worker reaches
+   * them through runWithTenant, never through system scope.
+   */
+  Notification: 'organizationId',
+  /*
+   * Device registrations.
+   *
+   * A row here holds a PUSH TOKEN, which is a credential: anyone with it can
+   * send a notification that appears to come from LeadFlow. Unscoped reads
+   * would expose every tenant's tokens, and unscoped writes would let one
+   * tenant deactivate another's phones.
+   */
+  UserDevice: 'organizationId',
   FollowUp: 'organizationId',
   Contact: 'organizationId',
   Subscription: 'organizationId',
+  // Omnichannel capture. Conversations and messages are customer
+  // correspondence — the most sensitive data in the product after credentials
+  // — so they are scoped on exactly the same fail-closed terms as leads.
+  ChannelIntegration: 'organizationId',
+  Conversation: 'organizationId',
+  Message: 'organizationId',
+  ContactChannelIdentity: 'organizationId',
+  /*
+   * The product catalogue.
+   *
+   * A product id is what a lead references and what every KPI groups by, so an
+   * unscoped read would let one tenant see another's catalogue AND assign a
+   * foreign product to their own lead — which would then appear in the wrong
+   * organization's numbers.
+   */
+  Product: 'organizationId',
+  // A template NAME is what the send API takes, so an unscoped read here would
+  // be enough to send as another tenant if any single check above it were ever
+  // missed. Scoped for the same reason conversations are.
+  WhatsAppTemplate: 'organizationId',
+  /*
+   * Integration intake.
+   *
+   * A submission from an approved integration, holding a real person's name,
+   * email, phone and what they asked about — the same data a lead holds, and
+   * scoped on the same fail-closed terms. Unlike ContactEnquiry, which belongs
+   * to nobody because an anonymous visitor belongs to nobody, an intake always
+   * belongs to exactly one tenant: the one the integration is configured for.
+   */
+  IntegrationIntake: 'organizationId',
+  /*
+   * Sales teams, and who is in them.
+   *
+   * A team names people and will shortly decide who receives which customer,
+   * so an unscoped read would expose one tenant's sales structure and an
+   * unscoped write could put a stranger into it. Scoped on the same
+   * fail-closed terms as leads — and the database enforces the same rule
+   * underneath, through composite foreign keys that carry the tenant into the
+   * key, so a bug here is refused twice rather than once.
+   */
+  Team: 'organizationId',
+  TeamMember: 'organizationId',
+  /*
+   * The routing table.
+   *
+   * It decides which customers reach which team, so an unscoped read would
+   * expose how a competitor organises its sales and an unscoped write could
+   * redirect their enquiries. Scoped like everything else, with composite
+   * foreign keys carrying the tenant underneath.
+   */
+  AssignmentRule: 'organizationId',
+  /*
+   * Territories, and the places they cover.
+   *
+   * A coverage table is a map of where a competitor sells — which pincodes
+   * they treat as one patch, which countries they bother with — so an unscoped
+   * read would be a leak of commercial strategy rather than of customer data.
+   * An unscoped WRITE would be worse: claiming a rival's territory name, or
+   * quietly taking ownership of a place they route on, would redirect their
+   * enquiries. Scoped fail-closed like everything else, with composite foreign
+   * keys carrying the tenant underneath so a bug is refused twice.
+   */
+  Territory: 'organizationId',
+  TerritoryCoverage: 'organizationId',
   // Plan is deliberately ABSENT: it is a global catalogue offered to every
   // tenant, and the public pricing page reads it with no tenant context at all.
+  //
+  // ContactEnquiry is ABSENT for a different reason: a public contact form
+  // submission has no tenant to scope it to. See its model comment.
 };
 
 /** Operations whose `where` must be narrowed to the tenant. */

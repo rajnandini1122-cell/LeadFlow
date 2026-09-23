@@ -1,0 +1,40 @@
+# LeadFlow — worker service (Railway)
+#
+# The SAME image as the API. Only the start command and WORKER_ENABLED differ.
+# That is what guarantees the worker cannot drift from the API: it runs the same
+# repositories, the same Prisma tenant scoping and the same domain rules,
+# because it is literally the same build.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "infrastructure/deployment/Dockerfile"
+
+[deploy]
+startCommand = "node apps/api/dist/worker.js"
+
+# NO healthcheckPath.
+#
+# The worker binds no port — worker.ts uses createApplicationContext, which
+# starts the DI container without an HTTP listener. A healthcheck would have
+# nothing to call and would restart a perfectly healthy process every interval.
+#
+# The worker's real health signal is `worker.lastSweepAt` on the API's
+# /api/metrics. A sweep that stops running emits no errors and no logs, so a
+# timestamp that stops moving is the ONLY evidence — and a dead sweep means
+# nobody is being reminded of anything, which is the exact failure the worker
+# exists to prevent. Alert on that, not on a port.
+
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
+
+# EXACTLY ONE. Not a performance decision.
+#
+# The sweep is safe to run concurrently — every notification sits behind a
+# deterministic key with a unique index, and every marker is claimed
+# conditionally, both raced in test/concurrency.e2e-spec.ts. Two replicas would
+# not double-notify.
+#
+# They would simply do the same work twice and contend on the same rows for no
+# benefit. Scale this only when a sweep starts taking longer than its interval,
+# which shows up in lastSweepAt long before it becomes a problem.
+numReplicas = 1

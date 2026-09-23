@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { Link } from 'react-router-dom';
 import type { LeadPriority, LeadStatus } from '@leadflow/api-types';
 import { humanise, initials } from '../lib/format';
 
@@ -161,7 +162,23 @@ export function RoleBadge({ role }: { role: string }): React.JSX.Element {
 
 // -----------------------------------------------------------------------------
 
-export function Avatar({ name, size = 'md' }: { name: string; size?: 'sm' | 'md' }): React.JSX.Element {
+export function Avatar({
+  name,
+  size = 'md',
+  src,
+}: {
+  name: string;
+  size?: 'sm' | 'md';
+  /**
+   * A profile picture, already fetched through the authenticated client.
+   *
+   * Optional, and absent for most callers: leads and contacts are people
+   * outside the organization who have no account and therefore no photograph.
+   * Initials remain the default rather than a placeholder for something
+   * missing.
+   */
+  src?: string | null;
+}): React.JSX.Element {
   const dimensions = size === 'sm' ? 'h-7 w-7 text-[11px]' : 'h-9 w-9 text-xs';
 
   // Deterministic tint from the name, so a person keeps the same colour
@@ -175,6 +192,19 @@ export function Avatar({ name, size = 'md' }: { name: string; size?: 'sm' | 'md'
     'bg-violet-100 text-violet-700',
   ];
   const hash = [...name].reduce((sum, char) => sum + char.charCodeAt(0), 0);
+
+  if (src) {
+    return (
+      <img
+        src={src}
+        alt={name}
+        title={name}
+        // object-cover, so a non-square photograph is cropped rather than
+        // squashed into an oval.
+        className={`inline-block shrink-0 rounded-full object-cover ${dimensions}`}
+      />
+    );
+  }
 
   return (
     <span
@@ -191,11 +221,21 @@ export function StatTile({
   value,
   hint,
   tone = 'default',
+  to,
 }: {
   label: string;
   value: string | number;
   hint?: string;
   tone?: 'default' | 'danger' | 'warning' | 'success';
+  /**
+   * Where the number leads.
+   *
+   * A dashboard that says "6 overdue" and cannot show you which six is a dead
+   * end — the count is a prompt to act, so it should be one click from the
+   * work. Optional, because some tiles summarise a figure with no list behind
+   * it: "Active pipeline" is a total, not a queue.
+   */
+  to?: string;
 }): React.JSX.Element {
   const valueTone = {
     default: 'text-slate-900',
@@ -211,15 +251,28 @@ export function StatTile({
     success: 'before:bg-emerald-500',
   }[tone];
 
-  return (
-    <div
-      className={`relative overflow-hidden rounded-xl border border-slate-200 bg-white p-4 shadow-[0_1px_2px_rgba(15,23,42,0.04)] before:absolute before:inset-y-0 before:left-0 before:w-1 ${accent}`}
-    >
+  const shell = `relative block overflow-hidden rounded-xl border border-slate-200 bg-white p-4 shadow-[0_1px_2px_rgba(15,23,42,0.04)] before:absolute before:inset-y-0 before:left-0 before:w-1 ${accent}`;
+
+  const body = (
+    <>
       <p className="text-xs font-medium text-slate-500">{label}</p>
       <p className={`mt-1.5 text-2xl font-semibold tabular-nums ${valueTone}`}>{value}</p>
       {hint && <p className="mt-0.5 text-xs text-slate-400">{hint}</p>}
-    </div>
+    </>
   );
+
+  // A real anchor when there is somewhere to go, so it is keyboard reachable
+  // and opens in a new tab on middle-click like any other link.
+  if (to) {
+    return (
+      <Link to={to} className={`${shell} transition hover:border-slate-300 hover:bg-slate-50`}>
+        {body}
+        <span className="mt-1 block text-xs font-medium text-slate-400">View &rarr;</span>
+      </Link>
+    );
+  }
+
+  return <div className={shell}>{body}</div>;
 }
 
 export function EmptyState({

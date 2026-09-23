@@ -46,6 +46,17 @@ export const ERROR_CODES = {
    */
   REASSIGNMENT_REQUIRED: 'REASSIGNMENT_REQUIRED',
 
+  // --- accounts / customers ---------------------------------------------------
+  ACCOUNT_NOT_FOUND: 'ACCOUNT_NOT_FOUND',
+  /**
+   * An account that looks like the same company already exists.
+   *
+   * Carries the candidates and which fields matched, so the client can offer
+   * "open the existing one" instead of the caller discovering the split
+   * history months later. Never an automatic merge — a person decides.
+   */
+  DUPLICATE_ACCOUNT: 'DUPLICATE_ACCOUNT',
+
   // --- subscriptions (Phase 8) -----------------------------------------------
   SUBSCRIPTION_NOT_FOUND: 'SUBSCRIPTION_NOT_FOUND',
   PLAN_NOT_FOUND: 'PLAN_NOT_FOUND',

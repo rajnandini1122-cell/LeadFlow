@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from 'react';
+import { memo, useEffect, useRef, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { Copyright, LogoMark } from '../../components/brand';
 
@@ -117,6 +117,87 @@ export function AuthField({
     </div>
   );
 }
+
+/**
+ * A select styled as the text fields are.
+ *
+ * Same label, hint and error treatment, so a form does not look assembled from
+ * two different kits.
+ */
+export function AuthSelect({
+  id,
+  label,
+  value,
+  onChange,
+  options,
+  hint,
+  error,
+  disabled,
+}: {
+  id: string;
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  options: { value: string; label: string }[];
+  hint?: string;
+  error?: string | undefined;
+  disabled?: boolean;
+}): React.JSX.Element {
+  const describedBy = error ? `${id}-error` : hint ? `${id}-hint` : undefined;
+
+  return (
+    <div>
+      <label htmlFor={id} className="mb-1 block text-sm font-medium text-slate-700">
+        {label}
+      </label>
+
+      <select
+        id={id}
+        name={id}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        disabled={disabled}
+        aria-invalid={error ? true : undefined}
+        aria-describedby={describedBy}
+        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-slate-900 focus:ring-1 focus:ring-slate-900 disabled:bg-slate-50 disabled:text-slate-500 aria-[invalid]:border-red-400"
+      >
+        <SelectOptions options={options} />
+      </select>
+
+      {error ? (
+        <p id={`${id}-error`} role="alert" className="mt-1 text-xs text-red-600">
+          {error}
+        </p>
+      ) : hint ? (
+        <p id={`${id}-hint`} className="mt-1 text-xs text-slate-400">
+          {hint}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * The options, rendered only when the list itself changes.
+ *
+ * A country list is about 250 elements. Without this, every keystroke in a
+ * neighbouring field re-renders all of them.
+ */
+const SelectOptions = memo(function SelectOptions({
+  options,
+}: {
+  options: { value: string; label: string }[];
+}): React.JSX.Element {
+  return (
+    <>
+      {options.map((option) => (
+        <option key={option.value} value={option.value}>
+          {option.label}
+        </option>
+      ))}
+    </>
+  );
+});
 
 export function SubmitButton({
   submitting,

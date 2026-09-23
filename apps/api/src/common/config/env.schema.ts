@@ -1,4 +1,10 @@
 import { z } from 'zod';
+import {
+  isValidCountry,
+  isValidCurrency,
+  isValidLocale,
+  isValidTimezone,
+} from '../utils/locale';
 
 /**
  * Environment schema.
@@ -19,6 +25,18 @@ const secret = z
   .refine((v) => !v.toLowerCase().startsWith('change-me'), {
     message: 'is still the placeholder from .env.example — generate a real secret',
   });
+
+/**
+ * Accepts "user@example.com" and "Display Name <user@example.com>".
+ *
+ * Deliberately narrow: this exists to catch a mistyped From before it becomes
+ * mail that no receiving server will accept, not to re-implement RFC 5322.
+ */
+function isMailbox(value: string): boolean {
+  const address = /^\s*[^<>]*<([^<>]+)>\s*$/.exec(value)?.[1] ?? value.trim();
+
+  return z.string().email().safeParse(address).success;
+}
 
 const csv = z
   .string()
@@ -42,10 +60,65 @@ export const envSchema = z
     PRODUCT_LOGO_URL: z.string().default(''),
 
     // --- email --------------------------------------------------------------
-    // Which transport carries password resets and invitations. 'console' logs
-    // instead of sending and is refused in production — see createEmailProvider.
+    /**
+     * Which transport carries password resets and invitations.
+     *
+     * 'console' logs instead of sending and is refused in production; 'smtp'
+     * delivers through any standards-compliant server. Deliberately a plain
+     * string rather than an enum: an unrecognised value must fail loudly at
+     * boot in production and merely warn in development, which is a decision
+     * createEmailProvider makes with more context than the schema has.
+     */
     EMAIL_PROVIDER: z.string().default('console'),
-    EMAIL_FROM: z.string().default('LeadFlow <no-reply@example.com>'),
+    /**
+     * The envelope sender. Either a bare address or a display name with one:
+     *
+     *   no-reply@example.com
+     *   LeadFlow <no-reply@example.com>
+     *
+     * Validated because a malformed From is rejected by the receiving server,
+     * not by us — the failure would surface as mail that silently never
+     * arrives, which is the class of problem this whole schema exists to catch.
+     */
+    EMAIL_FROM: z
+      .string()
+      .default('LeadFlow <no-reply@example.com>')
+      .refine((value) => isMailbox(value), {
+        message:
+          'must be an email address, optionally with a display name: ' +
+          '"no-reply@example.com" or "LeadFlow <no-reply@example.com>"',
+      }),
+
+    /**
+     * SMTP transport. Required together when EMAIL_PROVIDER=smtp, ignored
+     * otherwise — see the conditional check below.
+     *
+     * No defaults, deliberately. A default host or port would let a
+     * half-configured production deployment boot and send nowhere, and a
+     * default credential is worse than none.
+     */
+    SMTP_HOST: z.string().min(1).optional(),
+    SMTP_PORT: z.coerce.number().int().min(1).max(65535).optional(),
+    /**
+     * TLS mode, stated rather than inferred from the port.
+     *
+     * 'true' means implicit TLS from the first byte (usually port 465).
+     * 'false' means the connection starts in cleartext and is upgraded with
+     * STARTTLS (usually 587) — which this application requires rather than
+     * merely attempts, so credentials never cross an unencrypted socket.
+     *
+     * Strict about its spelling on purpose: the house style elsewhere treats
+     * anything that is not 'true' as false, and here that would turn
+     * SMTP_SECURE=1 or =TRUE into a silent downgrade to the other mode.
+     */
+    SMTP_SECURE: z
+      .enum(['true', 'false'], {
+        message: "must be exactly 'true' or 'false'",
+      })
+      .transform((value) => value === 'true')
+      .optional(),
+    SMTP_USER: z.string().min(1).optional(),
+    SMTP_PASSWORD: z.string().min(1).optional(),
     // Where emailed links point. The WEB app, not the API.
     WEB_BASE_URL: z.string().url().default('http://localhost:5173'),
     // Where public contact-form enquiries are delivered. Configuration rather
@@ -53,13 +126,40 @@ export const envSchema = z
     // can be changed without a release.
     SALES_EMAIL: z.string().email().default('sales@cravionventures.com'),
 
-    // --- defaults for newly created organizations ---------------------------
-    // Fallbacks only. Each organization stores its own, and every
-    // tenant-visible figure is formatted from the tenant value, never these.
-    DEFAULT_TIMEZONE: z.string().default('UTC'),
-    DEFAULT_CURRENCY: z.string().length(3).default('USD'),
-    DEFAULT_LOCALE: z.string().default('en-US'),
-    DEFAULT_COUNTRY: z.string().length(2).default('US'),
+    /*
+     * --- defaults for newly created organizations ---------------------------
+     *
+     * Fallbacks only, and only at creation. Each organization stores its own
+     * four values and every tenant-visible figure is formatted from THOSE,
+     * never from these — changing one of these settings does not reach a
+     * single existing tenant, which is what makes it safe to change.
+     *
+     * India, because that is the market this deployment opens in. They remain
+     * configuration rather than constants so the next deployment is a variable
+     * change and not a release, and they are validated below so a typo cannot
+     * create tenants whose own settings screen would refuse their values.
+     *
+     * The Prisma column defaults still say US/UTC/USD/en-US. They are not the
+     * source of truth and are never relied on: the application always passes
+     * all four explicitly when it creates an organization.
+     */
+    DEFAULT_TIMEZONE: z.string().trim().default('Asia/Kolkata'),
+    // Upper-cased on the way in, so DEFAULT_CURRENCY=inr is accepted and
+    // stored as INR rather than creating tenants whose currency compares
+    // unequal to everybody else's.
+    DEFAULT_CURRENCY: z
+      .string()
+      .trim()
+      .length(3)
+      .default('INR')
+      .transform((value) => value.toUpperCase()),
+    DEFAULT_LOCALE: z.string().trim().default('en-IN'),
+    DEFAULT_COUNTRY: z
+      .string()
+      .trim()
+      .length(2)
+      .default('IN')
+      .transform((value) => value.toUpperCase()),
 
     // --- platform operations ------------------------------------------------
     // Contact number for the PLATFORM operator, not for any tenant. Read in
@@ -88,28 +188,282 @@ export const envSchema = z
     JWT_ACCESS_TTL: durationString.default('15m'),
     JWT_REFRESH_TTL: durationString.default('30d'),
 
+    /**
+     * How long after a refresh token is rotated a second presentation of it is
+     * still treated as a straggler rather than a leak.
+     *
+     * Requests sent together can reach the database far apart — a saturated
+     * connection pool is enough — and from database state alone a legitimate
+     * straggler is indistinguishable from a replay sent immediately after the
+     * rotation. This interval is that ambiguity, made explicit and bounded.
+     *
+     * It suppresses FAMILY REVOCATION only. Inside it the spent token still
+     * fails with 401, still mints no child, and still returns no credential;
+     * outside it, reuse kills the whole family as before. Larger values trade
+     * detection speed for tolerance, so the upper bound is deliberately low.
+     * Set it to 0 for strict detection with no tolerance at all.
+     */
+    REFRESH_REUSE_INTERVAL_MS: z.coerce.number().int().min(0).max(10_000).default(2000),
+
     ARGON2_MEMORY_COST: z.coerce.number().int().min(8192).default(19456),
     ARGON2_TIME_COST: z.coerce.number().int().min(2).default(2),
     ARGON2_PARALLELISM: z.coerce.number().int().min(1).default(1),
-
-    S3_ENDPOINT: z.string().optional(),
-    S3_BUCKET: z.string().optional(),
-    S3_ACCESS_KEY_ID: z.string().optional(),
-    S3_SECRET_ACCESS_KEY: z.string().optional(),
-    S3_REGION: z.string().default('ap-south-1'),
 
     FIREBASE_PROJECT_ID: z.string().optional(),
     FIREBASE_CLIENT_EMAIL: z.string().optional(),
     FIREBASE_PRIVATE_KEY: z.string().optional(),
 
     WHATSAPP_PROVIDER: z.string().default('meta'),
+    /** Meta app secret. Every webhook body is HMAC-signed with it. */
     WHATSAPP_APP_SECRET: z.string().optional(),
+    /** Shared string Meta echoes back when the webhook URL is first saved. */
     WHATSAPP_VERIFY_TOKEN: z.string().optional(),
+    /**
+     * Graph API version, in one place.
+     *
+     * Meta deprecates versions on a rolling schedule, so this has to be a
+     * configuration value: pinning it across a dozen call sites turns a routine
+     * upgrade into a search-and-replace with no way to roll back.
+     */
+    WHATSAPP_API_VERSION: z.string().default('v21.0'),
+    /**
+     * Meta app secret for the Instagram product.
+     *
+     * Separate from the WhatsApp one because the two products can live in
+     * different Meta apps. If yours share an app, set the same value — but the
+     * config says which secret guards which endpoint rather than assuming.
+     */
+    INSTAGRAM_APP_SECRET: z.string().optional(),
+    /** Shared string Meta echoes back when the Instagram webhook is saved. */
+    INSTAGRAM_VERIFY_TOKEN: z.string().optional(),
+    /**
+     * Meta app secret for the Messenger product.
+     *
+     * Separate again, for the same reason: the three products can live in
+     * three different Meta apps, and sharing a secret by accident would mean a
+     * leak of any one compromised all three.
+     */
+    FACEBOOK_APP_SECRET: z.string().optional(),
+    /** Shared string Meta echoes back when the Messenger webhook is saved. */
+    FACEBOOK_VERIFY_TOKEN: z.string().optional(),
+    /**
+     * Whether the stale-outbound-message sweep runs in this process.
+     *
+     * On by default. Turned off in the test suite, where recovery is invoked
+     * directly so a background timer cannot race the assertions or keep the
+     * process alive after the suite finishes.
+     */
+    /**
+     * Whether THIS process runs queue processors.
+     *
+     * The API and the worker are built from the same image, so without this
+     * every API replica would also sweep — three replicas meaning three
+     * concurrent sweeps. The idempotency markers would hold, but the wasted
+     * queries would not, and the point of a separate process is that
+     * background work does not compete with request latency.
+     *
+     * Default FALSE. A process runs processors only when deliberately told to,
+     * which is the safe default when the same image serves both roles.
+     */
+    WORKER_ENABLED: z
+      .string()
+      .default('false')
+      .transform((value) => value === 'true'),
+    /**
+     * How often the follow-up sweep runs, in seconds.
+     *
+     * Sixty seconds. The sweep is cheap — bounded queries against an index
+     * built for it — and a reminder that arrives up to a minute late is
+     * indistinguishable from one that arrives on time. Anything longer starts
+     * to be visible to a rep watching for a due follow-up.
+     */
+    FOLLOW_UP_SWEEP_INTERVAL_SECONDS: z.coerce.number().int().positive().default(60),
+    /**
+     * Whether the worker converts website intakes into leads automatically.
+     *
+     * Default FALSE, and this default matters more than most. The intake table
+     * is durable and may hold a backlog of enquiries that arrived before this
+     * code existed; a deploy that switched processing on by itself would
+     * convert all of them at once, assign them round-robin to real
+     * salespeople, and create a follow-up for each — a change that is very
+     * easy to make and very hard to undo.
+     *
+     * Turning it on is therefore a deliberate, separate act from shipping the
+     * code that can do it.
+     */
+    INTAKE_AUTO_PROCESSING_ENABLED: z
+      .string()
+      .default('false')
+      .transform((value) => value === 'true'),
+    /**
+     * How often the intake sweep runs, in seconds.
+     *
+     * Sixty, matching the follow-up sweep. The first-response SLA is measured
+     * from when the enquiry ARRIVED, so a sweep interval does not eat into it
+     * — a minute of delay makes the follow-up a minute closer to due rather
+     * than pushing it a minute later.
+     */
+    INTAKE_SWEEP_INTERVAL_SECONDS: z.coerce.number().int().positive().default(60),
+    /**
+     * How many intakes one sweep claims.
+     *
+     * Bounded so a backlog is worked through in steady passes rather than one
+     * enormous transaction-per-row burst that competes with request traffic.
+     * Each row is its own transaction, so the batch size is about pacing, not
+     * about atomicity.
+     */
+    INTAKE_SWEEP_BATCH_SIZE: z.coerce.number().int().positive().max(500).default(25),
+    OUTBOUND_RECOVERY_ENABLED: z
+      .string()
+      .default('true')
+      .transform((value) => value !== 'false'),
+    /**
+     * How long a message may sit PENDING before it is treated as abandoned.
+     *
+     * Default 120 seconds. The provider call itself times out at 15, so
+     * anything still PENDING two minutes later is not in flight — it belongs
+     * to a process that is no longer running. Short enough that nobody watches
+     * "Sending…" for long; far enough past the timeout that a slow-but-alive
+     * send is never finalised out from under itself.
+     */
+    OUTBOUND_RECOVERY_AFTER_SECONDS: z.coerce.number().int().positive().default(120),
+    /** How often the sweep runs. */
+    OUTBOUND_RECOVERY_INTERVAL_SECONDS: z.coerce.number().int().positive().default(60),
+    /**
+     * Base64 32-byte key encrypting provider access tokens at rest.
+     *
+     * Optional so the application still boots without WhatsApp configured;
+     * connecting an integration fails loudly if it is missing, rather than
+     * quietly storing a bearer token in plaintext.
+     *
+     *   openssl rand -base64 32
+     */
+    CREDENTIAL_ENCRYPTION_KEY: z.string().optional(),
 
+    /**
+     * Google OAuth client id, for "Continue with Google".
+     *
+     * OPTIONAL, and its absence is a supported state rather than a
+     * misconfiguration: a deployment without it simply does not offer Google
+     * sign-in, and the client hides the button rather than showing one that
+     * fails on click.
+     *
+     * A client ID is PUBLIC by design — it is embedded in every browser that
+     * loads the sign-in button. There is deliberately no client SECRET here:
+     * this flow verifies an ID token that Google issued to the browser, which
+     * needs the id and the audience check, not a secret.
+     *
+     * Created at console.cloud.google.com under APIs & Services → Credentials
+     * → OAuth client ID → Web application.
+     */
+    GOOGLE_CLIENT_ID: z.string().optional(),
+
+    /** The general API limit. Applies to every route. */
     THROTTLE_TTL: z.coerce.number().int().positive().default(60),
     THROTTLE_LIMIT: z.coerce.number().int().positive().default(100),
+    /**
+     * The credential limit: login, registration, password reset and the rest
+     * of the endpoints where guessing is the attack.
+     *
+     * It reaches ONLY handlers marked with @CredentialThrottle(). It used to
+     * reach everything, which is what made an ordinary sales team behind one
+     * office IP share five requests per fifteen minutes.
+     */
     AUTH_THROTTLE_TTL: z.coerce.number().int().positive().default(900),
     AUTH_THROTTLE_LIMIT: z.coerce.number().int().positive().default(5),
+
+    /*
+     * --- website intake integration -----------------------------------------
+     *
+     * The server-to-server boundary the CRAVION website will submit enquiries
+     * through. OFF unless deliberately switched on: an integration nobody has
+     * configured should not be a live endpoint, and while disabled the route
+     * answers 404 rather than advertising that it exists.
+     *
+     * The organization is configuration, never a field in the request. A
+     * caller that could name its own tenant could write into any of them, and
+     * the signature only proves who is calling, not what they may touch.
+     */
+    WEBSITE_INTAKE_ENABLED: z
+      .string()
+      .default('false')
+      .transform((value) => value === 'true'),
+    WEBSITE_INTAKE_ORGANIZATION_ID: z.string().uuid().optional(),
+    /**
+     * The shared secret the website signs its submissions with.
+     *
+     * 32 characters minimum, for the same reason the JWT secrets are: a short
+     * HMAC key is a guessable HMAC key. Never logged, never returned by any
+     * API, and never compared with `===`.
+     */
+    WEBSITE_INTAKE_SIGNING_SECRET: z
+      .string()
+      .min(32, 'must be at least 32 characters')
+      .optional(),
+
+    /**
+     * The Central Admin control plane.
+     *
+     * A SEPARATE TRUST DOMAIN from the website intake above, with its own
+     * secret, and that separation is the point rather than tidiness: the
+     * website's secret is held by a public-facing site, while this one can
+     * change a tenant's routing table. Sharing one key would mean a compromise
+     * of the first became a compromise of the second, and there would be no way
+     * to rotate one without breaking the other.
+     *
+     * Default OFF. A deployment that has not deliberately turned this on does
+     * not have the route at all.
+     */
+    ADMIN_CONTROL_ENABLED: z
+      .string()
+      .default('false')
+      .transform((value) => value === 'true'),
+    /**
+     * The one tenant this control plane administers.
+     *
+     * Configuration, never the request. A signature proves who is calling; it
+     * says nothing about which organization they may touch, so a body naming an
+     * organization is ignored and a caller cannot reach a second tenant by
+     * asking.
+     */
+    ADMIN_CONTROL_ORGANIZATION_ID: z.string().uuid().optional(),
+    /**
+     * The shared secret the Central Admin backend signs with.
+     *
+     * 32 characters minimum, like every other key here: a short HMAC key is a
+     * guessable HMAC key. Never logged, never returned by any endpoint, and
+     * never compared with `===`.
+     */
+    ADMIN_CONTROL_SIGNING_SECRET: z
+      .string()
+      .min(32, 'must be at least 32 characters')
+      .optional(),
+
+    /**
+     * How many reverse proxies sit in front of this process.
+     *
+     * Express derives `req.ip` — which is what every rate limit and audit row
+     * is keyed on — by walking `X-Forwarded-For` from the right, trusting
+     * this many hops. Getting it wrong is a security bug in both directions:
+     * trust too many and any caller invents a fresh identity per request by
+     * setting a header, closing the limiter entirely; trust too few and every
+     * customer behind the load balancer shares the proxy's address.
+     *
+     * Defaults to 0 — trust nothing — because that is the only value that is
+     * safe without knowing the topology. Set it to the real number of hops
+     * when the deployment is fixed (1 for a single load balancer; 2 behind a
+     * CDN in front of it). See docs/production.md.
+     */
+    TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(0),
+
+    /**
+     * The build this process is running.
+     *
+     * Read from the environment rather than package.json: what matters is
+     * which BUILD is deployed, and two deploys of the same version number are
+     * different builds. Required in production — see the check below.
+     */
+    RELEASE_SHA: z.string().optional(),
 
     LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
     CORS_ORIGINS: csv,
@@ -130,6 +484,215 @@ export const envSchema = z
         path: ['CORS_ORIGINS'],
         message: 'must be set explicitly in production',
       });
+    }
+
+    /*
+     * The tenant defaults must be values a tenant could have chosen.
+     *
+     * They are written into every organization created from now on, and the
+     * settings screen validates the same four against the same ICU data — so
+     * an unchecked typo here would create tenants that cannot save their own
+     * settings until someone corrects a field they never filled in. The
+     * country is worse than cosmetic: it decides how every local phone number
+     * that tenant ever enters is read into E.164.
+     */
+    const defaults: [string, string, (value: string) => boolean][] = [
+      ['DEFAULT_TIMEZONE', env.DEFAULT_TIMEZONE, isValidTimezone],
+      ['DEFAULT_CURRENCY', env.DEFAULT_CURRENCY, isValidCurrency],
+      ['DEFAULT_LOCALE', env.DEFAULT_LOCALE, isValidLocale],
+      ['DEFAULT_COUNTRY', env.DEFAULT_COUNTRY, isValidCountry],
+    ];
+
+    for (const [name, value, isValid] of defaults) {
+      if (!isValid(value)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: [name],
+          message:
+            `"${value}" is not one this runtime recognises — new organizations ` +
+            'would be created with a setting their own settings screen refuses',
+        });
+      }
+    }
+
+    /*
+     * An enabled integration with nothing configured is worse than a disabled
+     * one.
+     *
+     * Without a secret the endpoint could not authenticate anybody, and
+     * without an organization it would have nowhere to put what it received.
+     * Either way it would be a live, publicly reachable route that fails on
+     * every request — so the process refuses to start instead, in every
+     * environment, rather than waiting for the website team to discover it.
+     */
+    if (env.WEBSITE_INTAKE_ENABLED) {
+      for (const [name, value] of Object.entries({
+        WEBSITE_INTAKE_ORGANIZATION_ID: env.WEBSITE_INTAKE_ORGANIZATION_ID,
+        WEBSITE_INTAKE_SIGNING_SECRET: env.WEBSITE_INTAKE_SIGNING_SECRET,
+      })) {
+        if (!value) {
+          ctx.addIssue({
+            code: 'custom',
+            path: [name],
+            message:
+              'is required when WEBSITE_INTAKE_ENABLED=true — an enabled ' +
+              'integration with nothing configured is a live endpoint that ' +
+              'refuses every request',
+          });
+        }
+      }
+    }
+
+    /*
+     * The control plane is all-or-nothing too, and for a sharper reason than
+     * the website integration: an enabled control surface with no configured
+     * tenant would be a route that authenticates callers and then has nowhere
+     * to apply what they asked for, and an enabled one with no secret would
+     * authenticate nobody while still existing. Either is worse than not
+     * starting.
+     */
+    if (env.ADMIN_CONTROL_ENABLED) {
+      for (const [name, value] of Object.entries({
+        ADMIN_CONTROL_ORGANIZATION_ID: env.ADMIN_CONTROL_ORGANIZATION_ID,
+        ADMIN_CONTROL_SIGNING_SECRET: env.ADMIN_CONTROL_SIGNING_SECRET,
+      })) {
+        if (!value) {
+          ctx.addIssue({
+            code: 'custom',
+            path: [name],
+            message:
+              'is required when ADMIN_CONTROL_ENABLED=true — an enabled ' +
+              'control plane with nothing configured is a live endpoint that ' +
+              'refuses every request',
+          });
+        }
+      }
+    }
+
+    /*
+     * The two integrations must not share a secret.
+     *
+     * They are different trust domains held by different systems: the website
+     * key lives in a public-facing site, this one can rewrite a tenant's
+     * routing. Reusing one key would make a compromise of the first a
+     * compromise of the second, and would make either impossible to rotate
+     * alone. Caught at boot rather than in a review.
+     */
+    if (
+      env.ADMIN_CONTROL_SIGNING_SECRET &&
+      env.ADMIN_CONTROL_SIGNING_SECRET === env.WEBSITE_INTAKE_SIGNING_SECRET
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['ADMIN_CONTROL_SIGNING_SECRET'],
+        message:
+          'must differ from WEBSITE_INTAKE_SIGNING_SECRET — they are separate ' +
+          'trust domains, and one key would make a compromise of either a ' +
+          'compromise of both',
+      });
+    }
+
+    /*
+     * SMTP is all-or-nothing, in every environment.
+     *
+     * The failure this prevents is the familiar one: with a host but no
+     * password the provider constructs, the process boots, every send is
+     * attempted and refused, and password resets disappear while the
+     * application reports itself healthy. Checked everywhere rather than only
+     * in production so a staging deployment finds the gap first.
+     *
+     * Nothing is required when the provider is not smtp — a developer running
+     * the console provider must not need mail credentials to start the app.
+     */
+    if (env.EMAIL_PROVIDER === 'smtp') {
+      const required = {
+        SMTP_HOST: env.SMTP_HOST,
+        SMTP_PORT: env.SMTP_PORT,
+        SMTP_USER: env.SMTP_USER,
+        SMTP_PASSWORD: env.SMTP_PASSWORD,
+        // A boolean, so absence is the only thing to test: `false` is a
+        // perfectly good value and must not read as "missing".
+        SMTP_SECURE: env.SMTP_SECURE,
+      };
+
+      for (const [name, value] of Object.entries(required)) {
+        if (value === undefined) {
+          ctx.addIssue({
+            code: 'custom',
+            path: [name],
+            message:
+              'is required when EMAIL_PROVIDER=smtp — a partially configured ' +
+              'transport accepts every message and delivers none',
+          });
+        }
+      }
+    }
+
+    /*
+     * A HALF-CONFIGURED push provider is always a mistake.
+     *
+     * FCM needs all three values. With one or two set, the provider reports
+     * itself unconfigured and every notification is created, persisted, and
+     * silently never delivered — while the process looks entirely healthy.
+     * That is the failure mode this whole class of check exists to prevent, so
+     * it fails at boot in every environment rather than only in production.
+     */
+    const fcmParts = [
+      env.FIREBASE_PROJECT_ID,
+      env.FIREBASE_CLIENT_EMAIL,
+      env.FIREBASE_PRIVATE_KEY,
+    ];
+    const fcmSet = fcmParts.filter(Boolean).length;
+
+    if (fcmSet > 0 && fcmSet < fcmParts.length) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['FIREBASE_PRIVATE_KEY'],
+        message:
+          'FCM needs FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL and ' +
+          'FIREBASE_PRIVATE_KEY together. Partially configured, push is ' +
+          'silently disabled while everything reports healthy.',
+      });
+    }
+
+    if (env.NODE_ENV === 'production') {
+      /*
+       * A WORKER whose entire job is to notify people, deployed with no way to
+       * notify anyone.
+       *
+       * The sweep would run, follow-ups would advance, notifications would be
+       * written — and no phone would ever ring, with every health check green.
+       * A salesperson would learn about it by missing a customer. Refusing to
+       * boot is the only signal that arrives before the damage.
+       *
+       * Only the worker: an API replica has WORKER_ENABLED=false and does not
+       * deliver anything, so push credentials are none of its business.
+       */
+      if (env.WORKER_ENABLED && fcmSet === 0) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['FIREBASE_PROJECT_ID'],
+          message:
+            'a production worker with WORKER_ENABLED=true must have FCM ' +
+            'configured — otherwise it generates notifications nobody can ' +
+            'receive while reporting healthy',
+        });
+      }
+
+      /*
+       * Without a release identifier every deploy looks like the same deploy
+       * in the error tracker, so a regression introduced today groups with
+       * errors from three months ago and nobody can tell what changed.
+       */
+      if (!env.RELEASE_SHA) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['RELEASE_SHA'],
+          message:
+            'must be set in production so errors group by deploy — ' +
+            'see docs/production.md',
+        });
+      }
     }
   });
 

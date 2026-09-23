@@ -2,8 +2,9 @@ import { Injectable } from '@nestjs/common';
 import type { LeadPriority, LeadStatus } from '@leadflow/api-types';
 import type { ActivityType } from '../../generated/prisma/enums';
 import { sideEffectsFor } from './lead-status';
-import { PrismaService } from '../../common/prisma/prisma.service';
+import { PrismaService, type PrismaTransaction } from '../../common/prisma/prisma.service';
 import { TenantContextService } from '../../common/tenancy/tenant-context.service';
+import { AppConfig } from '../../common/config/config.module';
 
 /**
  * Lead data access.
@@ -25,6 +26,7 @@ export class LeadsRepository {
   constructor(
     private readonly prisma: PrismaService,
     private readonly tenantContext: TenantContextService,
+    private readonly config: AppConfig,
   ) {}
 
   /**
@@ -36,12 +38,16 @@ export class LeadsRepository {
   private listWhere(filters: {
     status?: LeadStatus | undefined;
     assignedToId?: string | undefined;
+    productId?: string | undefined;
+    accountId?: string | undefined;
     search?: string | undefined;
     restrictToUserId?: string | undefined;
   }): Record<string, unknown> {
     const where: Record<string, unknown> = { deletedAt: null };
     if (filters.status) where['status'] = filters.status;
     if (filters.assignedToId) where['assignedToId'] = filters.assignedToId;
+    if (filters.productId) where['productId'] = filters.productId;
+    if (filters.accountId) where['accountId'] = filters.accountId;
     if (filters.restrictToUserId) where['assignedToId'] = filters.restrictToUserId;
 
     if (filters.search) {
@@ -109,6 +115,12 @@ export class LeadsRepository {
       include: {
         assignedTo: { select: { id: true, fullName: true } },
         assignedBy: { select: { id: true, fullName: true } },
+        // Name and SKU only. The detail page shows what the product IS, not
+        // the whole catalogue row.
+        product: { select: { id: true, name: true, sku: true, active: true } },
+        // Name and status only. Whether this is an existing customer is the
+        // single most useful thing to know when opening a lead.
+        account: { select: { id: true, name: true, status: true } },
       },
     });
   }
@@ -158,13 +170,19 @@ export class LeadsRepository {
   /**
    * Next lead number for this organization, e.g. LD-00020.
    *
-   * Read-then-write is inherently racy: two concurrent creates can compute the
-   * same number. The unique index on (organization_id, lead_number) turns that
-   * race into a constraint violation the service retries, rather than two leads
-   * silently sharing a number.
+   * Read-then-write, and therefore only correct while the caller holds the
+   * tenant's numbering lock — which is why the only caller is
+   * `createWithActivity`, immediately after taking it. Called without that
+   * lock, two concurrent creates read the same maximum and choose the same
+   * number.
+   *
+   * Kept separate from the insert rather than inlined so the allocation rule
+   * — read the highest, add one, pad to five digits — is stated once and can
+   * be read on its own. The lock is what makes it safe; this is what makes
+   * it correct.
    */
-  async nextLeadNumber(): Promise<string> {
-    const latest = await this.prisma.client.lead.findFirst({
+  private async nextLeadNumber(tx: PrismaTransaction): Promise<string> {
+    const latest = await tx.lead.findFirst({
       orderBy: { leadNumber: 'desc' },
       select: { leadNumber: true },
     });
@@ -174,20 +192,91 @@ export class LeadsRepository {
   }
 
   /**
+   * Serialises lead numbering for ONE tenant, for the life of a transaction.
+   *
+   * Read-then-write numbering is racy by construction: two transactions read
+   * LD-00019 and both try to write LD-00020. This lock is what makes the
+   * allocation below it correct, and it is taken by `createWithActivity` on
+   * EVERY path — a person creating a lead by hand, a CSV import, and the
+   * automated website-intake pipeline.
+   *
+   * That universality is the point. While only the automated path took it, a
+   * manual create running at the same moment could still pick the same
+   * number: the automated transaction then lost the unique violation and
+   * rolled back, leaving its enquiry retryable but its work wasted. A lock
+   * only one participant respects is not a lock.
+   *
+   * An advisory lock rather than a row lock: it serialises numbering without
+   * locking any lead, so concurrent creates queue for the number and nothing
+   * else. It is transaction-scoped, so it is released on commit or rollback
+   * with nothing to clean up — a failed create cannot strand the allocator —
+   * and keyed per organization, so one tenant's traffic never waits on
+   * another's.
+   *
+   * Re-entrant within a transaction: taking it twice is counted, not
+   * deadlocked, and both are released at the end. A caller that already
+   * holds it for its own reasons therefore costs nothing.
+   *
+   * The two-argument form takes a namespace and a key. The namespace is a
+   * constant private to lead numbering, so this can never collide with an
+   * advisory lock taken elsewhere for something else.
+   */
+  private async lockLeadNumbering(tx: PrismaTransaction): Promise<void> {
+    const organizationId = this.tenantContext.requireOrganizationId();
+
+    /*
+     * $executeRaw, not $queryRaw, and that is not a style choice.
+     *
+     * pg_advisory_xact_lock returns `void`, and the driver adapter cannot
+     * deserialize a void column — $queryRaw fails at the point of reading a
+     * result there is no type for. $executeRaw is for statements whose result
+     * is not read, which is exactly what taking a lock is.
+     */
+    // eslint-disable-next-line no-restricted-syntax -- Prisma cannot express an advisory lock; organizationId is bound explicitly and covered by test/tenant-isolation.e2e-spec.ts
+    await tx.$executeRaw`
+      SELECT pg_advisory_xact_lock(${LEAD_NUMBER_LOCK_NAMESPACE}::int, hashtext(${organizationId}::text))
+    `;
+  }
+
+  /**
    * Creates the lead and its opening timeline entries in one transaction.
    *
    * Returns the id rather than the row: the caller re-reads through findById so
    * a created lead has exactly the same shape as every other lead read.
+   *
+   * A caller may supply its own transaction, and the automated intake pipeline
+   * does. That pipeline has to commit the lead, its activities, the first
+   * follow-up and the intake's PROCESSED status together or not at all — a
+   * lead whose follow-up was rolled back is exactly the "lead left behind"
+   * this product exists to prevent. Opening a nested transaction here would
+   * defeat that, so when one is passed it is used as-is.
+   *
+   * THE LEAD NUMBER IS ALLOCATED HERE, not by the caller.
+   *
+   * This is the single place every lead is written — by hand, by CSV import,
+   * or by the intake pipeline — so it is the only place the tenant's
+   * numbering lock can be taken on behalf of all of them. A caller that
+   * computed its own number would be allocating outside the lock however
+   * carefully it was written, which is exactly the race this closes.
    */
   async createWithActivity(input: {
-    leadNumber: string;
     firstName: string;
     lastName?: string | undefined;
-    mobile: string;
+    /**
+     * Null where the lead has no phone number.
+     *
+     * The column has always been nullable and the duplicate index is
+     * `WHERE mobile IS NOT NULL`, so this is the state the schema was designed
+     * for rather than a relaxation of it.
+     */
+    mobile: string | null;
     email?: string | undefined;
     companyName?: string | undefined;
     city?: string | undefined;
     source?: string | undefined;
+    productId?: string | undefined;
+    /** Verified to belong to this tenant by the service before it reaches here. */
+    accountId?: string | undefined;
     productInterest?: string | undefined;
     estimatedValue?: number | undefined;
     status: LeadStatus;
@@ -195,15 +284,44 @@ export class LeadsRepository {
     assignedToId?: string | undefined;
     nextFollowUpAt: Date | null;
     contactId?: string | undefined;
-    actorId: string;
+    /**
+     * True when the caller passed `allowDuplicate`.
+     *
+     * Recorded on the row so the partial unique index lets it through. Without
+     * it the index refuses what the API just agreed to.
+     */
+    duplicateAcknowledged?: boolean | undefined;
+    /**
+     * Null for a SYSTEM write.
+     *
+     * `created_by` and `updated_by` are nullable columns with no foreign key,
+     * so null records honestly that nobody typed this lead. `assigned_by` and
+     * the activity's `performed_by` DO have foreign keys to users, which is
+     * the concrete reason a synthetic actor id cannot be used here: it would
+     * not resolve to a row, and the insert would fail.
+     */
+    actorId: string | null;
+    /** Supplied when this write belongs to a caller's larger transaction. */
+    tx?: PrismaTransaction | undefined;
   }) {
     const organizationId = this.tenantContext.requireOrganizationId();
 
-    return this.prisma.client.$transaction(async (tx) => {
+    const run = async (tx: PrismaTransaction) => {
+      /*
+       * Lock, then allocate, then insert — all on the SAME transaction.
+       *
+       * Every read here takes `tx`. A pooled read inside a transaction that
+       * already holds a connection deadlocks the moment the pool is empty,
+       * which on a single-connection database is immediately; this project
+       * has hit that more than once.
+       */
+      await this.lockLeadNumbering(tx);
+      const leadNumber = await this.nextLeadNumber(tx);
+
       const created = await tx.lead.create({
         data: {
           organizationId,
-          leadNumber: input.leadNumber,
+          leadNumber,
           firstName: input.firstName,
           lastName: input.lastName ?? null,
           mobile: input.mobile,
@@ -211,6 +329,8 @@ export class LeadsRepository {
           companyName: input.companyName ?? null,
           city: input.city ?? null,
           source: input.source ?? null,
+          productId: input.productId ?? null,
+          accountId: input.accountId ?? null,
           productInterest: input.productInterest ?? null,
           estimatedValue: input.estimatedValue ?? null,
           status: input.status,
@@ -219,6 +339,7 @@ export class LeadsRepository {
           assignedById: input.assignedToId ? input.actorId : null,
           nextFollowUpAt: input.nextFollowUpAt,
           contactId: input.contactId ?? null,
+          duplicateAcknowledgedAt: input.duplicateAcknowledged ? new Date() : null,
           lastActivityAt: new Date(),
           createdBy: input.actorId,
           updatedBy: input.actorId,
@@ -251,7 +372,9 @@ export class LeadsRepository {
       // Re-read through findById so the caller always gets the same shape as
       // every other lead read, including the assignedTo relation.
       return created.id;
-    });
+    };
+
+    return input.tx ? run(input.tx) : this.prisma.client.$transaction(run);
   }
 
   /**
@@ -264,7 +387,10 @@ export class LeadsRepository {
     const organization = await this.prisma.client.organization.findFirst({
       select: { country: true },
     });
-    return organization?.country ?? 'US';
+    // The configured deployment default, not a constant: an organization
+    // with no country is a row that predates the column, and guessing 'US'
+    // for an India-first product read every local number as American.
+    return organization?.country ?? this.config.get('DEFAULT_COUNTRY');
   }
 
   /**
@@ -302,6 +428,40 @@ export class LeadsRepository {
   // ---------------------------------------------------------------------------
 
   /** The tenant timezone, which is what "today" means for follow-up buckets. */
+  /**
+   * Whether a product id belongs to THIS organization.
+   *
+   * The tenant extension scopes queries; a foreign key does not. Without this
+   * check, Org A could set productId to Org B's product — the insert would
+   * succeed, the FK is satisfied, and Org B's catalogue entry would start
+   * accumulating Org A's leads in its KPIs. Nothing would look wrong until the
+   * numbers were compared.
+   *
+   * Goes through the scoped client, so a foreign id simply is not found.
+   */
+  async productExists(productId: string): Promise<boolean> {
+    const product = await this.prisma.client.product.findFirst({
+      where: { id: productId },
+      select: { id: true },
+    });
+    return product !== null;
+  }
+
+  /**
+   * Whether an account id belongs to THIS organization.
+   *
+   * Read through the tenant-scoped client, so an id from another organization
+   * simply does not resolve. See assertAccountExists in the service for why
+   * this check has to exist at all.
+   */
+  async accountExists(accountId: string): Promise<boolean> {
+    const account = await this.prisma.client.account.findFirst({
+      where: { id: accountId, deletedAt: null },
+      select: { id: true },
+    });
+    return account !== null;
+  }
+
   async organizationTimezone(): Promise<string> {
     const organization = await this.prisma.client.organization.findFirst({
       select: { timezone: true },
@@ -337,6 +497,16 @@ export class LeadsRepository {
     data: Record<string, unknown>;
     /** True when the lead is becoming WON, LOST or archived. */
     closesLead: boolean;
+    /**
+     * True only for WON.
+     *
+     * Promotes the lead's account to CUSTOMER inside this same transaction. It
+     * belongs here rather than in a service because the promotion must be
+     * ATOMIC with the win: a separate call could fail after the win committed,
+     * leaving a paying customer recorded as a prospect and absent from every
+     * retention figure, with nothing to indicate it had happened.
+     */
+    winsLead?: boolean | undefined;
     activityType: ActivityType;
     description: string;
     actorId: string;
@@ -367,6 +537,51 @@ export class LeadsRepository {
           },
         });
         followUpsCancelled = cancelled.count;
+      }
+
+      /*
+       * Winning a deal PROMOTES the customer that is already there. It never
+       * creates one.
+       *
+       * Before accounts existed, "customer" was a company name typed onto a
+       * lead, so a repeat customer's second win produced a second record that
+       * looked exactly like a new customer — double-counting acquisition and
+       * making retention impossible to measure. Here the account is found, and
+       * a lead with none does nothing at all: inventing a company from a
+       * free-text field is precisely the mistake this feature exists to undo.
+       */
+      if (input.winsLead) {
+        const lead = await tx.lead.findFirst({
+          where: { id: input.leadId },
+          select: { accountId: true, wonAt: true },
+        });
+
+        if (lead?.accountId) {
+          const account = await tx.account.findFirst({
+            where: { id: lead.accountId },
+            select: { firstWonAt: true },
+          });
+
+          if (account) {
+            const wonAt = lead.wonAt ?? new Date();
+
+            await tx.account.updateMany({
+              where: { id: lead.accountId },
+              data: {
+                // DORMANT and FORMER_CUSTOMER are promoted back too: someone
+                // who buys again is a customer again.
+                status: 'CUSTOMER',
+                // Set once, never overwritten. Moving it forward on every
+                // repeat purchase would make a five-year customer look like
+                // this month's new business.
+                ...(account.firstWonAt ? {} : { firstWonAt: wonAt }),
+                lastWonAt: wonAt,
+                lastActivityAt: wonAt,
+                updatedBy: input.actorId,
+              },
+            });
+          }
+        }
       }
 
       // In the same transaction, so a lead can never end up in a state its own
@@ -455,6 +670,7 @@ export class LeadsRepository {
         updatedBy: input.actorId,
       },
       closesLead,
+      winsLead: input.status === 'WON',
       activityType:
         input.status === 'WON' ? 'LEAD_WON' : input.status === 'LOST' ? 'LEAD_LOST' : 'STATUS_CHANGED',
       description:
@@ -492,3 +708,13 @@ export class LeadsRepository {
     });
   }
 }
+
+/**
+ * The advisory-lock namespace for lead numbering.
+ *
+ * Advisory locks share one global space per database, so an arbitrary integer
+ * could collide with a lock taken for a completely unrelated reason and produce
+ * a deadlock nobody could explain. A named constant used in exactly one place
+ * makes that impossible to do by accident.
+ */
+const LEAD_NUMBER_LOCK_NAMESPACE = 8317;

@@ -54,6 +54,54 @@ export class LeadMutationsService {
       if (dto[field] !== undefined) data[field] = dto[field];
     }
 
+    /*
+     * The product, checked against THIS tenant's catalogue.
+     *
+     * The tenant extension scopes queries; the foreign key does not. Without
+     * this, a foreign product id would be accepted and another organization's
+     * catalogue entry would start accumulating our leads in its KPIs.
+     *
+     * An explicit null clears it, which is how a mis-mapped lead is corrected.
+     */
+    if (dto.productId !== undefined) {
+      if (dto.productId === null) {
+        data['productId'] = null;
+      } else {
+        if (!(await this.repository.productExists(dto.productId))) {
+          throw AppException.validation('That product does not exist.', {
+            productId: ['not found'],
+          });
+        }
+        data['productId'] = dto.productId;
+      }
+    }
+
+    /*
+     * The customer this opportunity belongs to.
+     *
+     * Same gap as the product check above, and worse in consequence. The tenant
+     * extension scopes QUERIES; a foreign key assignment is not a query.
+     * Without this, Org A could set accountId to one of Org B's customers — the
+     * insert would succeed, the foreign key would be satisfied, and Org B's
+     * Customer 360 would quietly begin showing Org A's opportunities and
+     * revenue.
+     *
+     * An explicit null detaches it, which is the honest correction when a lead
+     * turns out to have been filed under the wrong company.
+     */
+    if (dto.accountId !== undefined) {
+      if (dto.accountId === null) {
+        data['accountId'] = null;
+      } else {
+        if (!(await this.repository.accountExists(dto.accountId))) {
+          throw AppException.validation('That customer does not exist.', {
+            accountId: ['not found'],
+          });
+        }
+        data['accountId'] = dto.accountId;
+      }
+    }
+
     // Re-canonicalised against the TENANT country, exactly as create does, so
     // an edited number stays comparable for duplicate detection.
     if (dto.mobile !== undefined) data['mobile'] = await this.normaliseMobile(dto.mobile);
@@ -117,6 +165,10 @@ export class LeadMutationsService {
       leadId: id,
       data,
       closesLead,
+      // Promotes this lead's account to CUSTOMER inside the same transaction.
+      // Atomic with the win on purpose: a separate call could fail afterwards,
+      // leaving a paying customer recorded as a prospect.
+      winsLead: statusChanging && targetStatus === 'WON',
       activityType: statusChanging
         ? targetStatus === 'WON'
           ? 'LEAD_WON'

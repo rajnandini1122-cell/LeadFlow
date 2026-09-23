@@ -1,0 +1,465 @@
+import { render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter } from 'react-router-dom';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { InboxPage } from '../features/omnichannel/inbox-page';
+import { ChannelIntegrationsPage } from '../features/settings/channel-integrations-page';
+import * as apiClient from '../lib/api-client';
+import * as authContext from '../features/auth/auth-context';
+
+/**
+ * The unified inbox and channel management.
+ *
+ * The assertions that matter are again the restraining ones: the integrations
+ * screen must not imply a connection exists, and must not offer a Connect
+ * button that does nothing. An owner who believes their WhatsApp number is live
+ * stops watching their phone.
+ */
+
+const LINKED = {
+  id: 'conv-linked',
+  channel: 'WHATSAPP' as const,
+  linkState: 'LINKED' as const,
+  potentialLead: false,
+  potentialLeadSignals: [],
+  archivedAt: null,
+  lastMessageAt: new Date().toISOString(),
+  contact: { id: 'c-1', name: 'Rahul Patil', mobile: '+14155552671', email: null, companyName: 'XYZ Foods' },
+  companyName: 'XYZ Foods',
+  owner: { id: 'u-1', fullName: 'Tony' },
+  lead: { id: 'lead-1', leadNumber: 'LD-000042', status: 'NEGOTIATION' },
+  lastMessagePreview: 'Please send the quotation.',
+};
+
+const UNOWNED = {
+  ...LINKED,
+  id: 'conv-unowned',
+  channel: 'INSTAGRAM' as const,
+  linkState: 'UNLINKED' as const,
+  contact: null,
+  companyName: null,
+  owner: null,
+  lead: null,
+  lastMessagePreview: 'Please share wholesale pricing.',
+};
+
+function mockAuth(permissions: string[]): void {
+  vi.spyOn(authContext, 'useAuth').mockReturnValue({
+    can: (permission: string) => permissions.includes(permission),
+  } as never);
+}
+
+function renderWith(node: React.JSX.Element): void {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
+  });
+
+  render(
+    <QueryClientProvider client={client}>
+      <MemoryRouter>{node}</MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
+describe('Unified inbox', () => {
+  beforeEach(() => {
+    mockAuth(['lead.view.own', 'lead.update']);
+    vi.spyOn(apiClient, 'apiGet').mockImplementation((url: string) => {
+      if (url === '/conversations/inbox') {
+        return Promise.resolve({
+          items: [LINKED, UNOWNED],
+          hasMore: false,
+          nextCursor: null,
+        } as never);
+      }
+      if (url === '/conversations/inbox/counts') {
+        return Promise.resolve({ all: 2, mine: 1, unassigned: 1, review: 1 } as never);
+      }
+      return Promise.resolve({ items: [], hasMore: false, nextCursor: null } as never);
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('shows conversations that already belong to a lead', async () => {
+    renderWith(<InboxPage />);
+
+    // The difference from the review queue: linked threads are part of the
+    // inbox, because the inbox is the whole picture.
+    expect(await screen.findByText('LD-000042')).toBeInTheDocument();
+  });
+
+  it('shows an unowned conversation as unassigned', async () => {
+    renderWith(<InboxPage />);
+
+    const row = (await screen.findByText('Unknown sender')).closest('button');
+    expect(row).not.toBeNull();
+    // Scoped to the row: "Unassigned" is also a filter tab, and asserting on
+    // the tab would pass whether or not the row said anything at all.
+    expect(within(row as HTMLElement).getByText('Unassigned')).toBeInTheDocument();
+  });
+
+  it('shows tab counts', async () => {
+    renderWith(<InboxPage />);
+    await screen.findByText('Unknown sender');
+
+    const mine = screen.getByRole('tab', { name: /mine/i });
+    expect(mine).toHaveTextContent('1');
+  });
+
+  it('filters to mine', async () => {
+    const user = userEvent.setup();
+    renderWith(<InboxPage />);
+
+    await screen.findByText('Unknown sender');
+    await user.click(screen.getByRole('tab', { name: /mine/i }));
+
+    await waitFor(() => {
+      expect(apiClient.apiGet).toHaveBeenCalledWith('/conversations/inbox', { filter: 'MINE' });
+    });
+  });
+
+  it('filters by channel', async () => {
+    const user = userEvent.setup();
+    renderWith(<InboxPage />);
+
+    await screen.findByText('Unknown sender');
+    await user.selectOptions(screen.getByLabelText('Channel'), 'INSTAGRAM');
+
+    await waitFor(() => {
+      expect(apiClient.apiGet).toHaveBeenCalledWith('/conversations/inbox', {
+        channel: 'INSTAGRAM',
+      });
+    });
+  });
+
+  it('shows archived only when asked', async () => {
+    const user = userEvent.setup();
+    renderWith(<InboxPage />);
+
+    await screen.findByText('Unknown sender');
+    await user.click(screen.getByLabelText(/archived/i));
+
+    await waitFor(() => {
+      expect(apiClient.apiGet).toHaveBeenCalledWith('/conversations/inbox', { archived: true });
+    });
+  });
+
+  it('treats an empty inbox as ordinary, not an error', async () => {
+    vi.spyOn(apiClient, 'apiGet').mockResolvedValue({
+      items: [],
+      hasMore: false,
+      nextCursor: null,
+    } as never);
+
+    renderWith(<InboxPage />);
+    expect(await screen.findByText('No conversations')).toBeInTheDocument();
+  });
+});
+
+describe('Channel integrations', () => {
+  const NOT_CONNECTED = {
+    channel: 'WHATSAPP' as const,
+    id: null,
+    status: 'NOT_CONNECTED' as const,
+    enabled: false,
+    displayName: null,
+    connectedAt: null,
+    disconnectedAt: null,
+    lastActivityAt: null,
+    lastErrorAt: null,
+    lastErrorMessage: null,
+    connectedBy: null,
+    accessTokenHint: null,
+    connectable: false,
+  };
+
+  beforeEach(() => {
+    mockAuth(['org.view', 'org.update']);
+    vi.spyOn(apiClient, 'apiGet').mockImplementation((url: string) => {
+      if (url === '/channel-integrations') {
+        return Promise.resolve([
+          NOT_CONNECTED,
+          { ...NOT_CONNECTED, channel: 'INSTAGRAM' },
+          { ...NOT_CONNECTED, channel: 'FACEBOOK' },
+        ] as never);
+      }
+      return Promise.resolve({
+        settings: { sharedUnassignedQueue: false },
+      } as never);
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('says plainly which channels can be replied to', async () => {
+    renderWith(<ChannelIntegrationsPage />);
+
+    /*
+     * UPDATED IN PHASE F.
+     *
+     * This used to assert that no provider connection was available at all,
+     * which was true before WhatsApp existed. What must stay true is narrower
+     * and more important: the screen never implies a channel can do something
+     * it cannot. Instagram is capture-only, and it says so.
+     */
+    // UPDATED IN PHASE G: Messenger is now connectable, and capture-only like
+    // Instagram. What must stay true is that the screen never implies a
+    // channel can do something it cannot.
+    expect(await screen.findByText(/capture-only/i)).toBeInTheDocument();
+    expect(screen.getByText(/answer those in the meta apps/i)).toBeInTheDocument();
+  });
+
+  it('offers Instagram setup once the server reports it connectable', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(apiClient, 'apiGet').mockImplementation((url: string) => {
+      if (url === '/channel-integrations') {
+        return Promise.resolve([
+          { ...NOT_CONNECTED, channel: 'INSTAGRAM', connectable: true },
+        ] as never);
+      }
+      return Promise.resolve({ settings: { sharedUnassignedQueue: false } } as never);
+    });
+
+    renderWith(<ChannelIntegrationsPage />);
+    await user.click(await screen.findByRole('button', { name: 'Connect' }));
+
+    // Instagram's own identifiers, not WhatsApp's.
+    expect(screen.getByLabelText(/instagram professional account id/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/phone number id/i)).toBeNull();
+  });
+
+  it('sends Instagram credentials to the Instagram endpoint', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(apiClient, 'apiGet').mockImplementation((url: string) => {
+      if (url === '/channel-integrations') {
+        return Promise.resolve([
+          { ...NOT_CONNECTED, channel: 'INSTAGRAM', connectable: true },
+        ] as never);
+      }
+      return Promise.resolve({ settings: { sharedUnassignedQueue: false } } as never);
+    });
+    vi.spyOn(apiClient, 'apiPost').mockResolvedValue({ id: 'i-1', status: 'CONNECTED' } as never);
+
+    renderWith(<ChannelIntegrationsPage />);
+    await user.click(await screen.findByRole('button', { name: 'Connect' }));
+
+    await user.type(
+      screen.getByLabelText(/instagram professional account id/i),
+      '17841400008460056',
+    );
+
+    const token = screen.getByLabelText(/access token/i);
+    // The same password handling as WhatsApp, because it is the same component.
+    expect(token).toHaveAttribute('type', 'password');
+    await user.type(token, 'IGQV-secret-token');
+
+    await user.click(screen.getByRole('button', { name: /save and verify/i }));
+
+    await waitFor(() => {
+      expect(apiClient.apiPost).toHaveBeenCalledWith('/channel-integrations/instagram/connect', {
+        accountId: '17841400008460056',
+        accessToken: 'IGQV-secret-token',
+      });
+    });
+  });
+
+  it('lists every supported channel', async () => {
+    renderWith(<ChannelIntegrationsPage />);
+
+    expect(await screen.findByText('WhatsApp')).toBeInTheDocument();
+    expect(screen.getByText('Instagram')).toBeInTheDocument();
+    expect(screen.getByText('Facebook')).toBeInTheDocument();
+  });
+
+  it('disables Connect for a channel with no implementation', async () => {
+    renderWith(<ChannelIntegrationsPage />);
+
+    // Every channel in this fixture reports connectable: false, so none of
+    // them may offer a working button.
+    const connect = await screen.findAllByRole('button', { name: 'Connect' });
+    for (const button of connect) {
+      expect(button).toBeDisabled();
+    }
+  });
+
+  it('offers a real Connect for WhatsApp once the server says it is connectable', async () => {
+    vi.spyOn(apiClient, 'apiGet').mockImplementation((url: string) => {
+      if (url === '/channel-integrations') {
+        return Promise.resolve([
+          { ...NOT_CONNECTED, connectable: true },
+          { ...NOT_CONNECTED, channel: 'INSTAGRAM' },
+        ] as never);
+      }
+      return Promise.resolve({ settings: { sharedUnassignedQueue: false } } as never);
+    });
+
+    renderWith(<ChannelIntegrationsPage />);
+
+    const buttons = await screen.findAllByRole('button', { name: 'Connect' });
+    // WhatsApp's is live; Instagram's is still disabled. The SERVER decides
+    // which, so a client build can never present a form the deployment cannot
+    // honour.
+    expect(buttons.some((button) => !(button as HTMLButtonElement).disabled)).toBe(true);
+    expect(buttons.some((button) => (button as HTMLButtonElement).disabled)).toBe(true);
+  });
+
+  it('offers Facebook Messenger setup with its own identifier', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(apiClient, 'apiGet').mockImplementation((url: string) => {
+      if (url === '/channel-integrations') {
+        return Promise.resolve([
+          { ...NOT_CONNECTED, channel: 'FACEBOOK', connectable: true },
+        ] as never);
+      }
+      return Promise.resolve({ settings: { sharedUnassignedQueue: false } } as never);
+    });
+    vi.spyOn(apiClient, 'apiPost').mockResolvedValue({ id: 'i-1', status: 'CONNECTED' } as never);
+
+    renderWith(<ChannelIntegrationsPage />);
+    await user.click(await screen.findByRole('button', { name: 'Connect' }));
+
+    // The Page IS the account for Messenger, so there is no second identifier
+    // and no unlabelled box pretending otherwise.
+    expect(screen.getByLabelText(/facebook page id/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/linked facebook page id/i)).toBeNull();
+
+    await user.type(screen.getByLabelText(/facebook page id/i), '109876543210987');
+    await user.type(screen.getByLabelText(/access token/i), 'EAAP-page-token');
+    await user.click(screen.getByRole('button', { name: /save and verify/i }));
+
+    await waitFor(() => {
+      expect(apiClient.apiPost).toHaveBeenCalledWith('/channel-integrations/facebook/connect', {
+        accountId: '109876543210987',
+        accessToken: 'EAAP-page-token',
+      });
+    });
+  });
+
+  it('never shows a stored access token, only its last four characters', async () => {
+    vi.spyOn(apiClient, 'apiGet').mockImplementation((url: string) => {
+      if (url === '/channel-integrations') {
+        return Promise.resolve([
+          {
+            ...NOT_CONNECTED,
+            connectable: true,
+            status: 'CONNECTED',
+            enabled: true,
+            accessTokenHint: '****cdef',
+          },
+        ] as never);
+      }
+      return Promise.resolve({ settings: { sharedUnassignedQueue: false } } as never);
+    });
+
+    renderWith(<ChannelIntegrationsPage />);
+
+    expect(await screen.findByText(/\*\*\*\*cdef/)).toBeInTheDocument();
+  });
+
+  it('sends the token once and does not keep it in the form', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(apiClient, 'apiGet').mockImplementation((url: string) => {
+      if (url === '/channel-integrations') {
+        return Promise.resolve([{ ...NOT_CONNECTED, connectable: true }] as never);
+      }
+      return Promise.resolve({ settings: { sharedUnassignedQueue: false } } as never);
+    });
+    vi.spyOn(apiClient, 'apiPost').mockResolvedValue({
+      id: 'i-1',
+      status: 'CONNECTED',
+      displayName: 'Acme',
+    } as never);
+
+    renderWith(<ChannelIntegrationsPage />);
+
+    await user.click(await screen.findByRole('button', { name: 'Connect' }));
+    await user.type(screen.getByLabelText(/phone number id/i), '106540352242922');
+
+    const token = screen.getByLabelText(/access token/i);
+    // A password field, not a text field: shoulder-surfing a bearer credential
+    // is a real way to lose one.
+    expect(token).toHaveAttribute('type', 'password');
+    await user.type(token, 'EAAG-secret-token');
+
+    await user.click(screen.getByRole('button', { name: /save and verify/i }));
+
+    await waitFor(() => {
+      expect(apiClient.apiPost).toHaveBeenCalledWith('/channel-integrations/whatsapp/connect', {
+        phoneNumberId: '106540352242922',
+        accessToken: 'EAAG-secret-token',
+      });
+    });
+  });
+
+  it('reports a rejected token honestly instead of claiming success', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(apiClient, 'apiGet').mockImplementation((url: string) => {
+      if (url === '/channel-integrations') {
+        return Promise.resolve([{ ...NOT_CONNECTED, connectable: true }] as never);
+      }
+      return Promise.resolve({ settings: { sharedUnassignedQueue: false } } as never);
+    });
+    vi.spyOn(apiClient, 'apiPost').mockResolvedValue({
+      id: 'i-1',
+      status: 'ERROR',
+      message: 'Meta rejected the access token. Check it has not expired.',
+    } as never);
+
+    renderWith(<ChannelIntegrationsPage />);
+
+    await user.click(await screen.findByRole('button', { name: 'Connect' }));
+    await user.type(screen.getByLabelText(/phone number id/i), '123');
+    await user.type(screen.getByLabelText(/access token/i), 'expired');
+    await user.click(screen.getByRole('button', { name: /save and verify/i }));
+
+    // An owner who believes their number is live stops watching their phone.
+    expect(await screen.findByText(/rejected the access token/i)).toBeInTheDocument();
+  });
+
+  it('shows no invented activity date for a channel that has never been used', async () => {
+    renderWith(<ChannelIntegrationsPage />);
+
+    await screen.findByText('WhatsApp');
+    expect(screen.queryByText('Last message')).toBeNull();
+    expect(screen.queryByText('Connected by')).toBeNull();
+  });
+
+  it('lets an administrator open the unassigned queue to the sales team', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(apiClient, 'apiPatch').mockResolvedValue({} as never);
+
+    renderWith(<ChannelIntegrationsPage />);
+
+    const toggle = await screen.findByRole('checkbox', {
+      name: /let every salesperson see unassigned conversations/i,
+    });
+    expect(toggle).not.toBeChecked();
+
+    await user.click(toggle);
+
+    await waitFor(() => {
+      expect(apiClient.apiPatch).toHaveBeenCalledWith('/organizations/current', {
+        settings: { sharedUnassignedQueue: true },
+      });
+    });
+  });
+
+  it('does not let a viewer change the shared queue', async () => {
+    mockAuth(['org.view']);
+    renderWith(<ChannelIntegrationsPage />);
+
+    const toggle = await screen.findByRole('checkbox', {
+      name: /let every salesperson see unassigned conversations/i,
+    });
+    // The API enforces this too; disabling avoids offering an action that
+    // would certainly fail.
+    expect(toggle).toBeDisabled();
+  });
+});

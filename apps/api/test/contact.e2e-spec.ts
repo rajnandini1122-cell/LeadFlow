@@ -1,4 +1,3 @@
-import { ThrottlerStorage } from '@nestjs/throttler';
 import { createTestContext, type TestContext } from './helpers/test-app';
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import { TenantContextService } from '../src/common/tenancy/tenant-context.service';
@@ -22,7 +21,7 @@ describe('Contact form', () => {
     name: 'Dana Whitfield',
     email: `${unique('buyer')}@example.test`,
     company: 'Kestrel Interiors',
-    phone: '+14155550100',
+    phone: '+14152860100',
     message: 'We are a team of six and want to stop losing enquiries. Can we see a demo?',
     source: 'pricing',
     ...overrides,
@@ -46,12 +45,16 @@ describe('Contact form', () => {
    * onwards would fail with 429 and prove nothing about what it meant to test.
    * The limit itself is asserted deliberately in its own case below, which
    * opts out of the reset.
+   *
+   * Counters live in Redis now — the limiter is shared across replicas rather
+   * than kept in each process — so emptying the double the suite runs against
+   * is the whole reset. It replaces a reach into the old in-memory storage's
+   * private Map, which had quietly become a no-op: optional chaining meant the
+   * reset silently did nothing against the new storage, and every case after
+   * the fifth failed with 429.
    */
   const resetRateLimit = (): void => {
-    const storage = ctx.app.get<ThrottlerStorage & { _storage?: Map<string, unknown> }>(
-      ThrottlerStorage,
-    );
-    storage._storage?.clear();
+    ctx.redis.flush();
   };
 
   beforeAll(async () => {

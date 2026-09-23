@@ -28,6 +28,21 @@ Thumbs.db
 # Android (Phase 1b)
 apps/android/local.properties
 apps/android/.gradle/
+
+# Capacitor Android wrapper (apps/web/android)
+#
+# local.properties holds THIS machine's SDK path and must never be committed —
+# it is regenerated per developer. The Gradle cache and the web assets Capacitor
+# copies in are both build output; 'build/' above already covers the rest.
+apps/web/android/local.properties
+apps/web/android/.gradle/
+apps/web/android/app/src/main/assets/public/
+apps/web/android/app/src/main/assets/capacitor.config.json
+apps/web/android/app/src/main/assets/capacitor.plugins.json
+
+# The published APK IS committed, deliberately, so the download link on the
+# home page works from a fresh clone. Its manifest is generated beside it.
+!apps/web/public/downloads/leadflow.apk
 apps/android/build/
 apps/android/**/build/
 *.keystore

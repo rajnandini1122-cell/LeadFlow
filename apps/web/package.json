@@ -3,16 +3,24 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "LeadFlow web management console — owners, admins and managers",
+  "description": "LeadFlow web management console â€” owners, admins and managers",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit",
     "lint": "eslint src --max-warnings 0",
-    "test": "vitest run"
+    "test": "vitest run",
+    "android:sync": "npm run build && node ../../scripts/strip-apk-from-bundle.mjs && cap sync android",
+    "android:open": "cap open android",
+    "android:build": "npm run android:sync && cd android && gradlew.bat assembleDebug",
+    "android:release": "node ../../scripts/check-release-config.mjs && npm run build && node ../../scripts/strip-apk-from-bundle.mjs && cap sync android && cd android && gradlew.bat assembleRelease"
   },
   "dependencies": {
+    "@aparajita/capacitor-secure-storage": "^7.1.6",
+    "@capacitor/android": "^7.6.8",
+    "@capacitor/core": "^7.6.8",
+    "@capacitor/push-notifications": "^7.0.7",
     "@leadflow/api-types": "0.1.0",
     "@tanstack/react-query": "5.101.4",
     "axios": "1.19.0",
@@ -21,6 +29,7 @@
     "react-router-dom": "7.18.2"
   },
   "devDependencies": {
+    "@capacitor/cli": "^7.6.8",
     "@tailwindcss/vite": "4.3.3",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",

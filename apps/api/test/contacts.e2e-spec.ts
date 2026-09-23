@@ -1,5 +1,6 @@
 import { ERROR_CODES } from '@leadflow/api-types';
 import { createTestContext, type TestContext } from './helpers/test-app';
+import { fixtureMobile } from './helpers/phone-fixtures';
 
 /**
  * Phase 5 — contacts, duplicate detection and the merge workflow.
@@ -16,11 +17,7 @@ describe('Contacts', () => {
   const auth = (token: string) => ({ Authorization: `Bearer ${token}` });
 
   /** Distinct numbers per call: the leads mobile index is unique per org. */
-  let counter = 0;
-  const mobile = (): string => {
-    counter += 1;
-    return `415555${String(1000 + counter)}`;
-  };
+  const mobile = (): string => fixtureMobile();
 
   const inDays = (days: number): string => new Date(Date.now() + days * 86_400_000).toISOString();
 

@@ -1,6 +1,6 @@
 import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { SkipThrottle } from '@nestjs/throttler';
+import { CredentialThrottle } from '../../common/throttler/credential-throttle.decorator';
 import { Public } from '../auth/decorators/public.decorator';
 import { InvitationsService, type InvitationPreview } from './invitations.service';
 import { AcceptInvitationDto } from './dto/invitations.dto';
@@ -13,11 +13,12 @@ import { AcceptInvitationDto } from './dto/invitations.dto';
  * IS the authorisation, which is why the token is 256 bits, stored only as a
  * hash, single-use and time-limited.
  *
- * Governed by the strict `auth` throttler, because an unauthenticated endpoint
- * that accepts a secret is a brute-force target.
+ * Governed by the strict credential limiter — marked on the whole controller,
+ * since both routes take the token — because an unauthenticated endpoint that
+ * accepts a secret is a brute-force target, exactly like a login.
  */
 @ApiTags('invitations')
-@SkipThrottle({ default: true })
+@CredentialThrottle()
 @Controller('invitations')
 export class InvitationsController {
   constructor(private readonly invitations: InvitationsService) {}

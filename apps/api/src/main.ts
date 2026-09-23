@@ -8,6 +8,7 @@ import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
 import { AppModule } from './app.module';
 import { AppConfig } from './common/config/config.module';
+import { serveWebApp, webDistPath } from './common/web/spa';
 
 /**
  * HTTP entrypoint.
@@ -17,7 +18,19 @@ import { AppConfig } from './common/config/config.module';
  * implementation while scaling independently (spec §27).
  */
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create<NestExpressApplication>(AppModule, { bufferLogs: true });
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    bufferLogs: true,
+    /*
+     * Keeps the exact bytes of each request body alongside the parsed one.
+     *
+     * Required by the WhatsApp webhook: Meta signs the raw payload, and any
+     * re-serialisation of the parsed JSON — key order, unicode escaping,
+     * whitespace — produces a different HMAC and rejects a legitimate message.
+     * Verifying a re-encoded body is the classic way a signature check ends up
+     * validating nothing.
+     */
+    rawBody: true,
+  });
 
   app.useLogger(app.get(Logger));
   const config = app.get(AppConfig);
@@ -31,11 +44,19 @@ async function bootstrap(): Promise<void> {
   // request and an arbitrarily large allocation.
   app.useBodyParser('json', { limit: '3mb' });
 
-  // Behind a load balancer, req.ip must come from X-Forwarded-For or every
-  // rate limit and audit entry records the proxy's address instead of the
-  // client's. `1` trusts exactly one hop — trusting all would let a client
-  // spoof its own IP by setting the header.
-  app.set('trust proxy', 1);
+  /*
+   * How far to trust X-Forwarded-For when deriving req.ip — the value every
+   * rate limit and audit row is keyed on.
+   *
+   * Configuration rather than a constant, because the correct number is a
+   * property of the deployment and being wrong is a security bug either way:
+   * trusting more hops than exist lets any caller mint a fresh identity per
+   * request by sending a header, which defeats the limiter completely;
+   * trusting fewer puts every customer behind the load balancer into one
+   * bucket. The default is 0 — trust nothing — which is the only safe value
+   * before the topology is fixed. See TRUST_PROXY_HOPS in .env.example.
+   */
+  app.set('trust proxy', config.get('TRUST_PROXY_HOPS'));
 
   app.setGlobalPrefix('api', { exclude: ['health', 'readiness'] });
   app.enableVersioning({ type: VersioningType.URI, defaultVersion: '1' });
@@ -71,6 +92,18 @@ async function bootstrap(): Promise<void> {
     SwaggerModule.setup('api/docs', app, document);
   }
 
+  /*
+   * The web app, from this same process and therefore this same origin.
+   *
+   * Registered AFTER everything above so the API's own configuration — the
+   * prefix, the versioning, CORS — is already in place, and BEFORE listen()
+   * because that is when Nest mounts its router.
+   *
+   * Mounts only when a build is actually present, so a development run where
+   * Vite serves the app on its own port is unaffected.
+   */
+  const servingWeb = serveWebApp(app, webDistPath(__dirname));
+
   // Let in-flight requests finish before the process exits during a deploy.
   app.enableShutdownHooks();
 
@@ -79,6 +112,11 @@ async function bootstrap(): Promise<void> {
 
   const logger = app.get(Logger);
   logger.log(`LeadFlow API listening on :${port} [${config.get('NODE_ENV')}]`);
+  logger.log(
+    servingWeb
+      ? 'Serving the web app from this origin'
+      : 'No web build found — API only (expected in development)',
+  );
   if (!config.isProduction) logger.log(`API docs at http://localhost:${port}/api/docs`);
 }
 

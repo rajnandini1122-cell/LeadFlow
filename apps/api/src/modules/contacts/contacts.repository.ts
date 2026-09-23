@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
-import { PrismaService } from '../../common/prisma/prisma.service';
+import { PrismaService, type PrismaTransaction } from '../../common/prisma/prisma.service';
 import { TenantContextService } from '../../common/tenancy/tenant-context.service';
+import { AppConfig } from '../../common/config/config.module';
 
 /**
  * Contact data access.
@@ -14,6 +15,7 @@ export class ContactsRepository {
   constructor(
     private readonly prisma: PrismaService,
     private readonly tenantContext: TenantContextService,
+    private readonly config: AppConfig,
   ) {}
 
   /** Excludes merged and deleted rows — both are tombstones, not people. */
@@ -79,7 +81,10 @@ export class ContactsRepository {
     const organization = await this.prisma.client.organization.findFirst({
       select: { country: true },
     });
-    return organization?.country ?? 'US';
+    // The configured deployment default, not a constant: an organization
+    // with no country is a row that predates the column, and guessing 'US'
+    // for an India-first product read every local number as American.
+    return organization?.country ?? this.config.get('DEFAULT_COUNTRY');
   }
 
   async countAll(search?: string): Promise<number> {
@@ -89,16 +94,27 @@ export class ContactsRepository {
   async create(input: {
     firstName?: string | undefined;
     lastName?: string | undefined;
-    mobile?: string | undefined;
+    /** Null for a contact with no phone number — an Instagram or Messenger lead. */
+    mobile?: string | null | undefined;
     email?: string | undefined;
     companyName?: string | undefined;
     city?: string | undefined;
     notes?: string | undefined;
-    actorId: string;
+    /**
+     * Null for a SYSTEM write.
+     *
+     * `created_by` and `updated_by` are nullable with no foreign key, so null
+     * is the honest value for a contact the automated intake pipeline created:
+     * nobody typed it. Borrowing a real user's id would attribute the record
+     * to somebody who was not there.
+     */
+    actorId: string | null;
+    /** Supplied when this write is part of a caller's larger transaction. */
+    tx?: PrismaTransaction | undefined;
   }) {
     const organizationId = this.tenantContext.requireOrganizationId();
 
-    return this.prisma.client.contact.create({
+    return (input.tx ?? this.prisma.client).contact.create({
       data: {
         organizationId,
         firstName: input.firstName ?? null,
@@ -122,21 +138,41 @@ export class ContactsRepository {
     return result.count;
   }
 
-  /** Finds or creates the contact for a person, keyed on E.164 mobile. */
+  /**
+   * Finds or creates the contact for a person, keyed on E.164 mobile.
+   *
+   * A null mobile ALWAYS creates a new contact. There is nothing to match on,
+   * and treating "no number" as a shared key would collapse every numberless
+   * enquiry — every Instagram and Messenger lead — into a single contact
+   * holding several unrelated customers' history.
+   */
   async findOrCreateByMobile(input: {
-    mobile: string;
+    mobile: string | null;
     firstName?: string | undefined;
     lastName?: string | undefined;
     email?: string | undefined;
     companyName?: string | undefined;
     city?: string | undefined;
-    actorId: string;
+    actorId: string | null;
+    /**
+     * Supplied when this is part of a caller's transaction.
+     *
+     * The automated path needs the lookup AND the insert inside the same
+     * transaction as the lead: a contact created for a lead that then rolls
+     * back would be a person in the CRM with no enquiry behind them.
+     */
+    tx?: PrismaTransaction | undefined;
   }) {
-    const existing = await this.prisma.client.contact.findFirst({
-      where: { mobile: input.mobile, ...this.live },
-    });
+    const db = input.tx ?? this.prisma.client;
 
-    if (existing) return existing;
+    if (input.mobile !== null) {
+      const existing = await db.contact.findFirst({
+        where: { mobile: input.mobile, ...this.live },
+      });
+
+      if (existing) return existing;
+    }
+
     return this.create({ ...input, email: input.email?.toLowerCase() });
   }
 

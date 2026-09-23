@@ -244,4 +244,351 @@ describe('Database invariants', () => {
       );
     });
   });
+
+  /**
+   * Territories: one live owner per place, and selectors that mean something.
+   *
+   * These are the objects the resolver's determinism rests on, and none of
+   * them can be expressed in schema.prisma — a partial unique index and three
+   * CHECK constraints, all written by hand in the migration. Every assertion
+   * here deliberately provokes a SQL error, which is why the file uses raw
+   * `pg` on a fresh connection rather than Prisma.
+   */
+  describe('territory coverage', () => {
+    const insertTerritory = async (organizationId: string, name: string): Promise<string> =>
+      withClient(async (client) => {
+        // name_key is passed rather than computed in SQL: reusing $2 inside
+        // lower() leaves Postgres unable to deduce one type for the parameter.
+        const result = await client.query(
+          `insert into territories (organization_id, name, name_key, updated_at)
+           values ($1, $2, $3, now()) returning id`,
+          [organizationId, name, name.toLowerCase()],
+        );
+        return result.rows[0].id as string;
+      });
+
+    const insertCoverage = (
+      organizationId: string,
+      territoryId: string,
+      columns: {
+        type: string;
+        country: string;
+        stateKey?: string | null;
+        stateName?: string | null;
+        cityKey?: string | null;
+        cityName?: string | null;
+        postalKey?: string | null;
+        postal?: string | null;
+        key: string;
+      },
+    ) =>
+      attempt(
+        `insert into territory_coverage
+           (organization_id, territory_id, type, country_code,
+            state_key, state_name, city_key, city_name,
+            postal_code_key, postal_code, coverage_key)
+         values ($1, $2, $3::territory_coverage_type, $4, $5, $6, $7, $8, $9, $10, $11)`,
+        [
+          organizationId,
+          territoryId,
+          columns.type,
+          columns.country,
+          columns.stateKey ?? null,
+          columns.stateName ?? null,
+          columns.cityKey ?? null,
+          columns.cityName ?? null,
+          columns.postalKey ?? null,
+          columns.postal ?? null,
+          columns.key,
+        ],
+      );
+
+    it('refuses two live territories claiming the same place', async () => {
+      const organizationId = await createOrg(`terr-owner-${Date.now()}`);
+      const first = await insertTerritory(organizationId, 'First');
+      const second = await insertTerritory(organizationId, 'Second');
+
+      expect(
+        await insertCoverage(organizationId, first, {
+          type: 'STATE',
+          country: 'IN',
+          stateKey: 'maharashtra',
+          stateName: 'Maharashtra',
+          key: 'STATE|IN|maharashtra',
+        }),
+      ).toBe('OK');
+
+      // Without this the resolver would have two answers for one place, and
+      // which it gave would depend on row order.
+      expect(
+        await insertCoverage(organizationId, second, {
+          type: 'STATE',
+          country: 'IN',
+          stateKey: 'maharashtra',
+          stateName: 'Maharashtra',
+          key: 'STATE|IN|maharashtra',
+        }),
+      ).toBe('territory_coverage_active_key_uniq');
+    });
+
+    it('lets two organizations cover the same place', async () => {
+      const a = await createOrg(`terr-a-${Date.now()}`);
+      const b = await createOrg(`terr-b-${Date.now()}`);
+      const territoryA = await insertTerritory(a, 'Theirs');
+      const territoryB = await insertTerritory(b, 'Theirs');
+
+      // The index is per tenant. Two competitors may both sell into Brazil.
+      expect(
+        await insertCoverage(a, territoryA, { type: 'COUNTRY', country: 'BR', key: 'COUNTRY|BR' }),
+      ).toBe('OK');
+      expect(
+        await insertCoverage(b, territoryB, { type: 'COUNTRY', country: 'BR', key: 'COUNTRY|BR' }),
+      ).toBe('OK');
+    });
+
+    it('refuses a coverage row whose tenant disagrees with its territory', async () => {
+      const a = await createOrg(`terr-x-${Date.now()}`);
+      const b = await createOrg(`terr-y-${Date.now()}`);
+      const theirs = await insertTerritory(b, 'Theirs');
+
+      // The composite foreign key carries the tenant into the key, so this is
+      // refused by PostgreSQL rather than by a check somebody could forget.
+      expect(
+        await insertCoverage(a, theirs, { type: 'COUNTRY', country: 'DE', key: 'COUNTRY|DE' }),
+      ).toBe('territory_coverage_territory_id_organization_id_fkey');
+    });
+
+    it('refuses selectors that do not mean anything', async () => {
+      const organizationId = await createOrg(`terr-shape-${Date.now()}`);
+      const territoryId = await insertTerritory(organizationId, 'Shapes');
+
+      // A COUNTRY row with a city in it, or a POSTAL_CODE row with no pincode,
+      // would make the resolver's specificity order meaningless.
+      expect(
+        await insertCoverage(organizationId, territoryId, {
+          type: 'COUNTRY',
+          country: 'IN',
+          cityKey: 'pune',
+          cityName: 'Pune',
+          key: 'COUNTRY|IN',
+        }),
+      ).toBe('territory_coverage_shape_chk');
+
+      expect(
+        await insertCoverage(organizationId, territoryId, {
+          type: 'POSTAL_CODE',
+          country: 'IN',
+          key: 'POSTAL|IN|411019',
+        }),
+      ).toBe('territory_coverage_shape_chk');
+
+      expect(
+        await insertCoverage(organizationId, territoryId, {
+          type: 'STATE',
+          country: 'IN',
+          key: 'STATE|IN|maharashtra',
+        }),
+      ).toBe('territory_coverage_shape_chk');
+    });
+
+    it('refuses a comparison key with no display spelling', async () => {
+      const organizationId = await createOrg(`terr-display-${Date.now()}`);
+      const territoryId = await insertTerritory(organizationId, 'Display');
+
+      // Otherwise the screen would show an administrator one thing while the
+      // resolver matched another.
+      expect(
+        await insertCoverage(organizationId, territoryId, {
+          type: 'CITY',
+          country: 'IN',
+          cityKey: 'pune',
+          cityName: null,
+          key: 'CITY|IN|*|pune',
+        }),
+      ).toBe('territory_coverage_display_chk');
+    });
+
+    it('lets a place be re-claimed once it has been released', async () => {
+      const organizationId = await createOrg(`terr-move-${Date.now()}`);
+      const first = await insertTerritory(organizationId, 'First');
+      const second = await insertTerritory(organizationId, 'Second');
+
+      await insertCoverage(organizationId, first, {
+        type: 'COUNTRY',
+        country: 'FR',
+        key: 'COUNTRY|FR',
+      });
+      await withClient((client) =>
+        client.query(`update territory_coverage set removed_at = now() where territory_id = $1`, [
+          first,
+        ]),
+      );
+
+      // PARTIAL on removed_at, so a selector may legitimately move between
+      // territories — and the removed row stays as the record of where those
+      // enquiries went.
+      expect(
+        await insertCoverage(organizationId, second, {
+          type: 'COUNTRY',
+          country: 'FR',
+          key: 'COUNTRY|FR',
+        }),
+      ).toBe('OK');
+    });
+
+    it('keeps the objects the territory resolver depends on', async () => {
+      const indexes = await withClient(async (client) => {
+        const result = await client.query(
+          `select indexname from pg_indexes where schemaname='public' and tablename in ('territories','territory_coverage','assignment_rules')`,
+        );
+        return (result.rows as { indexname: string }[]).map((row) => row.indexname);
+      });
+
+      expect(indexes).toEqual(
+        expect.arrayContaining([
+          'territories_org_name_key_active_uniq',
+          'territories_id_organization_id_key',
+          'territory_coverage_active_key_uniq',
+          'assignment_rules_org_territory_status_idx',
+          // Unchanged from J4, and asserted here so that widening
+          // criteria_key cannot have quietly dropped them.
+          'assignment_rules_active_criteria_uniq',
+          'assignment_rules_active_priority_uniq',
+          'assignment_rules_active_fallback_uniq',
+        ]),
+      );
+    });
+
+    it('leaves every existing criteria key in the one canonical format', async () => {
+      const keys = await withClient(async (client) => {
+        const result = await client.query(`select criteria_key from assignment_rules`);
+        return (result.rows as { criteria_key: string }[]).map((row) => row.criteria_key);
+      });
+
+      /*
+       * The migration's promise, checked against whatever the suite has
+       * written by now. Two formats living side by side is the failure this
+       * guards: the active-criteria unique index compares strings, so an old
+       * two-segment key and a new three-segment key for the same criteria
+       * would read as two different rules and both be allowed active.
+       */
+      for (const key of keys) {
+        expect(key).toMatch(/^source=[^|]*\|product=[^|]*\|territory=[^|]*$/);
+      }
+    });
+  });
+
+  /**
+   * Round-robin state, and the enquiry queue that feeds it.
+   *
+   * The rotation is `sequence % candidates.length`, so a negative sequence
+   * would index outside the array rather than wrapping — in PostgreSQL a
+   * negative left operand yields a negative remainder. And two cursor rows for
+   * one team would be two rotations, with row order deciding which answered.
+   */
+  describe('team assignment cursors', () => {
+    const insertTeam = async (organizationId: string, name: string): Promise<string> =>
+      withClient(async (client) => {
+        const result = await client.query(
+          `insert into teams (organization_id, name, name_key, updated_at)
+           values ($1, $2, $3, now()) returning id`,
+          [organizationId, name, name.toLowerCase()],
+        );
+        return result.rows[0].id as string;
+      });
+
+    const insertCursor = (organizationId: string, teamId: string, sequence: number) =>
+      attempt(
+        `insert into team_assignment_cursors (organization_id, team_id, sequence, updated_at)
+         values ($1, $2, $3, now())`,
+        [organizationId, teamId, sequence],
+      );
+
+    it('refuses a second cursor for one team', async () => {
+      const organizationId = await createOrg(`cursor-${Date.now()}`);
+      const teamId = await insertTeam(organizationId, 'Rotating');
+
+      expect(await insertCursor(organizationId, teamId, 0)).toBe('OK');
+      expect(await insertCursor(organizationId, teamId, 0)).toBe(
+        'team_assignment_cursors_team_id_key',
+      );
+    });
+
+    it('refuses a negative sequence', async () => {
+      const organizationId = await createOrg(`cursor-neg-${Date.now()}`);
+      const teamId = await insertTeam(organizationId, 'Backwards');
+
+      expect(await insertCursor(organizationId, teamId, -1)).toBe(
+        'team_assignment_cursors_sequence_chk',
+      );
+    });
+
+    it('refuses a cursor whose tenant disagrees with its team', async () => {
+      const a = await createOrg(`cursor-a-${Date.now()}`);
+      const b = await createOrg(`cursor-b-${Date.now()}`);
+      const theirs = await insertTeam(b, 'Theirs');
+
+      // The composite foreign key carries the tenant into the key, so one
+      // organization cannot create a rotation over another's team.
+      expect(await insertCursor(a, theirs, 0)).toBe(
+        'team_assignment_cursors_team_id_organization_id_fkey',
+      );
+    });
+
+    it('refuses a negative processing attempt count', async () => {
+      const organizationId = await createOrg(`intake-neg-${Date.now()}`);
+
+      const result = await attempt(
+        `insert into integration_intakes
+           (organization_id, source, external_event_id, event_type, payload_hash,
+            processing_attempts, updated_at)
+         values ($1, 'WEBSITE', $2, 'ENQUIRY', $3, -1, now())`,
+        [organizationId, `evt-${Date.now()}`, 'c'.repeat(64)],
+      );
+
+      expect(result).toBe('integration_intakes_processing_attempts_chk');
+    });
+
+    it('refuses a first-response SLA outside a practical range', async () => {
+      const organizationId = await createOrg(`sla-${Date.now()}`);
+
+      // Zero would mean "already overdue the instant it arrives", and the
+      // upper bound stops a typo turning a one-hour promise into a fortnight.
+      const zero = await attempt(
+        `insert into organization_settings
+           (organization_id, website_intake_first_follow_up_minutes, updated_at)
+         values ($1, 0, now())`,
+        [organizationId],
+      );
+      expect(zero).toBe('organization_settings_first_follow_up_minutes_chk');
+
+      const tooLong = await attempt(
+        `insert into organization_settings
+           (organization_id, website_intake_first_follow_up_minutes, updated_at)
+         values ($1, 99999, now())`,
+        [organizationId],
+      );
+      expect(tooLong).toBe('organization_settings_first_follow_up_minutes_chk');
+    });
+
+    it('keeps the objects the pipeline depends on', async () => {
+      const indexes = await withClient(async (client) => {
+        const result = await client.query(
+          `select indexname from pg_indexes where schemaname='public' and tablename in ('team_assignment_cursors','integration_intakes','leads')`,
+        );
+        return (result.rows as { indexname: string }[]).map((row) => row.indexname);
+      });
+
+      expect(indexes).toEqual(
+        expect.arrayContaining([
+          'team_assignment_cursors_team_id_key',
+          'team_assignment_cursors_team_id_organization_id_key',
+          // The claim query: what is waiting ANYWHERE, oldest first.
+          'integration_intakes_status_received_idx',
+          // Lets an intake point a composite key at the lead it became.
+          'leads_id_organization_id_key',
+        ]),
+      );
+    });
+  });
 });

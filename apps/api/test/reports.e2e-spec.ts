@@ -1,6 +1,7 @@
 import { createTestContext, PASSWORD, type TestContext } from './helpers/test-app';
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import { TenantContextService } from '../src/common/tenancy/tenant-context.service';
+import { fixtureMobile } from './helpers/phone-fixtures';
 
 /**
  * Phase 6 — server-side reporting, team performance and date ranges.
@@ -21,11 +22,7 @@ describe('Reports', () => {
   const unique = (prefix: string): string =>
     `${prefix}.${Date.now()}.${Math.floor(Math.random() * 100000)}`;
 
-  let counter = 0;
-  const mobile = (): string => {
-    counter += 1;
-    return `4155582${String(1000 + counter)}`;
-  };
+  const mobile = (): string => fixtureMobile();
 
   const inDays = (days: number): string => new Date(Date.now() + days * 86_400_000).toISOString();
 

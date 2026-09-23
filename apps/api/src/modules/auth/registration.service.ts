@@ -7,7 +7,9 @@ import { DEFAULT_LEAD_SOURCES } from '../organizations/lead-sources';
 import { isReserved, isValidSlug, resolveAvailableSlug, slugify } from '../organizations/slug';
 import { RegistrationRepository } from './registration.repository';
 import { PasswordService } from './password.service';
+import { randomBytes } from 'node:crypto';
 import { SessionService, type RequestMetadata } from './session.service';
+import { GoogleAuthService } from './google-auth.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import type { RegisterDto } from './dto/register.dto';
 
@@ -22,10 +24,79 @@ export class RegistrationService {
     private readonly audit: AuditRepository,
     private readonly config: AppConfig,
     private readonly subscriptions: SubscriptionsService,
+    private readonly google: GoogleAuthService,
   ) {}
 
+  /**
+   * Creates an organization for somebody arriving via Google.
+   *
+   * Reuses `register` entirely rather than duplicating the tenant-creation
+   * path. That matters more than the saved lines: creating an organization
+   * also seeds its settings, assigns the OWNER role and starts a trial, and a
+   * second implementation would inevitably miss one of those and produce a
+   * tenant that looks fine until something it never got is needed.
+   *
+   * The email and name come from the VERIFIED token, never from the request
+   * body. Taking them from the body would let a caller present their own valid
+   * Google token and register an organization under somebody else's address.
+   *
+   * The account gets a random password it is never told. Google is how this
+   * person signs in; a known placeholder would be a shared credential across
+   * every Google account on the deployment, and leaving it null would make
+   * this row a special case for every other auth path.
+   */
+  async registerWithGoogle(
+    input: {
+      idToken: string;
+      organizationName: string;
+      platform?: string | undefined;
+      timezone?: string | undefined;
+      currency?: string | undefined;
+      locale?: string | undefined;
+      country?: string | undefined;
+    },
+    meta: RequestMetadata,
+  ): Promise<{ tokens: TokenPair; user: AuthenticatedUser; refreshToken: string }> {
+    const identity = await this.google.verify(input.idToken);
+
+    // Google gives one display name, not two fields. Split on the first space
+    // so the common case is right, and never leave the surname empty.
+    const parts = (identity.fullName ?? identity.email.split('@')[0] ?? 'New user')
+      .trim()
+      .split(/\s+/);
+    const firstName = parts[0] ?? 'New';
+    const lastName = parts.slice(1).join(' ') || firstName;
+
+    return this.register(
+      {
+        organizationName: input.organizationName,
+        firstName,
+        lastName,
+        email: identity.email,
+        password: randomBytes(32).toString('base64url'),
+        platform: input.platform,
+        // Tenant identity travels the same road as the password path, so both
+        // reach the one place that resolves configured defaults.
+        timezone: input.timezone,
+        currency: input.currency,
+        locale: input.locale,
+        country: input.country,
+        // From the verified token, never the request body.
+        googleSubject: identity.subject,
+      } as RegisterDto & { googleSubject: string },
+      meta,
+    );
+  }
+
   async register(
-    dto: RegisterDto,
+    /*
+     * `googleSubject` is deliberately NOT on RegisterDto.
+     *
+     * It is set only by registerWithGoogle, from a verified token. Putting it
+     * on the public DTO would let a request body claim any Google identity and
+     * mint an account that Google sign-in would then accept.
+     */
+    dto: RegisterDto & { googleSubject?: string },
     meta: RequestMetadata,
   ): Promise<{ tokens: TokenPair; user: AuthenticatedUser; refreshToken: string }> {
     if (await this.repository.emailExists(dto.email)) {
@@ -56,15 +127,29 @@ export class RegistrationService {
       created = await this.repository.createOrganizationWithOwner({
         organizationName: dto.organizationName,
         slug,
+        /*
+         * What the registering owner said, else what this deployment is
+         * configured for.
+         *
+         * Never the schema's column defaults. Those say US/UTC/USD/en-US
+         * because that is what the first migration happened to write, and a
+         * tenant created for an India-first product must not depend on which
+         * of two unrelated files was more recently edited. The application
+         * decides, from configuration, in one place.
+         *
+         * Every value here has already been validated by the DTO, and the
+         * configured fallbacks are validated at boot.
+         */
         timezone: dto.timezone ?? this.config.get('DEFAULT_TIMEZONE'),
-        currency: (dto.currency ?? this.config.get('DEFAULT_CURRENCY')).toUpperCase(),
-        locale: this.config.get('DEFAULT_LOCALE'),
-        country: (dto.country ?? this.config.get('DEFAULT_COUNTRY')).toUpperCase(),
+        currency: dto.currency ?? this.config.get('DEFAULT_CURRENCY'),
+        locale: dto.locale ?? this.config.get('DEFAULT_LOCALE'),
+        country: dto.country ?? this.config.get('DEFAULT_COUNTRY'),
         email: dto.email,
         passwordHash,
         fullName: `${dto.firstName} ${dto.lastName}`.trim(),
         ownerRoleId,
         leadSources: DEFAULT_LEAD_SOURCES,
+        ...(dto.googleSubject ? { googleSubject: dto.googleSubject } : {}),
       });
     } catch (error) {
       // Two registrations can agree on the same free slug or email between the

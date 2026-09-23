@@ -9,7 +9,12 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Res,
+  UploadedFile,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import type { Response } from 'express';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AppException } from '../../common/errors/app.exception';
 import { PERMISSIONS, type InviteUserResponse, type UserListItem } from '@leadflow/api-types';
@@ -21,6 +26,7 @@ import { OffboardingService } from './offboarding.service';
 import { InvitationsService } from '../invitations/invitations.service';
 import { InviteUserDto, UpdateUserDto } from './dto/users.dto';
 import { OffboardMemberDto, TransferAdminDto } from './dto/offboarding.dto';
+import { AvatarService, MAX_AVATAR_BYTES, type UploadedAvatar } from './avatar.service';
 
 /**
  * Controllers stay thin (spec §33): validate shape, delegate, return.
@@ -33,7 +39,74 @@ export class UsersController {
     private readonly users: UsersService,
     private readonly invitations: InvitationsService,
     private readonly offboarding: OffboardingService,
+    private readonly avatars: AvatarService,
   ) {}
+
+  /**
+   * Set your own profile picture.
+   *
+   * Deliberately only ever the CALLER's own — there is no route for setting
+   * somebody else's face, which removes "an admin changed my photo" before it
+   * can be asked. No permission beyond being signed in: a person's own picture
+   * is not organization configuration.
+   *
+   * The size cap is enforced by the PARSER, before the bytes are fully read.
+   * Checking afterwards would mean accepting an arbitrarily large upload into
+   * memory in order to reject it.
+   */
+  @Post('me/avatar')
+  @HttpCode(HttpStatus.OK)
+  @UseInterceptors(
+    FileInterceptor('file', { limits: { fileSize: MAX_AVATAR_BYTES, files: 1 } }),
+  )
+  @ApiOperation({ summary: 'Upload your profile picture' })
+  async uploadAvatar(
+    @CurrentUser() principal: TenantPrincipal,
+    @UploadedFile() file?: UploadedAvatar,
+  ) {
+    return this.avatars.upload(principal.userId, file);
+  }
+
+  @Delete('me/avatar')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({ summary: 'Remove your profile picture' })
+  async removeAvatar(@CurrentUser() principal: TenantPrincipal): Promise<void> {
+    await this.avatars.remove(principal.userId);
+  }
+
+  /**
+   * Someone's profile picture.
+   *
+   * Readable by anyone who shares an organization with them — enforced in the
+   * service, because a User is global and its id is therefore not tenant
+   * scoped. Without that check a signed-in account could walk ids and collect
+   * photographs of people at every other company on the deployment.
+   */
+  @Get(':id/avatar')
+  @ApiOperation({ summary: "A member's profile picture" })
+  async avatar(
+    @Param('id', new ParseUUIDPipe({ version: '7' })) id: string,
+    @Res() response: Response,
+  ): Promise<void> {
+    const avatar = await this.avatars.read(id);
+
+    response.setHeader('Content-Type', avatar.mimeType);
+    // Belt and braces: the type was detected from the bytes on upload, and the
+    // browser is told not to second-guess it either.
+    response.setHeader('X-Content-Type-Options', 'nosniff');
+    response.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+    /*
+     * Cached privately, and only by the person who fetched it.
+     *
+     * The URL carries a version that changes whenever the picture does, so a
+     * long max-age is safe and keeps avatars off the network on every screen
+     * that lists people. `private` keeps it out of any shared cache: this is
+     * one organization's staff, not public content.
+     */
+    response.setHeader('Cache-Control', 'private, max-age=86400');
+
+    response.end(Buffer.from(avatar.data));
+  }
 
   @Get()
   @RequirePermissions(PERMISSIONS.USER_VIEW)

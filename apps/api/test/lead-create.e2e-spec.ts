@@ -1,5 +1,6 @@
 import { ERROR_CODES } from '@leadflow/api-types';
 import { createTestContext, type TestContext } from './helpers/test-app';
+import { fixtureMobile } from './helpers/phone-fixtures';
 
 /**
  * Lead creation: the "no lead left behind" rule, duplicate detection (spec §23)
@@ -13,7 +14,7 @@ describe('Lead creation', () => {
 
   /** Unique per call, and valid as a US national number for the test tenants. */
   const uniqueMobile = (): string =>
-    `415${String(Math.floor(1000000 + Math.random() * 8999999))}`;
+    fixtureMobile();
 
   const tomorrow = (): string => new Date(Date.now() + 86_400_000).toISOString();
 
@@ -89,11 +90,11 @@ describe('Lead creation', () => {
         .http()
         .post('/api/v1/leads')
         .set(auth(ctx.orgA.owner.accessToken))
-        .send({ ...validLead(), mobile: '+1 (415) 555-0142' })
+        .send({ ...validLead(), mobile: '+1 (415) 286-0142' })
         .expect(201);
 
       // Canonical form, so the same customer typed two ways is one record.
-      expect(response.body.data.mobile).toBe('+14155550142');
+      expect(response.body.data.mobile).toBe('+14152860142');
     });
 
     it('applies the ORGANIZATION country to a local-format number', async () => {
@@ -103,10 +104,10 @@ describe('Lead creation', () => {
         .http()
         .post('/api/v1/leads')
         .set(auth(ctx.orgA.owner.accessToken))
-        .send({ ...validLead(), mobile: '4155550188' })
+        .send({ ...validLead(), mobile: '4152860188' })
         .expect(201);
 
-      expect(response.body.data.mobile).toBe('+14155550188');
+      expect(response.body.data.mobile).toBe('+14152860188');
     });
 
     it('gives each new lead a distinct sequential number', async () => {
@@ -154,6 +155,129 @@ describe('Lead creation', () => {
         .expect(201);
 
       expect(response.body.data.nextFollowUpAt).toBeNull();
+    });
+  });
+
+  /*
+   * A lead with no phone number.
+   *
+   * Instagram and Messenger hand over an opaque, provider-scoped account id
+   * and nothing else — there is no number to record. Requiring one made
+   * "create a lead" impossible from exactly the conversations the review queue
+   * exists to triage, and forced whoever was triaging to invent a number,
+   * which is worse than recording that there is not one.
+   *
+   * The schema always allowed this: `leads.mobile` is nullable and the
+   * duplicate index is `WHERE mobile IS NOT NULL`.
+   */
+  describe('leads without a mobile', () => {
+    const withoutMobile = () => {
+      const lead = validLead() as Record<string, unknown>;
+      delete lead['mobile'];
+      return lead;
+    };
+
+    it('creates one', async () => {
+      const response = await ctx
+        .http()
+        .post('/api/v1/leads')
+        .set(auth(ctx.orgA.owner.accessToken))
+        .send(withoutMobile());
+
+      expect(response.status).toBe(201);
+      expect(response.body.data.mobile).toBeNull();
+    });
+
+    it('treats an empty string as no number rather than a validation error', async () => {
+      // The form sends "" when the field is left blank.
+      const response = await ctx
+        .http()
+        .post('/api/v1/leads')
+        .set(auth(ctx.orgA.owner.accessToken))
+        .send({ ...withoutMobile(), mobile: '' });
+
+      expect(response.status).toBe(201);
+      expect(response.body.data.mobile).toBeNull();
+    });
+
+    it('does NOT treat two numberless leads as duplicates of each other', async () => {
+      /*
+       * The mobile IS the duplicate key. Without one there is nothing to match
+       * on, and matching on name or company instead would collide constantly
+       * — wrongly refusing to create a lead loses a real enquiry.
+       */
+      const first = await ctx
+        .http()
+        .post('/api/v1/leads')
+        .set(auth(ctx.orgA.owner.accessToken))
+        .send({ ...withoutMobile(), firstName: 'John', lastName: 'Smith' });
+
+      const second = await ctx
+        .http()
+        .post('/api/v1/leads')
+        .set(auth(ctx.orgA.owner.accessToken))
+        .send({ ...withoutMobile(), firstName: 'John', lastName: 'Smith' });
+
+      expect(first.status).toBe(201);
+      expect(second.status).toBe(201);
+      expect(second.body.data.id).not.toBe(first.body.data.id);
+    });
+
+    it('keeps two numberless leads as separate records', async () => {
+      // Each gets its own contact behind the scenes. Collapsing them onto one
+      // would put several unrelated customers' history in a single record.
+      const first = await ctx
+        .http()
+        .post('/api/v1/leads')
+        .set(auth(ctx.orgA.owner.accessToken))
+        .send(withoutMobile());
+
+      const second = await ctx
+        .http()
+        .post('/api/v1/leads')
+        .set(auth(ctx.orgA.owner.accessToken))
+        .send(withoutMobile());
+
+      const [one, two] = await Promise.all([
+        ctx.http().get(`/api/v1/leads/${first.body.data.id}`).set(auth(ctx.orgA.owner.accessToken)),
+        ctx.http().get(`/api/v1/leads/${second.body.data.id}`).set(auth(ctx.orgA.owner.accessToken)),
+      ]);
+
+      expect(one.status).toBe(200);
+      expect(two.status).toBe(200);
+      expect(one.body.data.leadNumber).not.toBe(two.body.data.leadNumber);
+      expect(one.body.data.mobile).toBeNull();
+      expect(two.body.data.mobile).toBeNull();
+    });
+
+    it('still enforces the follow-up rule', async () => {
+      /*
+       * "No lead left behind" is untouched by this change: an active lead
+       * still needs a next action, with or without a phone number. Dropping
+       * the mobile requirement must not quietly relax anything else.
+       */
+      const lead = withoutMobile();
+      delete lead['nextFollowUpAt'];
+
+      const response = await ctx
+        .http()
+        .post('/api/v1/leads')
+        .set(auth(ctx.orgA.owner.accessToken))
+        .send(lead);
+
+      expect(response.status).toBe(400);
+      expect(response.body.error.message).toMatch(/follow-up/i);
+    });
+
+    it('still rejects a mobile that is present but nonsense', async () => {
+      // Optional does not mean unvalidated.
+      const response = await ctx
+        .http()
+        .post('/api/v1/leads')
+        .set(auth(ctx.orgA.owner.accessToken))
+        .send({ ...withoutMobile(), mobile: 'not-a-number' });
+
+      expect(response.status).toBe(400);
     });
   });
 

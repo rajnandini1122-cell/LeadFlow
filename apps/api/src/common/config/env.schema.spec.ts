@@ -1,0 +1,376 @@
+import { validateEnv } from './env.schema';
+
+/**
+ * What refuses to boot, and why.
+ *
+ * Every check here exists to prevent the same failure: a process that looks
+ * perfectly healthy while a capability the business depends on is silently
+ * switched off. That failure has no symptom until a customer is missed, so the
+ * only useful signal is one that arrives before the process starts serving.
+ */
+
+/** The minimum a valid configuration needs, so each test varies one thing. */
+function baseEnv(overrides: Record<string, string> = {}): Record<string, unknown> {
+  return {
+    NODE_ENV: 'test',
+    PORT: '3000',
+    DATABASE_URL: 'postgresql://user:pass@localhost:5432/leadflow',
+    DIRECT_DATABASE_URL: 'postgresql://user:pass@localhost:5432/leadflow',
+    REDIS_URL: 'redis://localhost:6379',
+    JWT_ACCESS_SECRET: 'a-access-secret-that-is-at-least-32-chars',
+    JWT_REFRESH_SECRET: 'a-different-refresh-secret-at-least-32ch',
+    CORS_ORIGINS: 'http://localhost:5173',
+    ...overrides,
+  };
+}
+
+describe('production configuration', () => {
+  it('accepts a complete development configuration', () => {
+    expect(() => validateEnv(baseEnv())).not.toThrow();
+  });
+
+  describe('FCM', () => {
+    it('REFUSES a half-configured push provider, in any environment', () => {
+      /*
+       * The worst kind of misconfiguration: with one or two of three values
+       * set, the provider reports itself unconfigured, every notification is
+       * created and persisted and silently never delivered, and every health
+       * check stays green.
+       */
+      expect(() =>
+        validateEnv(baseEnv({ FIREBASE_PROJECT_ID: 'leadflow-prod' })),
+      ).toThrow(/FIREBASE/);
+
+      expect(() =>
+        validateEnv(
+          baseEnv({
+            FIREBASE_PROJECT_ID: 'leadflow-prod',
+            FIREBASE_CLIENT_EMAIL: 'push@leadflow-prod.iam.gserviceaccount.com',
+          }),
+        ),
+      ).toThrow(/FIREBASE/);
+    });
+
+    it('accepts all three together', () => {
+      expect(() =>
+        validateEnv(
+          baseEnv({
+            FIREBASE_PROJECT_ID: 'leadflow-prod',
+            FIREBASE_CLIENT_EMAIL: 'push@leadflow-prod.iam.gserviceaccount.com',
+            FIREBASE_PRIVATE_KEY: '-----BEGIN PRIVATE KEY-----\\nfake\\n-----END PRIVATE KEY-----',
+          }),
+        ),
+      ).not.toThrow();
+    });
+
+    it('accepts none at all — push is optional', () => {
+      // A deployment that has deliberately not enabled push still boots.
+      expect(() => validateEnv(baseEnv())).not.toThrow();
+    });
+  });
+
+  describe('in production', () => {
+    const production = (overrides: Record<string, string> = {}) =>
+      baseEnv({
+        NODE_ENV: 'production',
+        RELEASE_SHA: 'abc1234',
+        CORS_ORIGINS: 'https://app.leadflow.example',
+        ...overrides,
+      });
+
+    it('REFUSES a worker with no way to notify anyone', () => {
+      /*
+       * The check that matters most. A worker whose entire job is to reach
+       * salespeople, deployed with no push provider, would sweep follow-ups
+       * and write notifications that reach nobody — with every probe green.
+       * Somebody would find out by missing a customer.
+       */
+      expect(() => validateEnv(production({ WORKER_ENABLED: 'true' }))).toThrow(
+        /notifications nobody can receive/,
+      );
+    });
+
+    it('allows a worker WITH push configured', () => {
+      expect(() =>
+        validateEnv(
+          production({
+            WORKER_ENABLED: 'true',
+            FIREBASE_PROJECT_ID: 'leadflow-prod',
+            FIREBASE_CLIENT_EMAIL: 'push@leadflow-prod.iam.gserviceaccount.com',
+            FIREBASE_PRIVATE_KEY: '-----BEGIN PRIVATE KEY-----\\nfake\\n-----END PRIVATE KEY-----',
+          }),
+        ),
+      ).not.toThrow();
+    });
+
+    it('does NOT require push on an API replica', () => {
+      // An API replica delivers nothing, so push credentials are none of its
+      // business — and requiring them would put a secret on every web pod.
+      expect(() => validateEnv(production({ WORKER_ENABLED: 'false' }))).not.toThrow();
+    });
+
+    it('REFUSES a deploy with no release identifier', () => {
+      /*
+       * Without it every deploy groups as the same deploy in the error
+       * tracker, and a regression shipped today is indistinguishable from
+       * noise from three months ago.
+       */
+      const env = production();
+      delete env['RELEASE_SHA'];
+
+      expect(() => validateEnv(env)).toThrow(/RELEASE_SHA/);
+    });
+
+    it('still REFUSES an empty CORS list', () => {
+      expect(() => validateEnv(production({ CORS_ORIGINS: '' }))).toThrow(/CORS_ORIGINS/);
+    });
+
+    it('does not require a release identifier outside production', () => {
+      expect(() => validateEnv(baseEnv({ WORKER_ENABLED: 'true' }))).not.toThrow();
+    });
+  });
+
+  it('REJECTS object-storage variables that no longer have a consumer', () => {
+    /*
+     * The five S3_* variables were accepted by the schema and read by nothing:
+     * no SDK, no service, no reference outside the schema and .env.example.
+     * Avatars store bytes in Postgres, and omnichannel media deliberately
+     * stores nothing at all.
+     *
+     * Dead configuration is not harmless. It invites an operator to paste a
+     * real object-storage credential into a production secret store for a
+     * feature that does not exist, where it sits unused and unrotated until
+     * somebody finds it.
+     *
+     * The schema STRIPS rather than rejects, and that is correct: process.env
+     * always carries variables that are none of our business — PATH, HOME, the
+     * platform's own RAILWAY_* — so a strict schema would refuse to boot
+     * anywhere real. What this asserts is the guarantee that matters: even if
+     * somebody sets them, the value never reaches the application, so no code
+     * can quietly start depending on one again.
+     */
+    const parsed = validateEnv(
+      baseEnv({ S3_BUCKET: 'leadflow-uploads', S3_SECRET_ACCESS_KEY: 'x' }),
+    ) as Record<string, unknown>;
+
+    expect(parsed['S3_BUCKET']).toBeUndefined();
+    expect(parsed['S3_SECRET_ACCESS_KEY']).toBeUndefined();
+  });
+
+  describe('tenant defaults', () => {
+    it('is an India-first deployment out of the box', () => {
+      // The product opens in India, so a deployment that states nothing gets a
+      // coherent Indian tenant rather than the schema's historical US values.
+      const parsed = validateEnv(baseEnv()) as Record<string, unknown>;
+
+      expect(parsed['DEFAULT_COUNTRY']).toBe('IN');
+      expect(parsed['DEFAULT_TIMEZONE']).toBe('Asia/Kolkata');
+      expect(parsed['DEFAULT_CURRENCY']).toBe('INR');
+      expect(parsed['DEFAULT_LOCALE']).toBe('en-IN');
+    });
+
+    it('stays configurable for the next market', () => {
+      const parsed = validateEnv(
+        baseEnv({
+          DEFAULT_COUNTRY: 'de',
+          DEFAULT_TIMEZONE: 'Europe/Berlin',
+          DEFAULT_CURRENCY: 'eur',
+          DEFAULT_LOCALE: 'de-DE',
+        }),
+      ) as Record<string, unknown>;
+
+      // Case corrected rather than refused: "de" is a typo of spelling, not of
+      // meaning, and storing it as typed would make one tenant's country
+      // compare unequal to every other tenant's.
+      expect(parsed['DEFAULT_COUNTRY']).toBe('DE');
+      expect(parsed['DEFAULT_CURRENCY']).toBe('EUR');
+    });
+
+    it.each([
+      ['DEFAULT_COUNTRY', 'ZZ'],
+      ['DEFAULT_COUNTRY', 'XX'],
+      ['DEFAULT_TIMEZONE', 'IST'],
+      ['DEFAULT_TIMEZONE', 'GMT+5:30'],
+      ['DEFAULT_CURRENCY', 'ZZZ'],
+      ['DEFAULT_LOCALE', 'not a locale'],
+    ])('REFUSES to boot with %s=%s', (name, value) => {
+      /*
+       * These are written into every organization created from here on, and
+       * the settings screen validates the same four against the same data — so
+       * an unchecked typo would create tenants that cannot save settings they
+       * never chose. The country is worse than cosmetic: it decides how every
+       * local phone number that tenant enters is read.
+       */
+      expect(() => validateEnv(baseEnv({ [name]: value }))).toThrow(new RegExp(name));
+    });
+  });
+
+  describe('email', () => {
+    /** A complete SMTP configuration, so each case removes exactly one thing. */
+    const smtp = {
+      EMAIL_PROVIDER: 'smtp',
+      SMTP_HOST: 'smtp.example.test',
+      SMTP_PORT: '587',
+      SMTP_SECURE: 'false',
+      SMTP_USER: 'no-reply@example.test',
+      SMTP_PASSWORD: 'a-placeholder-password',
+    };
+
+    it('needs no mail credentials when the provider is console', () => {
+      // A developer must be able to start the application without a mailbox.
+      expect(() => validateEnv(baseEnv({ EMAIL_PROVIDER: 'console' }))).not.toThrow();
+    });
+
+    it('accepts a complete SMTP configuration', () => {
+      expect(() => validateEnv(baseEnv(smtp))).not.toThrow();
+    });
+
+    it.each(['SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASSWORD', 'SMTP_SECURE'])(
+      'REFUSES EMAIL_PROVIDER=smtp with %s missing',
+      (missing) => {
+        /*
+         * Half-configured is the dangerous state: with a host but no password
+         * the transport constructs, the process boots, and every password
+         * reset is attempted and refused while health checks stay green.
+         */
+        const env = baseEnv(smtp);
+        delete env[missing];
+
+        expect(() => validateEnv(env)).toThrow(new RegExp(missing));
+      },
+    );
+
+    it('REFUSES an unusable port', () => {
+      expect(() => validateEnv(baseEnv({ ...smtp, SMTP_PORT: '0' }))).toThrow(/SMTP_PORT/);
+      expect(() => validateEnv(baseEnv({ ...smtp, SMTP_PORT: 'submission' }))).toThrow(
+        /SMTP_PORT/,
+      );
+      expect(() => validateEnv(baseEnv({ ...smtp, SMTP_PORT: '70000' }))).toThrow(/SMTP_PORT/);
+    });
+
+    it.each([
+      ['true', true],
+      ['false', false],
+    ])('reads SMTP_SECURE=%s as %s', (raw, expected) => {
+      const parsed = validateEnv(baseEnv({ ...smtp, SMTP_SECURE: raw })) as Record<
+        string,
+        unknown
+      >;
+
+      expect(parsed['SMTP_SECURE']).toBe(expected);
+    });
+
+    it.each(['1', '0', 'TRUE', 'yes', 'on', ''])(
+      'REFUSES the ambiguous SMTP_SECURE value "%s"',
+      (raw) => {
+        /*
+         * The house style elsewhere treats anything that is not 'true' as
+         * false. Here that would read SMTP_SECURE=1 as cleartext and quietly
+         * pick the other TLS mode, so this one variable is strict.
+         */
+        expect(() => validateEnv(baseEnv({ ...smtp, SMTP_SECURE: raw }))).toThrow(/SMTP_SECURE/);
+      },
+    );
+
+    it.each([
+      'no-reply@example.test',
+      'LeadFlow <no-reply@example.test>',
+      'CRAVION LeadFlow <no-reply@example.test>',
+    ])('accepts the sender identity "%s"', (from) => {
+      expect(() => validateEnv(baseEnv({ ...smtp, EMAIL_FROM: from }))).not.toThrow();
+    });
+
+    it.each(['no-reply', 'no-reply@', '<no-reply@example.test', 'LeadFlow <not-an-address>', ''])(
+      'REFUSES the malformed sender identity "%s"',
+      (from) => {
+        // A malformed From is rejected by the RECEIVING server, so the symptom
+        // is mail that silently never arrives.
+        expect(() => validateEnv(baseEnv({ ...smtp, EMAIL_FROM: from }))).toThrow(/EMAIL_FROM/);
+      },
+    );
+  });
+
+  describe('the website intake integration', () => {
+    const configured = {
+      WEBSITE_INTAKE_ENABLED: 'true',
+      WEBSITE_INTAKE_ORGANIZATION_ID: '01999999-9999-7999-8999-999999999999',
+      WEBSITE_INTAKE_SIGNING_SECRET: 'a-website-intake-secret-of-at-least-32',
+    };
+
+    it('needs nothing at all while it is switched off', () => {
+      // The default state. An integration nobody has configured should not be
+      // a reason the process refuses to start.
+      expect(() => validateEnv(baseEnv())).not.toThrow();
+      expect(() =>
+        validateEnv(baseEnv({ WEBSITE_INTAKE_ENABLED: 'false' })),
+      ).not.toThrow();
+    });
+
+    it('accepts a complete configuration', () => {
+      expect(() => validateEnv(baseEnv(configured))).not.toThrow();
+    });
+
+    it.each(['WEBSITE_INTAKE_ORGANIZATION_ID', 'WEBSITE_INTAKE_SIGNING_SECRET'])(
+      'REFUSES to boot when enabled with %s missing',
+      (missing) => {
+        /*
+         * An enabled integration with nothing configured is worse than a
+         * disabled one: a live, publicly reachable route that cannot
+         * authenticate anybody and has nowhere to put what it receives. The
+         * website team would discover it; better that the deploy does.
+         */
+        const env = baseEnv(configured);
+        delete env[missing];
+
+        expect(() => validateEnv(env)).toThrow(new RegExp(missing));
+      },
+    );
+
+    it('REFUSES a signing secret short enough to guess', () => {
+      expect(() =>
+        validateEnv(baseEnv({ ...configured, WEBSITE_INTAKE_SIGNING_SECRET: 'too-short' })),
+      ).toThrow(/WEBSITE_INTAKE_SIGNING_SECRET/);
+    });
+
+    it('REFUSES an organization id that is not one', () => {
+      expect(() =>
+        validateEnv(baseEnv({ ...configured, WEBSITE_INTAKE_ORGANIZATION_ID: 'the-main-org' })),
+      ).toThrow(/WEBSITE_INTAKE_ORGANIZATION_ID/);
+    });
+  });
+
+  describe('auth secrets', () => {
+    it('REFUSES identical access and refresh secrets', () => {
+      // Sharing them lets a refresh token be presented as an access token.
+      const shared = 'the-same-secret-value-at-least-32-chars-x';
+
+      expect(() =>
+        validateEnv(baseEnv({ JWT_ACCESS_SECRET: shared, JWT_REFRESH_SECRET: shared })),
+      ).toThrow(/JWT_REFRESH_SECRET/);
+    });
+  });
+
+  it('reports EVERY problem at once, not one per restart', () => {
+    /*
+     * A validator that stops at the first error turns configuring a deployment
+     * into a guessing game of restart, read, fix, repeat.
+     */
+    const env = baseEnv({
+      NODE_ENV: 'production',
+      CORS_ORIGINS: '',
+      WORKER_ENABLED: 'true',
+    });
+    delete env['RELEASE_SHA'];
+
+    try {
+      validateEnv(env);
+      throw new Error('should have thrown');
+    } catch (error) {
+      const message = (error as Error).message;
+
+      expect(message).toContain('CORS_ORIGINS');
+      expect(message).toContain('RELEASE_SHA');
+      expect(message).toContain('FIREBASE_PROJECT_ID');
+    }
+  });
+});

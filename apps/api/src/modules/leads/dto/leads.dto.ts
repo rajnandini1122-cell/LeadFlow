@@ -11,6 +11,16 @@ export class ListLeadsDto {
   @IsUUID('7')
   assignedToId?: string;
 
+  /** Narrows the list to one product, for the product drill-down. */
+  @IsOptional()
+  @IsUUID('7', { message: 'must be a valid product id' })
+  productId?: string;
+
+  /** Every opportunity for one customer. What Customer 360 links through to. */
+  @IsOptional()
+  @IsUUID('7', { message: 'must be a valid account id' })
+  accountId?: string;
+
   @IsOptional()
   @IsString()
   @MaxLength(100)

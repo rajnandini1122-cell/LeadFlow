@@ -73,6 +73,8 @@ export class RegistrationRepository {
     fullName: string;
     ownerRoleId: string;
     leadSources: string[];
+    /** Set when the account is created through Google; null for a password signup. */
+    googleSubject?: string | null | undefined;
   }) {
     return this.tenantContext.runAsSystem(
       'registration: create a new tenant and its first owner atomically',
@@ -100,6 +102,9 @@ export class RegistrationRepository {
               passwordHash: input.passwordHash,
               fullName: input.fullName,
               status: 'ACTIVE',
+              // Records WHICH Google account this was created from, which is
+              // what later makes Google a valid way back in.
+              googleSubject: input.googleSubject ?? null,
             },
           });
 

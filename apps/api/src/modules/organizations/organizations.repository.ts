@@ -34,6 +34,7 @@ export class OrganizationsRepository {
           workingHoursStart?: string | undefined;
           workingHoursEnd?: string | undefined;
           leadSources?: string[] | undefined;
+          sharedUnassignedQueue?: boolean | undefined;
         }
       | undefined;
   }) {

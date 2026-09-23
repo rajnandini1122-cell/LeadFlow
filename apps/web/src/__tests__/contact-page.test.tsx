@@ -30,6 +30,15 @@ function renderContact(): void {
   );
 }
 
+/**
+ * Fills the form.
+ *
+ * Every caller sets up userEvent with `delay: null`. Without it userEvent
+ * types character by character with a real pause between keystrokes, and these
+ * three fields carry about a hundred characters — enough to exceed vitest's
+ * 5s default under load, which is exactly how this file started flaking. The
+ * tests are about the confirmation and the error, not about typing speed.
+ */
 async function fillRequired(user: ReturnType<typeof userEvent.setup>): Promise<void> {
   await user.type(screen.getByLabelText(/your name/i), 'Dana Whitfield');
   await user.type(screen.getByLabelText(/work email/i), 'dana@kestrel.example');
@@ -60,7 +69,7 @@ describe('Contact page', () => {
   });
 
   it('sends the enquiry in the shape the API expects', async () => {
-    const user = userEvent.setup();
+    const user = userEvent.setup({ delay: null });
     renderContact();
 
     await fillRequired(user);
@@ -79,7 +88,7 @@ describe('Contact page', () => {
   });
 
   it('omits optional fields rather than sending empty strings', async () => {
-    const user = userEvent.setup();
+    const user = userEvent.setup({ delay: null });
     renderContact();
 
     await fillRequired(user);
@@ -95,7 +104,7 @@ describe('Contact page', () => {
   });
 
   it('NEVER sends a destination address', async () => {
-    const user = userEvent.setup();
+    const user = userEvent.setup({ delay: null });
     renderContact();
 
     await fillRequired(user);
@@ -112,7 +121,7 @@ describe('Contact page', () => {
   });
 
   it('confirms receipt with a reference and a reply address', async () => {
-    const user = userEvent.setup();
+    const user = userEvent.setup({ delay: null });
     renderContact();
 
     await fillRequired(user);
@@ -131,7 +140,7 @@ describe('Contact page', () => {
       }),
     );
 
-    const user = userEvent.setup();
+    const user = userEvent.setup({ delay: null });
     renderContact();
 
     await fillRequired(user);
@@ -145,7 +154,7 @@ describe('Contact page', () => {
       new ApiError('RATE_LIMITED', 'Too many requests', 429),
     );
 
-    const user = userEvent.setup();
+    const user = userEvent.setup({ delay: null });
     renderContact();
 
     await fillRequired(user);

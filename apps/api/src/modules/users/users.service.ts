@@ -10,6 +10,7 @@ import { AppConfig } from '../../common/config/config.module';
 import { AppException } from '../../common/errors/app.exception';
 import { AUDIT_ACTIONS, AuditRepository } from '../../common/audit/audit.repository';
 import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
+import { parsePhone } from '../../common/utils/phone';
 import { MembershipCacheService } from '../auth/membership-cache.service';
 import { InvitationsService } from '../invitations/invitations.service';
 import { UsersRepository } from './users.repository';
@@ -69,7 +70,7 @@ export class UsersService {
     const { user, membership } = await this.repository.inviteMember({
       email: dto.email,
       fullName: dto.fullName,
-      mobile: dto.mobile,
+      mobile: await this.canonicalMobile(dto.mobile),
       roleId: role.id,
       invitedById: principal.userId,
       inviteTokenHash: minted.hash,
@@ -129,6 +130,26 @@ export class UsersService {
    *      only an owner can grant or revoke ownership, so an organization of
    *      admins alone could never appoint one again.
    */
+  /**
+   * A colleague's own mobile number, in E.164.
+   *
+   * The same canonical form the CRM stores for customers, so the one column
+   * that holds a salesperson's number is not the only one in the database
+   * written however somebody typed it. Read against the organization's
+   * country; an invalid number is a validation error, and an omitted one stays
+   * omitted.
+   */
+  private async canonicalMobile(input: string | undefined): Promise<string | undefined> {
+    const result = parsePhone(input, { country: await this.repository.organizationCountry() });
+
+    if (result.status === 'ABSENT') return undefined;
+    if (result.status === 'INVALID') {
+      throw AppException.validation('Invalid phone number.', { mobile: [result.reason] });
+    }
+
+    return result.e164;
+  }
+
   private async assertRetainsAdministration(member: {
     userId: string;
     role: RoleKey;
@@ -335,19 +356,24 @@ export class UsersService {
      */
     const touchesAdminStanding = dto.role !== undefined || dto.status !== undefined;
 
+    // Canonicalised on the same terms as the invite path, and before either
+    // branch: a colleague's number must not depend on whether the same request
+    // also changed their role.
+    const mobile = await this.canonicalMobile(dto.mobile);
+
     const updated = touchesAdminStanding
       ? await this.guardAdministrators(() =>
           this.offboardingRepository.mutateGuardingAdministrators((tx) =>
             this.repository.updateMember(
               userId,
-              { fullName: dto.fullName, mobile: dto.mobile, roleId, status: dto.status },
+              { fullName: dto.fullName, mobile, roleId, status: dto.status },
               tx,
             ),
           ),
         )
       : await this.repository.updateMember(userId, {
           fullName: dto.fullName,
-          mobile: dto.mobile,
+          mobile,
           roleId,
           status: dto.status,
         });

@@ -1,5 +1,6 @@
 import { ERROR_CODES } from '@leadflow/api-types';
 import { createTestContext, type TestContext } from './helpers/test-app';
+import { fixtureMobile } from './helpers/phone-fixtures';
 
 /**
  * Phase 4 — lead lifecycle, activities and the follow-up engine.
@@ -12,7 +13,7 @@ describe('Lead CRM', () => {
   let ctx: TestContext;
 
   const auth = (token: string) => ({ Authorization: `Bearer ${token}` });
-  const mobile = (): string => `415${Math.floor(1000000 + Math.random() * 8999999)}`;
+  const mobile = (): string => fixtureMobile();
   const inDays = (days: number): string =>
     new Date(Date.now() + days * 86_400_000).toISOString();
 
@@ -75,11 +76,11 @@ describe('Lead CRM', () => {
         .http()
         .patch(`/api/v1/leads/${id}`)
         .set(auth(ctx.orgA.owner.accessToken))
-        .send({ mobile: '(415) 555-0199' })
+        .send({ mobile: '(415) 286-0199' })
         .expect(200);
 
       // Otherwise an edited number stops matching for duplicate detection.
-      expect(response.body.data.mobile).toBe('+14155550199');
+      expect(response.body.data.mobile).toBe('+14152860199');
     });
 
     it('records an activity for the edit', async () => {

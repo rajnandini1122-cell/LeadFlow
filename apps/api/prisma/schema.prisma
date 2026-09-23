@@ -147,6 +147,12 @@ enum ActivityType {
   LEAD_WON
   LEAD_LOST
 
+  /// Omnichannel. Appended, never reordered: these are stored values, and the
+  /// existing ones keep exactly the meaning they have always had.
+  CHANNEL_MESSAGE_RECEIVED
+  CONVERSATION_LINKED
+  CONVERSATION_UNLINKED
+
   @@map("activity_type")
 }
 
@@ -168,19 +174,48 @@ model Organization {
   country  String             @default("US") @db.VarChar(2)
   status   OrganizationStatus @default(TRIAL)
 
+  /// Soft delete, for recovery.
+  ///
+  /// Every tenant table cascades from this row, so a hard DELETE destroys an
+  /// entire customer in one statement with no undo. There is deliberately no
+  /// API that deletes an organization; this column exists so the day one is
+  /// needed the safe implementation is the obvious one, and so a manual
+  /// database operation has a reversible alternative beside it.
+  ///
+  /// A soft-deleted organization cannot authenticate.
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  settings    OrganizationSettings?
-  memberships OrganizationUser[]
-  roles       Role[]
-  sessions    Session[]
-  auditLogs   AuditLog[]
-  leads       Lead[]
-  contacts    Contact[]
-  activities  LeadActivity[]
-  followUps   FollowUp[]
+  settings     OrganizationSettings?
+  memberships  OrganizationUser[]
+  roles        Role[]
+  sessions     Session[]
+  auditLogs    AuditLog[]
+  leads        Lead[]
+  contacts     Contact[]
+  activities   LeadActivity[]
+  followUps    FollowUp[]
   subscription Subscription?
+
+  channelIntegrations ChannelIntegration[]
+  accounts            Account[]
+  notifications       Notification[]
+  userDevices         UserDevice[]
+  products            Product[]
+  whatsappTemplates   WhatsAppTemplate[]
+  conversations       Conversation[]
+  messages            Message[]
+  channelIdentities   ContactChannelIdentity[]
+  integrationIntakes  IntegrationIntake[]
+  teams               Team[]
+  teamMembers         TeamMember[]
+  assignmentRules     AssignmentRule[]
+  territories         Territory[]
+  territoryCoverage   TerritoryCoverage[]
+  teamAssignmentCursors TeamAssignmentCursor[]
+  adminControlCommands  AdminControlCommand[]
 
   @@index([status])
   @@map("organizations")
@@ -201,7 +236,52 @@ model OrganizationSettings {
 
   /// Tenant-defined lead sources. Empty falls back to a neutral built-in list,
   /// so a new organization is usable before anyone configures anything.
-  leadSources             String[] @default([]) @map("lead_sources")
+  leadSources String[] @default([]) @map("lead_sources")
+
+  /// How long after a website enquiry ARRIVES its first follow-up is due.
+  ///
+  /// The first-response SLA, and business policy rather than code policy —
+  /// which is why it lives here and not as a constant in a service. 60 minutes
+  /// is CRAVION's initial commitment; an organization selling differently will
+  /// want a different number without a deploy.
+  ///
+  /// Measured from receivedAt, never from when a worker got round to it: a
+  /// delayed sweep should produce a follow-up that is honestly already due,
+  /// not one whose clock was quietly restarted.
+  websiteIntakeFirstFollowUpMinutes Int @default(60) @map("website_intake_first_follow_up_minutes")
+
+  /// Omnichannel capture, opt-in per tenant.
+  ///
+  /// Default false so that applying this migration changes nothing for any
+  /// existing organization: the lead flow they use today keeps behaving
+  /// exactly as it does now until someone deliberately turns this on.
+  omnichannelEnabled Boolean @default(false) @map("omnichannel_enabled")
+
+  /// Whether a qualified incoming enquiry may create a lead WITHOUT a human
+  /// approving it. Deliberately separate from the flag above, and deliberately
+  /// false: silently manufacturing leads from stray messages is how a pipeline
+  /// fills with noise, and it is much harder to undo than to enable.
+  omnichannelAutoCreateLeads Boolean @default(false) @map("omnichannel_auto_create_leads")
+
+  /// Whether ordinary sales users may browse conversations nobody owns.
+  ///
+  /// Default false, and that default is the safe one: an unassigned enquiry is
+  /// a customer's private message to the business, not a shared noticeboard.
+  /// An organization that wants a first-come queue turns this on deliberately;
+  /// one that does not keeps unowned threads with the people who already see
+  /// the whole pipeline.
+  sharedUnassignedQueue Boolean @default(false) @map("shared_unassigned_queue")
+
+  /// How long a customer may go without activity before it is OFFERED as
+  /// dormant.
+  ///
+  /// Configuration rather than a constant, per spec: what counts as neglected
+  /// differs between a business selling annually and one selling weekly.
+  ///
+  /// Crossing this threshold never changes a status by itself. It only puts an
+  /// account on a review list a person acts on, because silently reclassifying
+  /// a customer that a rep spoke to off-system would be wrong and invisible.
+  accountDormantAfterDays Int @default(180) @map("account_dormant_after_days")
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -218,27 +298,50 @@ model OrganizationSettings {
 /// OrganizationUser. This is why the access token is scoped to a single
 /// organization and why multi-org users get an org-selection step at login.
 model User {
-  id           String     @id @default(dbgenerated("uuidv7()")) @db.Uuid
-  email        String     @unique @db.VarChar(320)
-  passwordHash String?    @map("password_hash") @db.VarChar(255)
-  fullName     String     @map("full_name") @db.VarChar(150)
-  mobile       String?    @db.VarChar(20)
-  avatarUrl    String?    @map("avatar_url") @db.VarChar(500)
-  status       UserStatus @default(INVITED)
+  id           String  @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  email        String  @unique @db.VarChar(320)
+  passwordHash String? @map("password_hash") @db.VarChar(255)
+  fullName     String  @map("full_name") @db.VarChar(150)
+  mobile       String? @db.VarChar(20)
+  avatarUrl    String? @map("avatar_url") @db.VarChar(500)
+
+  /// Google's subject id, set when an account is CREATED through Google.
+  ///
+  /// Its presence is what makes Google a valid way back in. An account created
+  /// with a password has none, so Google cannot be used to enter it — that
+  /// would let anyone who controls the matching Google address take over an
+  /// account they never registered.
+  ///
+  /// Matched on the SUBJECT rather than the email because Google reuses
+  /// neither: an address can be released and re-registered by somebody else,
+  /// a subject id cannot.
+  googleSubject String?    @unique @map("google_subject") @db.VarChar(64)
+  status        UserStatus @default(INVITED)
 
   lastLoginAt DateTime? @map("last_login_at") @db.Timestamptz(6)
   createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  memberships       OrganizationUser[] @relation("MembershipUser")
-  invitedMembers    OrganizationUser[] @relation("MembershipInviter")
+  avatar            UserAvatar?
+  memberships       OrganizationUser[]   @relation("MembershipUser")
+  invitedMembers    OrganizationUser[]   @relation("MembershipInviter")
   sessions          Session[]
   passwordResets    PasswordResetToken[]
   auditLogs         AuditLog[]
-  assignedLeads     Lead[]             @relation("LeadAssignee")
-  leadsAssignedByMe Lead[]             @relation("LeadAssigner")
-  followUps         FollowUp[]         @relation("FollowUpAssignee")
+  assignedLeads     Lead[]               @relation("LeadAssignee")
+  leadsAssignedByMe Lead[]               @relation("LeadAssigner")
+  /// Website enquiries that automatic assignment routed to this person.
+  assignedIntakes   IntegrationIntake[]  @relation("IntakeAssignee")
+  followUps         FollowUp[]           @relation("FollowUpAssignee")
+  ownedAccounts     Account[]            @relation("AccountOwner")
+  notifications     Notification[]
+  devices           UserDevice[]
   activities        LeadActivity[]
+
+  connectedIntegrations ChannelIntegration[]
+  ownedConversations    Conversation[]
+  sentMessages          Message[]            @relation("MessageSender")
+  archivedConversations Conversation[]       @relation("ConversationArchiver")
 
   @@index([status])
   @@map("users")
@@ -253,16 +356,16 @@ model OrganizationUser {
   status         MembershipStatus @default(INVITED)
 
   /// Single-use, SHA-256 hashed. Raw invite token is never stored.
-  inviteTokenHash String?   @unique @map("invite_token_hash") @db.VarChar(64)
-  inviteExpiresAt DateTime? @map("invite_expires_at") @db.Timestamptz(6)
+  inviteTokenHash  String?   @unique @map("invite_token_hash") @db.VarChar(64)
+  inviteExpiresAt  DateTime? @map("invite_expires_at") @db.Timestamptz(6)
   /// Set once, when the token is consumed. Non-null means the token is spent.
   inviteAcceptedAt DateTime? @map("invite_accepted_at") @db.Timestamptz(6)
   /// Set when an admin revokes a pending invitation.
   inviteRevokedAt  DateTime? @map("invite_revoked_at") @db.Timestamptz(6)
-  invitedById     String?   @map("invited_by") @db.Uuid
-  joinedAt        DateTime? @map("joined_at") @db.Timestamptz(6)
+  invitedById      String?   @map("invited_by") @db.Uuid
+  joinedAt         DateTime? @map("joined_at") @db.Timestamptz(6)
   /// Soft removal timestamp. Paired with status = REMOVED.
-  removedAt       DateTime? @map("removed_at") @db.Timestamptz(6)
+  removedAt        DateTime? @map("removed_at") @db.Timestamptz(6)
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -271,8 +374,17 @@ model OrganizationUser {
   user         User         @relation("MembershipUser", fields: [userId], references: [id], onDelete: Cascade)
   invitedBy    User?        @relation("MembershipInviter", fields: [invitedById], references: [id], onDelete: SetNull)
   role         Role         @relation(fields: [roleId], references: [id])
+  managedTeams Team[]       @relation("TeamManager")
+  teamMembers  TeamMember[] @relation("TeamMembership")
 
   @@unique([organizationId, userId])
+  /// Not a business rule — `id` is already unique on its own.
+  ///
+  /// It exists so another tenant-scoped table can point a COMPOSITE foreign key
+  /// at (id, organization_id) and have the database refuse a row that pairs a
+  /// membership with the wrong organization. See TeamMember: it is what makes
+  /// "team in org A, member from org B" impossible rather than merely guarded.
+  @@unique([id, organizationId])
   @@index([userId])
   @@index([organizationId, status])
   /// Supports sweeping expired invitations without scanning the table.
@@ -348,10 +460,10 @@ model Session {
   ipAddress  String?        @map("ip_address") @db.VarChar(64)
   userAgent  String?        @map("user_agent") @db.VarChar(400)
 
-  expiresAt    DateTime  @map("expires_at") @db.Timestamptz(6)
-  revokedAt    DateTime? @map("revoked_at") @db.Timestamptz(6)
-  revokedReason String?  @map("revoked_reason") @db.VarChar(80)
-  replacedById String?   @map("replaced_by_id") @db.Uuid
+  expiresAt     DateTime  @map("expires_at") @db.Timestamptz(6)
+  revokedAt     DateTime? @map("revoked_at") @db.Timestamptz(6)
+  revokedReason String?   @map("revoked_reason") @db.VarChar(80)
+  replacedById  String?   @map("replaced_by_id") @db.Uuid
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
@@ -407,6 +519,18 @@ model AuditLog {
   id             String  @id @default(dbgenerated("uuidv7()")) @db.Uuid
   organizationId String? @map("organization_id") @db.Uuid
   actorUserId    String? @map("actor_user_id") @db.Uuid
+  /// Who did it, when they are not a LeadFlow user.
+  ///
+  /// An opaque reference supplied by a trusted external system — the control
+  /// plane passes the administrator's identity from whatever authenticated
+  /// them. It never goes in actor_user_id, which has a foreign key to `users`:
+  /// an external reference there would either fail the key or collide with
+  /// somebody real.
+  ///
+  /// Both columns null means the SYSTEM did it. The pair is already
+  /// unambiguous, which is why there is no third column naming the kind — that
+  /// would be a second source of truth able to disagree with the first.
+  externalActorRef String? @map("external_actor_ref") @db.VarChar(200)
 
   action     String  @db.VarChar(80)
   entityType String? @map("entity_type") @db.VarChar(60)
@@ -427,6 +551,9 @@ model AuditLog {
   @@index([organizationId, createdAt(sort: Desc)])
   @@index([actorUserId, createdAt(sort: Desc)])
   @@index([action, createdAt(sort: Desc)])
+  /// "What has this administrator changed?" — the external equivalent of the
+  /// actor index above. Mostly NULL, so the btree stays small.
+  @@index([externalActorRef, createdAt(sort: Desc)])
   @@map("audit_logs")
 }
 
@@ -446,17 +573,38 @@ model Lead {
   /// Per-organization human-readable identifier, e.g. "LD-000123".
   leadNumber     String @map("lead_number") @db.VarChar(20)
 
-  firstName       String?  @map("first_name") @db.VarChar(80)
-  lastName        String?  @map("last_name") @db.VarChar(80)
+  firstName   String? @map("first_name") @db.VarChar(80)
+  lastName    String? @map("last_name") @db.VarChar(80)
   /// E.164, e.g. +14155552671. Stored canonically so the same person entered
   /// in two formats is still detected as one duplicate.
-  mobile          String?  @db.VarChar(20)
-  email           String?  @db.VarChar(320)
-  companyName     String?  @map("company_name") @db.VarChar(200)
-  city            String?  @db.VarChar(80)
-  source          String?  @db.VarChar(60)
-  productInterest String?  @map("product_interest") @db.VarChar(200)
-  estimatedValue  Decimal? @map("estimated_value") @db.Decimal(14, 2)
+  mobile      String? @db.VarChar(20)
+  email       String? @db.VarChar(320)
+  companyName String? @map("company_name") @db.VarChar(200)
+  city        String? @db.VarChar(80)
+  source      String? @db.VarChar(60)
+  /// The standardised product this enquiry is FOR — the grouping key for every
+  /// product KPI.
+  ///
+  /// Nullable, and permanently so: leads created before the catalogue existed
+  /// have none, an enquiry can legitimately be for something not yet
+  /// catalogued, and forcing a value would mean guessing one.
+  productId   String? @map("product_id") @db.Uuid
+
+  /// What the customer actually asked for, in their words.
+  ///
+  /// Kept ALONGSIDE productId, never replaced by it. "White Onion Powder" is
+  /// the grouping key; "500 kg monthly, food manufacturing use" is the enquiry,
+  /// and no catalogue can carry that. Collapsing the two would destroy the only
+  /// record of what was actually wanted.
+  productInterest String? @map("product_interest") @db.VarChar(200)
+
+  /// Whether this was first business, repeat business or expansion.
+  ///
+  /// Set once when the opportunity is created and never revised. NULL for
+  /// leads captured before this existed, and for leads with no account —
+  /// unknown, which is a different thing from FIRST.
+  opportunityKind OpportunityKind? @map("opportunity_kind")
+  estimatedValue  Decimal?         @map("estimated_value") @db.Decimal(14, 2)
 
   status   LeadStatus   @default(NEW)
   priority LeadPriority @default(MEDIUM)
@@ -465,7 +613,15 @@ model Lead {
   /// prove it covered every historical row, and a NOT NULL that fails mid-
   /// migration on a live tenant is worse than a nullable column the
   /// application always populates.
-  contactId    String? @map("contact_id") @db.Uuid
+  contactId String? @map("contact_id") @db.Uuid
+
+  /// The company this opportunity belongs to.
+  ///
+  /// Nullable for the same reason as contactId, plus one more: an enquiry can
+  /// genuinely be from a private individual with no company at all. The
+  /// backfill leaves this NULL rather than inventing an account, and
+  /// `companyName` above stays as the free text that was captured.
+  accountId String? @map("account_id") @db.Uuid
 
   assignedToId String? @map("assigned_to") @db.Uuid
   assignedById String? @map("assigned_by") @db.Uuid
@@ -483,25 +639,67 @@ model Lead {
   wonAt      DateTime? @map("won_at") @db.Timestamptz(6)
   lostAt     DateTime? @map("lost_at") @db.Timestamptz(6)
 
+  /**
+   * Set when someone deliberately created a second live lead for a person who
+   * already had one.
+   * The partial unique index on (organization_id, mobile) excludes these rows.
+   * That index exists to catch the RACE — two requests that each checked for a
+   * duplicate, each found none, and each inserted — not to forbid a choice the
+   * API explicitly offers through `allowDuplicate`. Before this column the
+   * index did both, so opting in returned a 500.
+   * A timestamp rather than a boolean because "when was this decided" is the
+   * question anyone looking at two live leads for one customer will ask.
+   */
+  duplicateAcknowledgedAt DateTime? @map("duplicate_acknowledged_at") @db.Timestamptz(6)
+
   deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
   createdBy String?   @map("created_by") @db.Uuid
   updatedBy String?   @map("updated_by") @db.Uuid
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  contact      Contact?       @relation(fields: [contactId], references: [id], onDelete: SetNull)
-  assignedTo   User?          @relation("LeadAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
-  assignedBy   User?          @relation("LeadAssigner", fields: [assignedById], references: [id], onDelete: SetNull)
-  activities   LeadActivity[]
-  followUps    FollowUp[]
+  organization  Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  contact       Contact?       @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  /// SetNull, never Cascade: removing an account must never delete the
+  /// opportunities that are the evidence of the relationship.
+  account       Account?       @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  /// SetNull, never Cascade: deleting a catalogue entry must not delete the
+  /// enquiries that referenced it. The free-text productInterest survives too,
+  /// so the lead still records what was wanted.
+  product       Product?       @relation(fields: [productId], references: [id], onDelete: SetNull)
+  assignedTo    User?          @relation("LeadAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+  assignedBy    User?          @relation("LeadAssigner", fields: [assignedById], references: [id], onDelete: SetNull)
+  activities    LeadActivity[]
+  followUps     FollowUp[]
+  conversations Conversation[]
+  /// The website enquiries this lead was created from. Normally one; a list
+  /// because the relation is defined by the intake side, not because a lead is
+  /// expected to have several.
+  sourceIntakes IntegrationIntake[] @relation("IntakeConversion")
 
+  /// Lets an intake point a COMPOSITE foreign key at the lead it became and
+  /// carry the tenant into the key. `id` is unique on its own; this adds
+  /// nothing to the leads table itself.
+  @@unique([id, organizationId])
   @@unique([organizationId, leadNumber])
   @@index([organizationId, status])
   @@index([organizationId, assignedToId, status])
   @@index([organizationId, nextFollowUpAt])
+  /// Every product KPI groups by product within a tenant, and most filter by
+  /// status on top of it.
+  @@index([organizationId, productId, status])
+  /// Demand trend and won/lost aggregation are time-bucketed per product.
+  @@index([organizationId, productId, createdAt])
+  /// Repeat and expansion demand group on this within a tenant. Mostly NULL
+  /// until the backfill runs, so the btree stays small.
+  @@index([organizationId, opportunityKind])
   @@index([organizationId, mobile])
   @@index([organizationId, contactId])
+  /// Customer 360 lists an account's opportunities by status.
+  @@index([organizationId, accountId, status])
+  /// Product demand split by prospect vs existing customer joins lead to
+  /// account on this pair.
+  @@index([organizationId, accountId, productId])
   @@index([organizationId, createdAt(sort: Desc)])
   /// Reporting: "won this month" and won-value totals filter on won_at, which
   /// none of the indexes above cover — they are all keyed on created_at or
@@ -561,6 +759,14 @@ model Contact {
   city        String? @db.VarChar(80)
   notes       String? @db.VarChar(2000)
 
+  /// The company this person belongs to.
+  ///
+  /// Nullable and permanently so. Contacts captured before accounts existed
+  /// have none, a private individual legitimately has none, and the backfill
+  /// refuses to guess one. `companyName` above is kept as the free text that
+  /// was actually captured — it is the evidence the mapping screen shows.
+  accountId String? @map("account_id") @db.Uuid
+
   /// Set when this contact was merged INTO another. The row is retained so
   /// that any lingering reference still resolves rather than dangling.
   mergedIntoId String?   @map("merged_into_id") @db.Uuid
@@ -573,12 +779,19 @@ model Contact {
   updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  /// SetNull, never Cascade: deleting an account must not delete the people.
+  account      Account?     @relation(fields: [accountId], references: [id], onDelete: SetNull)
   mergedInto   Contact?     @relation("ContactMerge", fields: [mergedIntoId], references: [id], onDelete: SetNull)
   mergedFrom   Contact[]    @relation("ContactMerge")
   leads        Lead[]
 
+  conversations     Conversation[]
+  channelIdentities ContactChannelIdentity[]
+
   @@index([organizationId, mobile])
   @@index([organizationId, email])
+  /// Customer 360 lists every person at an account.
+  @@index([organizationId, accountId])
   @@index([organizationId, createdAt(sort: Desc)])
   @@map("contacts")
 }
@@ -598,10 +811,22 @@ model Contact {
 model FollowUp {
   id             String @id @default(dbgenerated("uuidv7()")) @db.Uuid
   organizationId String @map("organization_id") @db.Uuid
-  leadId         String @map("lead_id") @db.Uuid
+
+  /// The opportunity this action belongs to.
+  ///
+  /// Widened to nullable so a follow-up can hang off an ACCOUNT instead —
+  /// "call ABC Foods on Monday about a repeat order" is real work with no open
+  /// enquiry behind it, and the alternative was forcing a fake lead into the
+  /// pipeline to record it, which would corrupt every conversion figure.
+  ///
+  /// A CHECK constraint in the migration requires exactly one of leadId and
+  /// accountId, so a follow-up is never attached to nothing.
+  leadId         String? @map("lead_id") @db.Uuid
+  /// The customer this action belongs to, when it is not about one enquiry.
+  accountId      String? @map("account_id") @db.Uuid
   /// Who owes this action. Usually the lead's assignee, but not necessarily —
   /// a manager may schedule something for themselves on someone else's lead.
-  assignedUserId String @map("assigned_user_id") @db.Uuid
+  assignedUserId String  @map("assigned_user_id") @db.Uuid
 
   scheduledAt DateTime       @map("scheduled_at") @db.Timestamptz(6)
   type        FollowUpType   @default(CALL)
@@ -623,15 +848,19 @@ model FollowUp {
 
   /// Idempotency markers for the Phase 6 worker: a notification that has
   /// already fired must not fire again when a job is retried.
-  reminderSentAt     DateTime? @map("reminder_sent_at") @db.Timestamptz(6)
-  overdueNotifiedAt  DateTime? @map("overdue_notified_at") @db.Timestamptz(6)
+  reminderSentAt    DateTime? @map("reminder_sent_at") @db.Timestamptz(6)
+  overdueNotifiedAt DateTime? @map("overdue_notified_at") @db.Timestamptz(6)
+  /// Raised to a manager. The third idempotency marker — without it a retried
+  /// escalation would notify the manager again on every sweep.
+  escalatedAt       DateTime? @map("escalated_at") @db.Timestamptz(6)
 
   createdBy String?  @map("created_by") @db.Uuid
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  lead         Lead         @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  lead         Lead?        @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  account      Account?     @relation(fields: [accountId], references: [id], onDelete: Cascade)
   assignedUser User         @relation("FollowUpAssignee", fields: [assignedUserId], references: [id])
 
   /// Serves the per-user "my follow-ups" buckets, which is the hottest query.
@@ -644,6 +873,8 @@ model FollowUp {
   /// completed_at. The assignee index above is keyed on scheduled_at, so it
   /// cannot serve a completion-date range.
   @@index([organizationId, completedAt])
+  /// Customer 360 shows an account's open actions.
+  @@index([organizationId, accountId, status, scheduledAt])
   @@map("follow_ups")
 }
 
@@ -705,8 +936,8 @@ model Plan {
   /// Exactly one plan is visually emphasised on the pricing page.
   featured  Boolean @default(false)
 
-  currency     String  @db.VarChar(3)
-  monthlyPrice Decimal @map("monthly_price") @db.Decimal(12, 2)
+  currency     String   @db.VarChar(3)
+  monthlyPrice Decimal  @map("monthly_price") @db.Decimal(12, 2)
   /// Charged once per year. Null hides the annual option for this plan.
   yearlyPrice  Decimal? @map("yearly_price") @db.Decimal(12, 2)
 
@@ -808,10 +1039,10 @@ model ContactEnquiry {
   /// Which page the enquiry came from, for attribution.
   source String? @db.VarChar(60)
 
-  status   EnquiryStatus @default(NEW)
+  status     EnquiryStatus @default(NEW)
   /// Set once the notification was accepted by the provider. NULL means the
   /// enquiry arrived but nobody was told — the case worth alerting on.
-  notifiedAt DateTime? @map("notified_at") @db.Timestamptz(6)
+  notifiedAt DateTime?     @map("notified_at") @db.Timestamptz(6)
 
   /// Kept for abuse investigation only. Never shown to anyone but an operator.
   ipAddress String? @map("ip_address") @db.VarChar(64)
@@ -822,4 +1053,1479 @@ model ContactEnquiry {
   @@index([status, createdAt(sort: Desc)])
   @@index([email, createdAt(sort: Desc)])
   @@map("contact_enquiries")
+}
+
+// =============================================================================
+// OMNICHANNEL CAPTURE
+//
+// A conversation layer in front of the EXISTING lead flow, never beside it.
+// Nothing here is a second CRM: these tables capture what arrived on WhatsApp,
+// Facebook or Instagram, resolve it to an existing Contact and Lead where one
+// can be found, and hand anything genuinely new to the ordinary lead-creation
+// path so it behaves exactly like a lead typed in by hand.
+//
+// Every table carries `organization_id` and is registered in
+// TENANT_SCOPED_MODELS, so the fail-closed Prisma extension refuses to query
+// any of them without a tenant context.
+// =============================================================================
+
+enum ChannelType {
+  WHATSAPP
+  FACEBOOK
+  INSTAGRAM
+
+  @@map("channel_type")
+}
+
+enum ChannelIntegrationStatus {
+  /// Configuration accepted but not yet validated against the provider.
+  /// A row in this state has never been confirmed working, so nothing is
+  /// ingested for it — see WhatsAppWebhookService.
+  CONNECTING
+  /// Credentials present and the provider is accepting calls.
+  CONNECTED
+  /// Deliberately disconnected by an administrator. The row is kept so the
+  /// history of what was once linked survives, and so reconnecting the same
+  /// account does not orphan its conversations.
+  DISCONNECTED
+  /// Credentials rejected or webhooks failing. Distinct from DISCONNECTED
+  /// because it needs someone's attention rather than being a choice.
+  ERROR
+
+  @@map("channel_integration_status")
+}
+
+/// One connected business account belonging to one organization.
+///
+/// No access token is stored here. `credentialsRef` is a pointer into the
+/// configured secret store; putting provider tokens in an application table
+/// would put them in every database backup and every support export.
+model ChannelIntegration {
+  id             String                   @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String                   @map("organization_id") @db.Uuid
+  channel        ChannelType
+  status         ChannelIntegrationStatus @default(DISCONNECTED)
+
+  /// Whether this integration should be acted on.
+  ///
+  /// Separate from `status`, which describes the PROVIDER relationship. A
+  /// tenant can switch off an integration that is perfectly healthy — during a
+  /// migration, or while a campaign is paused — and switching it off must not
+  /// look like the provider dropped the connection. Nothing is deleted either
+  /// way: conversations and messages stay exactly where they are.
+  enabled Boolean @default(true)
+
+  /// The provider's own identifier — a WhatsApp phone number id, a Facebook
+  /// page id, an Instagram business account id.
+  providerAccountId String  @map("provider_account_id") @db.VarChar(120)
+  /// Human-readable, for the settings screen.
+  displayName       String? @map("display_name") @db.VarChar(200)
+  /// Handle for credentials held in an external vault. Unused today — there is
+  /// no vault — and kept for the deployment that eventually has one.
+  credentialsRef    String? @map("credentials_ref") @db.VarChar(200)
+
+  /// The provider access token, encrypted with CREDENTIAL_ENCRYPTION_KEY.
+  ///
+  /// Never plaintext, and never leaves the server. A WhatsApp access token is a
+  /// bearer credential — whoever holds it can send messages as the business —
+  /// so a database dump must not be enough to use it. See common/crypto/secret-box.ts.
+  encryptedAccessToken String? @map("encrypted_access_token") @db.Text
+  /// Last four characters, so the settings screen can show WHICH token is
+  /// configured without being able to reveal it.
+  accessTokenHint      String? @map("access_token_hint") @db.VarChar(16)
+
+  /// WhatsApp Business Account id. Diagnostic only: the tenant is resolved by
+  /// providerAccountId (the phone number id), which is globally unique.
+  businessAccountId String? @map("business_account_id") @db.VarChar(120)
+
+  metadata Json?
+
+  connectedById  String?   @map("connected_by") @db.Uuid
+  connectedAt    DateTime? @map("connected_at") @db.Timestamptz(6)
+  disconnectedAt DateTime? @map("disconnected_at") @db.Timestamptz(6)
+
+  /// When templates were last read back from Meta. WhatsApp only.
+  templatesSyncedAt DateTime? @map("templates_synced_at") @db.Timestamptz(6)
+
+  /// Last provider error, surfaced in settings so ERROR is actionable.
+  lastErrorAt      DateTime? @map("last_error_at") @db.Timestamptz(6)
+  lastErrorMessage String?   @map("last_error_message") @db.VarChar(500)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization  Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  connectedBy   User?              @relation(fields: [connectedById], references: [id], onDelete: SetNull)
+  conversations Conversation[]
+  templates     WhatsAppTemplate[]
+
+  /// GLOBAL, not per tenant, and deliberately so.
+  ///
+  /// A webhook arrives with no tenant context — the provider account id is the
+  /// only thing that identifies who it belongs to. If two organizations could
+  /// both claim the same Facebook page, an incoming message would have two
+  /// possible owners and routing it would be a guess. This constraint makes
+  /// the lookup total, and stops a tenant attaching itself to an account
+  /// another tenant already connected.
+  @@unique([channel, providerAccountId])
+  @@index([organizationId, channel])
+  @@map("channel_integrations")
+}
+
+enum ConversationStatus {
+  OPEN
+  CLOSED
+
+  @@map("conversation_status")
+}
+
+/// How far a conversation has got towards belonging to a lead.
+///
+/// Separate from ConversationStatus, which is about whether the thread is still
+/// live. A conversation can be OPEN and UNLINKED (a stranger asking a question)
+/// or CLOSED and LINKED (a deal that was won and the chat archived).
+enum ConversationLinkState {
+  /// No lead matched, and none is claimed to.
+  UNLINKED
+  /// Attached to exactly one lead.
+  LINKED
+  /// Several active leads matched the same person and the system refused to
+  /// pick one. A human decides; nothing is attached in the meantime.
+  REVIEW_REQUIRED
+
+  @@map("conversation_link_state")
+}
+
+/// One thread with one person on one channel.
+///
+/// `leadId` is nullable on purpose: not every conversation is a lead, and
+/// pretending otherwise is what fills a CRM with "Hi" and "thanks". A
+/// conversation becomes linked to a lead when one is matched or created,
+/// never before.
+model Conversation {
+  id             String      @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String      @map("organization_id") @db.Uuid
+  channel        ChannelType
+  integrationId  String      @map("integration_id") @db.Uuid
+
+  /// The provider's thread identifier.
+  externalConversationId String @map("external_conversation_id") @db.VarChar(200)
+
+  contactId String? @map("contact_id") @db.Uuid
+  leadId    String? @map("lead_id") @db.Uuid
+  /// Who is handling this thread. Follows the lead's assignee once linked;
+  /// NULL means it is in the unassigned queue.
+  ownerId   String? @map("owner_id") @db.Uuid
+
+  /// Denormalised company, matching how Lead and Contact already store it.
+  /// There is no Company table in this system — company is a name carried on
+  /// the person — so this mirrors the existing convention rather than
+  /// inventing an entity the rest of the product does not have.
+  companyName String? @map("company_name") @db.VarChar(200)
+
+  status        ConversationStatus    @default(OPEN)
+  /// Defaults to UNLINKED so a conversation is never presumed to belong to a
+  /// lead it was not actually matched to.
+  linkState     ConversationLinkState @default(UNLINKED) @map("link_state")
+  lastMessageAt DateTime?             @map("last_message_at") @db.Timestamptz(6)
+
+  /// Dismissed from the review queue: spam, a greeting, a support question.
+  ///
+  /// A timestamp rather than a link state, because being dismissed is
+  /// orthogonal to whether a lead was ever matched — an ambiguous conversation
+  /// can be dismissed too. Nothing is deleted: the thread and every message
+  /// stay exactly where they were, and clearing this returns it to the queue.
+  archivedAt     DateTime? @map("archived_at") @db.Timestamptz(6)
+  archivedById   String?   @map("archived_by") @db.Uuid
+  /// Why it was dismissed, for whoever wonders later.
+  archivedReason String?   @map("archived_reason") @db.VarChar(200)
+
+  /// Whether anything in this thread reads like a buying enquiry.
+  ///
+  /// Set by transparent keyword rules at ingestion (see lead-signals.ts) and
+  /// stored rather than recomputed, so the review queue can filter on it
+  /// without reading every message of every conversation. It ONLY affects
+  /// which pile a conversation lands in — a lead is never created from it.
+  potentialLead        Boolean  @default(false) @map("potential_lead")
+  /// The words that triggered it. Shown in review so the suggestion can be
+  /// judged rather than trusted.
+  potentialLeadSignals String[] @default([]) @map("potential_lead_signals")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  integration  ChannelIntegration @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  contact      Contact?           @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  lead         Lead?              @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  owner        User?              @relation(fields: [ownerId], references: [id], onDelete: SetNull)
+  archivedBy   User?              @relation("ConversationArchiver", fields: [archivedById], references: [id], onDelete: SetNull)
+  messages     Message[]
+
+  /// Webhook idempotency: a redelivered thread must find its existing row.
+  @@unique([organizationId, channel, externalConversationId])
+  @@index([organizationId, status, lastMessageAt(sort: Desc)])
+  @@index([organizationId, linkState, lastMessageAt(sort: Desc)])
+  /// The review queue: unarchived threads, newest first.
+  @@index([organizationId, archivedAt, lastMessageAt(sort: Desc)])
+  @@index([organizationId, ownerId, status])
+  @@index([organizationId, leadId])
+  @@index([organizationId, contactId])
+  @@map("conversations")
+}
+
+enum MessageDirection {
+  INCOMING
+  OUTGOING
+
+  @@map("message_direction")
+}
+
+enum MessageSenderType {
+  CONTACT
+  AGENT
+  SYSTEM
+
+  @@map("message_sender_type")
+}
+
+/// How far an OUTBOUND message has got.
+///
+/// Inbound messages have no meaningful status — they arrived — so the column is
+/// nullable and only ever set for messages we sent.
+enum MessageDeliveryStatus {
+  /// Claimed locally, not yet accepted by the provider. A message in this
+  /// state must never be shown to a salesperson as delivered.
+  PENDING
+  /// The provider accepted it and returned an id.
+  SENT
+  DELIVERED
+  READ
+  /// The provider refused it, or a status webhook reported a failure.
+  ///
+  /// FAILED means we KNOW the customer did not receive it. It is not a
+  /// dumping ground for anything that went wrong — see UNCONFIRMED.
+  FAILED
+  /// We do not know whether the customer received it.
+  ///
+  /// Reached when a send was claimed but never finalised — the process died
+  /// between calling Meta and recording the outcome. Deliberately distinct
+  /// from FAILED: telling a salesperson a message failed when it may have
+  /// arrived invites them to send it again, and the customer gets it twice.
+  UNCONFIRMED
+
+  @@map("message_delivery_status")
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+  VIDEO
+  AUDIO
+  DOCUMENT
+  LOCATION
+  STICKER
+  TEMPLATE
+  OTHER
+
+  @@map("message_type")
+}
+
+/// Append-only, like LeadActivity. A message is a record of something that
+/// happened; editing one would rewrite history.
+model Message {
+  id             String      @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String      @map("organization_id") @db.Uuid
+  conversationId String      @map("conversation_id") @db.Uuid
+  channel        ChannelType
+
+  /// The provider's id.
+  ///
+  /// Nullable as of the outbound work: a message we are sending is written
+  /// BEFORE the provider is called, so that a crash between the call and the
+  /// write cannot lose it. It has no provider id until Meta accepts it.
+  externalMessageId String?           @map("external_message_id") @db.VarChar(200)
+  direction         MessageDirection
+  senderType        MessageSenderType @map("sender_type")
+  messageType       MessageType       @default(TEXT) @map("message_type")
+
+  /// Set only for outbound messages. NULL for anything a customer sent.
+  deliveryStatus MessageDeliveryStatus? @map("delivery_status")
+  /// A sanitised, user-facing reason. Never a raw provider body.
+  failureReason  String?                @map("failure_reason") @db.VarChar(300)
+  /// Who typed it. NULL for inbound, and for anything the system sent.
+  sentById       String?                @map("sent_by") @db.Uuid
+
+  /// Client-supplied key that makes a send request repeatable.
+  ///
+  /// The row is written with this key BEFORE the provider is called, so a
+  /// retried request finds the existing attempt instead of sending a second
+  /// message to a customer. Unique per organization.
+  idempotencyKey String? @map("idempotency_key") @db.VarChar(120)
+
+  /// Unbounded because providers do not agree on a limit, and truncating a
+  /// customer's requirement is worse than storing a long row.
+  content     String? @db.Text
+  attachments Json?
+  metadata    Json?
+
+  sentAt     DateTime? @map("sent_at") @db.Timestamptz(6)
+  receivedAt DateTime? @map("received_at") @db.Timestamptz(6)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sentBy       User?        @relation("MessageSender", fields: [sentById], references: [id], onDelete: SetNull)
+
+  /// The webhook replay guard. Providers redeliver on any non-2xx, so the same
+  /// message WILL arrive twice; this turns the second delivery into a no-op
+  /// instead of a duplicate in the timeline.
+  ///
+  /// NULLs are distinct in Postgres, so the many outbound messages that have no
+  /// provider id yet do not collide with each other.
+  @@unique([organizationId, channel, externalMessageId])
+  /// The send-once guarantee. A retried request collides here rather than
+  /// reaching Meta a second time.
+  @@unique([organizationId, idempotencyKey])
+  @@index([organizationId, conversationId, createdAt(sort: Desc)])
+  /// Status webhooks arrive keyed on the provider id alone.
+  @@index([organizationId, externalMessageId])
+  /// The recovery sweep: stale claims, oldest first. Deliberately NOT
+  /// organization-first — the sweep runs across every tenant at once, so a
+  /// tenant-leading index would not be selective for it.
+  @@index([deliveryStatus, createdAt])
+  @@map("messages")
+}
+
+/// How one person is known on each channel.
+///
+/// Additive rather than columns on Contact: a person has at most one mobile,
+/// but may have an Instagram handle, a Facebook user id and a WhatsApp number
+/// at once, and that is a list, not three more nullable columns.
+model ContactChannelIdentity {
+  id             String      @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String      @map("organization_id") @db.Uuid
+  contactId      String      @map("contact_id") @db.Uuid
+  channel        ChannelType
+
+  /// The provider's stable user id — the only identifier reliably present on
+  /// every channel. Handles and display names both change.
+  externalUserId String  @map("external_user_id") @db.VarChar(200)
+  username       String? @db.VarChar(200)
+  /// E.164 where the channel exposes one. WhatsApp does; Instagram does not.
+  phoneNumber    String? @map("phone_number") @db.VarChar(20)
+  profileName    String? @map("profile_name") @db.VarChar(200)
+  metadata       Json?
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  contact      Contact      @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  /// One channel identity resolves to exactly one person per organization.
+  /// Without this, a redelivered webhook could attach the same Instagram user
+  /// to two contacts and split one customer's history in half.
+  @@unique([organizationId, channel, externalUserId])
+  @@index([organizationId, contactId])
+  @@index([organizationId, channel, phoneNumber])
+  @@map("contact_channel_identities")
+}
+
+/// What Meta says about a template. LeadFlow never sets this itself.
+enum WhatsAppTemplateStatus {
+  APPROVED
+  PENDING
+  REJECTED
+  PAUSED
+  DISABLED
+
+  @@map("whatsapp_template_status")
+}
+
+/// A WhatsApp message template, as Meta last reported it.
+///
+/// A CACHE, not a source of truth. LeadFlow cannot create a template and cannot
+/// approve one — Meta decides both — so every row here is a copy of something
+/// that exists in a Meta account, refreshed by an explicit sync.
+///
+/// Cached rather than fetched live for two reasons: the conversation drawer
+/// would otherwise call Meta every time somebody opened a thread, and a
+/// provider outage would take the feature down rather than serving a slightly
+/// stale list. `status` is re-checked at send time against this row, and Meta
+/// refuses anything that has since been revoked — so a stale cache costs a
+/// failed send, never an unauthorised one.
+model WhatsAppTemplate {
+  id             String @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String @map("organization_id") @db.Uuid
+  integrationId  String @map("integration_id") @db.Uuid
+
+  /// Meta's template name, which is what the send API takes.
+  name     String                 @db.VarChar(200)
+  /// e.g. en_US. The same name exists once per language.
+  language String                 @db.VarChar(20)
+  category String?                @db.VarChar(40)
+  status   WhatsAppTemplateStatus
+
+  /// Meta's own id, for diagnostics. The name and language are what send uses.
+  providerTemplateId String? @map("provider_template_id") @db.VarChar(120)
+
+  /// The component definition exactly as Meta returned it.
+  ///
+  /// Kept whole so the preview and the parameter rules read from what Meta
+  /// actually said, rather than from a summary that could drift from it.
+  components Json
+
+  /// Whether LeadFlow can send this one. Derived at sync time.
+  supported         Boolean @default(false)
+  /// Why not, in words shown to the user.
+  unsupportedReason String? @map("unsupported_reason") @db.VarChar(300)
+
+  /// How many values the send form must collect.
+  headerParameterCount Int @default(0) @map("header_parameter_count")
+  bodyParameterCount   Int @default(0) @map("body_parameter_count")
+
+  syncedAt  DateTime @default(now()) @map("synced_at") @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  integration  ChannelIntegration @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+
+  /// One row per template per language, per tenant. A re-sync updates rather
+  /// than accumulating duplicates.
+  @@unique([organizationId, name, language])
+  @@index([organizationId, status, supported])
+  @@map("whatsapp_templates")
+}
+
+/// A user's profile picture, stored as bytes.
+///
+/// A SEPARATE TABLE, not a column on User, and that is the whole point.
+/// Prisma selects every scalar by default, so a `bytea` on `users` would mean
+/// any query that forgot an explicit `select` — the membership list, the
+/// assignee dropdown, the audit join — silently loaded a blob per row. Here
+/// the bytes are only ever read by the one endpoint that serves them.
+///
+/// Stored in the database rather than object storage because no object storage
+/// is configured, and standing one up to hold a few hundred kilobytes of
+/// avatars would be more moving parts than the feature is worth. Images are
+/// resized client-side and capped server-side, so the rows stay small. If
+/// storage is added later, only this table and the serving endpoint change.
+///
+/// NOT tenant-scoped: a User is global — one person can belong to several
+/// organizations and has one face in all of them. Access is controlled at the
+/// endpoint, which requires the caller to share an organization with the owner
+/// of the picture.
+model UserAvatar {
+  /// One picture per person, so the user id IS the key.
+  userId String @id @map("user_id") @db.Uuid
+
+  /// The image itself. Capped by the upload endpoint, not by the column.
+  data Bytes
+
+  /// The DETECTED type, never the one the browser declared.
+  mimeType  String @map("mime_type") @db.VarChar(60)
+  sizeBytes Int    @map("size_bytes")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_avatars")
+}
+
+/// A product a tenant sells, and the grouping key for product KPIs.
+///
+/// A real table rather than a string on the lead, because a KPI needs
+/// IDENTITY. Free text cannot be grouped — "Packaging line, 500 units/hr" and
+/// "packaging line" are different strings for the same thing — and a
+/// tenant-configurable string array cannot survive a rename without silently
+/// rewriting history.
+///
+/// Deactivated rather than deleted once it has leads: retiring a product must
+/// not remove it from last quarter's numbers. `active` governs whether it is
+/// OFFERED on new leads, never whether it is REPORTED on old ones.
+model Product {
+  id             String @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String @map("organization_id") @db.Uuid
+
+  /// The display name. Free to change — the id is what leads reference, so a
+  /// rename does not move any historical figure.
+  name String @db.VarChar(150)
+
+  /// The tenant's own code for it. Unique within the organization, which is
+  /// what makes it usable as an import key and a human-stable identifier.
+  sku String @db.VarChar(60)
+
+  /// Free-form grouping, deliberately not an enum: every tenant categorises
+  /// differently and an enum would need a migration per customer.
+  category    String? @db.VarChar(80)
+  description String? @db.VarChar(1000)
+
+  /// Offered on new leads. Historical reporting ignores this entirely.
+  active Boolean @default(true)
+
+  createdBy String?  @map("created_by") @db.Uuid
+  updatedBy String?  @map("updated_by") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization    Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  leads           Lead[]
+  assignmentRules AssignmentRule[]
+
+  /// One SKU per tenant. Two products sharing a code would make the code
+  /// useless as an identifier and any import ambiguous.
+  @@unique([organizationId, sku])
+  /// Not a business rule — `id` is unique on its own. It lets a tenant-scoped
+  /// table point a COMPOSITE foreign key at (id, organization_id), so the
+  /// database refuses a row pairing a product with the wrong organization.
+  /// See AssignmentRule.
+  @@unique([id, organizationId])
+  /// The catalogue screen lists active products by name.
+  @@index([organizationId, active, name])
+  @@map("products")
+}
+
+// -----------------------------------------------------------------------------
+// Accounts — the customer relationship
+// -----------------------------------------------------------------------------
+
+/// Where a business relationship stands, independent of any single enquiry.
+///
+/// Deliberately NOT the same thing as LeadStatus. A lead is one opportunity and
+/// it ends; an account is the relationship and it persists. An account with
+/// five won deals, one lost and one open is still a CUSTOMER — the open lead's
+/// status says nothing about that.
+enum AccountStatus {
+  /// Never bought. The default, because assuming otherwise would overstate the
+  /// customer base.
+  PROSPECT
+  /// Has at least one won opportunity.
+  CUSTOMER
+  /// A customer with no recent activity. Only ever set deliberately — see
+  /// AccountsService.dormancyCandidates.
+  DORMANT
+  /// Explicitly ended, churned or written off. Only ever set by a person.
+  FORMER_CUSTOMER
+
+  @@map("account_status")
+}
+
+/// A company we sell to, or hope to.
+///
+/// This is a NEW entity rather than a reuse of `Organization`: Organization is
+/// the TENANT — the business running LeadFlow — and conflating the two would
+/// mean every customer needed a login, a subscription and a slug. Before this
+/// model, company was free text repeated on Lead, Contact and Conversation,
+/// which meant "ABC Foods" and "ABC Foods Pvt Ltd" were two unrelated strings
+/// and nothing could show one customer's whole history.
+///
+/// Those free-text `companyName` columns are KEPT. They are what was captured
+/// at the time, they are the evidence the mapping screen shows a person, and
+/// every existing query and index depends on them. The account is a grouping
+/// key placed beside them, exactly as productId sits beside productInterest.
+model Account {
+  id             String @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String @map("organization_id") @db.Uuid
+
+  name String @db.VarChar(200)
+
+  /// Lower-cased, punctuation and legal suffixes stripped. Stored rather than
+  /// computed per query so duplicate detection is an indexed lookup instead of
+  /// a full scan.
+  ///
+  /// NOT unique, and deliberately so: two genuinely different companies can
+  /// normalise identically, and a constraint would refuse a legitimate record
+  /// on a guess. Duplicates are SUGGESTED here and confirmed by a person.
+  normalizedName String @map("normalized_name") @db.VarChar(200)
+
+  status AccountStatus @default(PROSPECT)
+
+  industry String? @db.VarChar(80)
+  website  String? @db.VarChar(255)
+  /// Host extracted from website or an email address, lower-cased. A second
+  /// duplicate signal, and a stronger one than a name.
+  domain   String? @db.VarChar(160)
+  phone    String? @db.VarChar(20)
+  email    String? @db.VarChar(320)
+  city     String? @db.VarChar(80)
+  state    String? @db.VarChar(80)
+  country  String? @db.VarChar(2)
+  source   String? @db.VarChar(60)
+  notes    String? @db.VarChar(2000)
+
+  /// The relationship owner. Distinct from a lead's assignee: one salesperson
+  /// may own the account while another works a particular enquiry.
+  ownerId String? @map("owner_id") @db.Uuid
+
+  /// Relationship milestones, maintained by AccountLifecycleService when a lead
+  /// closes. Stored rather than derived because every customer KPI groups on
+  /// them, and recomputing from the lead history would mean a subquery per row.
+  firstContactAt DateTime? @map("first_contact_at") @db.Timestamptz(6)
+  firstWonAt     DateTime? @map("first_won_at") @db.Timestamptz(6)
+  lastWonAt      DateTime? @map("last_won_at") @db.Timestamptz(6)
+  lastActivityAt DateTime? @map("last_activity_at") @db.Timestamptz(6)
+
+  active Boolean @default(true)
+
+  /// Set when this account was merged INTO another. The row is retained so any
+  /// lingering reference resolves rather than dangling — the same approach
+  /// Contact already takes, for the same reason.
+  mergedIntoId String?   @map("merged_into_id") @db.Uuid
+  mergedAt     DateTime? @map("merged_at") @db.Timestamptz(6)
+
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+  createdBy String?   @map("created_by") @db.Uuid
+  updatedBy String?   @map("updated_by") @db.Uuid
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  owner        User?        @relation("AccountOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  mergedInto   Account?     @relation("AccountMerge", fields: [mergedIntoId], references: [id], onDelete: SetNull)
+  mergedFrom   Account[]    @relation("AccountMerge")
+
+  contacts  Contact[]
+  leads     Lead[]
+  followUps FollowUp[]
+
+  /// The customer list: live accounts by status, most recently active first.
+  @@index([organizationId, status, lastActivityAt(sort: Desc)])
+  /// Duplicate detection, and the "does this company already exist" check the
+  /// lead form runs before creating one.
+  @@index([organizationId, normalizedName])
+  @@index([organizationId, domain])
+  @@index([organizationId, ownerId])
+  /// Customer acquisition trend buckets on the first won date.
+  @@index([organizationId, firstWonAt])
+  @@map("accounts")
+}
+
+/// What kind of business an opportunity represents for its customer.
+///
+/// Recorded AT CREATION as a historical fact, never recomputed. "Repeat" means
+/// the account had already won business when this enquiry was captured — a fact
+/// about that moment, which is why correcting an old deal later must not
+/// silently reclassify it.
+///
+/// Deliberately not derived on read: the honest derivation is
+/// `lead.createdAt > account.firstWonAt`, a column-to-column comparison Prisma
+/// cannot express without raw SQL, and classifying per lead in Node would mean
+/// reading a row per lead on every report.
+enum OpportunityKind {
+  /// No prior won business with this customer. Acquisition.
+  FIRST
+  /// They have bought THIS product before. Repeat business.
+  REPEAT_PRODUCT
+  /// They are a customer, but this product is new to them. Expansion.
+  EXPANSION
+
+  @@map("opportunity_kind")
+}
+
+// -----------------------------------------------------------------------------
+// Notifications
+// -----------------------------------------------------------------------------
+
+/// What a notification is about.
+///
+/// Deliberately small and CLOSED. Every value here corresponds to a hard-coded
+/// workflow in the follow-up worker, because a generic workflow engine is
+/// explicitly out of scope — an open-ended type would invite one to be built by
+/// accident, one enum value at a time.
+enum NotificationType {
+  /// A scheduled follow-up has reached its reminder window.
+  FOLLOW_UP_DUE
+  /// A follow-up passed its time and nobody completed it.
+  FOLLOW_UP_OVERDUE
+  /// Overdue past the tenant threshold — raised to a manager.
+  FOLLOW_UP_ESCALATED
+  /// A customer who bought before may be ready to buy again.
+  REPEAT_BUSINESS_CANDIDATE
+
+  @@map("notification_type")
+}
+
+/// Something a person needs to know, delivered in-app.
+///
+/// The reason this is a TABLE rather than a transient push: a notification is
+/// evidence that the system did its job. "No lead left behind" is only a real
+/// property if there is a record that somebody was told — a push that failed to
+/// deliver leaves nothing behind, and nobody can tell afterwards whether the
+/// reminder happened or the rep ignored it.
+///
+/// Push delivery is a separate concern layered on top of this row, never a
+/// replacement for it.
+model Notification {
+  id             String @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String @map("organization_id") @db.Uuid
+  /// The recipient. Always a person, never a role or a broadcast.
+  userId         String @map("user_id") @db.Uuid
+
+  type  NotificationType
+  title String           @db.VarChar(200)
+  body  String?          @db.VarChar(1000)
+
+  /// What it is about, so the UI can deep-link without a second lookup.
+  entityType String? @map("entity_type") @db.VarChar(40)
+  entityId   String? @map("entity_id") @db.Uuid
+
+  /**
+   * THE idempotency mechanism, and the reason a retried job is safe.
+   * A deterministic key — "followup:<id>:DUE" — with a unique index behind it.
+   * A worker that runs twice attempts the same insert twice; the second one
+   * violates the constraint, which is caught and ignored. That is a far
+   * stronger guarantee than checking-then-inserting, which loses the race
+   * between the check and the insert.
+   * Scoped to the organization rather than globally unique, because two tenants
+   * may legitimately generate the same key shape for their own records.
+   */
+  dedupeKey String @map("dedupe_key") @db.VarChar(200)
+
+  readAt    DateTime? @map("read_at") @db.Timestamptz(6)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// What makes a retry a no-op instead of a second alert.
+  @@unique([organizationId, dedupeKey])
+  /// The bell: this user's unread notifications, newest first.
+  @@index([organizationId, userId, readAt, createdAt(sort: Desc)])
+  @@map("notifications")
+}
+
+// -----------------------------------------------------------------------------
+// Push delivery
+// -----------------------------------------------------------------------------
+
+/// Who carries a push token. Kept separate from DevicePlatform, which describes
+/// how a SESSION authenticates — a delivery endpoint and an auth channel are
+/// different things and conflating them is how push tokens end up on a row that
+/// rotates every fifteen minutes.
+enum PushProvider {
+  /// Firebase Cloud Messaging. The only provider today; the enum exists so
+  /// adding a second one is a migration rather than a redesign.
+  FCM
+
+  @@map("push_provider")
+}
+
+/// A device that can receive a push notification.
+///
+/// Deliberately NOT a column on Session, even though `Session.fcmToken` exists
+/// and looks like the obvious home. Refresh rotation REVOKES the old session
+/// row and creates a replacement, so a token stored there would be destroyed on
+/// every refresh — roughly every fifteen minutes. (That column is dead
+/// scaffolding: nothing in the codebase has ever written to it.)
+///
+/// A device outlives sessions, outlives logins, and belongs to a person rather
+/// than to an authentication event. One user legitimately has several: a phone,
+/// a tablet, an old handset they still carry.
+model UserDevice {
+  id             String @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String @map("organization_id") @db.Uuid
+  userId         String @map("user_id") @db.Uuid
+
+  platform DevicePlatform @default(ANDROID)
+  provider PushProvider   @default(FCM)
+
+  /**
+   * The provider's push token.
+   * A CREDENTIAL, and treated as one: never returned by any API, never logged,
+   * never placed in a notification payload or a metric label. Anyone holding it
+   * can send a notification that appears to come from LeadFlow.
+   * Unique per organization rather than globally: the same physical handset can
+   * legitimately be registered by two people in two tenants, and a global
+   * constraint would let one tenant's registration silently deny another's.
+   */
+  token String @db.VarChar(500)
+
+  /// A human label for the device list. Supplied by the client, so treated as
+  /// untrusted display text and length-capped.
+  label String? @db.VarChar(120)
+
+  /**
+   * Whether this device should still receive notifications.
+   * Deactivated rather than deleted when the provider reports the token is
+   * permanently invalid, so the history of what was registered survives and a
+   * re-registration is an update rather than a resurrection.
+   */
+  active Boolean @default(true)
+
+  /// Why it was deactivated, for anyone wondering why a phone stopped buzzing.
+  deactivatedAt     DateTime? @map("deactivated_at") @db.Timestamptz(6)
+  deactivatedReason String?   @map("deactivated_reason") @db.VarChar(120)
+
+  /// Refreshed on every registration. A device that has not been seen for
+  /// months is a candidate for cleanup, not an error.
+  lastSeenAt DateTime @default(now()) @map("last_seen_at") @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Re-registering the same token updates the existing row rather than adding
+  /// a second one. FCM refreshes tokens on reinstall and on some upgrades, and
+  /// without this every refresh would leave a dead row behind that the fan-out
+  /// keeps trying.
+  @@unique([organizationId, token])
+  /// The fan-out query: this user's active devices.
+  @@index([organizationId, userId, active])
+  @@map("user_devices")
+}
+
+// =============================================================================
+// INTEGRATION INTAKE — the server-to-server boundary
+// =============================================================================
+
+/// Where an intake is in its short life.
+///
+/// Deliberately four states and no workflow engine. Conversion to a Lead is a
+/// later phase, so nothing here advances on its own: an operator or that later
+/// phase moves a row on, and until then RECEIVED means exactly "we have it and
+/// nobody has acted".
+enum IntakeStatus {
+  /// Accepted, stored, and waiting for the conversion phase.
+  RECEIVED
+  /// Accepted, and it looks like somebody already in the CRM. Held for a
+  /// person to decide rather than merged or duplicated automatically.
+  DUPLICATE
+  /// Converted into CRM records. Written by the conversion phase, not by
+  /// intake — see created_lead_id.
+  PROCESSED
+  /// Accepted at the boundary but could not be processed. failure_reason says
+  /// why, in words safe to store.
+  FAILED
+  /// Durable, valid, and waiting on CONFIGURATION rather than on a fix.
+  ///
+  /// Distinct from FAILED on purpose. FAILED means something went wrong on our
+  /// side and the intake may need investigating; BLOCKED means the enquiry is
+  /// perfectly good and the routing table has no answer for it yet — no rule
+  /// matches, or the team it matches has nobody able to take work. The first is
+  /// an incident, the second is an administrator's to-do, and a queue that
+  /// cannot tell them apart teaches operators to ignore both.
+  ///
+  /// Retryable by design: fix the rule or staff the team, and the same durable
+  /// row is evaluated again.
+  BLOCKED
+
+  @@map("intake_status")
+}
+
+/// A submission from an approved integration, recorded before anything is done
+/// with it.
+///
+/// TENANT-SCOPED, unlike ContactEnquiry. The distinction is who the sender
+/// belongs to: a public contact enquiry comes from an anonymous visitor who
+/// belongs to no organization, while this arrives through a signed integration
+/// that is configured FOR one tenant. There is a right answer to "whose is
+/// this", so it is recorded and enforced rather than left open.
+///
+/// The row is the authority for idempotency. A website that retries — because
+/// a response was lost, a queue redelivered, or somebody double-clicked — must
+/// not produce two customers, and a unique index is the only thing that holds
+/// under concurrency and across replicas. Redis can make the second attempt
+/// cheaper; it cannot be what decides.
+///
+/// What is NOT stored: the signing secret, the signature, request headers, and
+/// the raw body. The normalised fields below are what processing needs; a raw
+/// dump would be a copy of everything a caller ever sent, kept indefinitely,
+/// with no way to know what is in it.
+model IntegrationIntake {
+  id             String @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String @map("organization_id") @db.Uuid
+
+  /// Which integration sent it, e.g. "WEBSITE". A column rather than an enum:
+  /// adding a second source should not need a migration.
+  source          String @db.VarChar(40)
+  /// The sender's own id for this submission — the idempotency key, carried in
+  /// a signed header so it cannot be altered in flight.
+  externalEventId String @map("external_event_id") @db.VarChar(120)
+  /// What kind of submission it is, e.g. "ENQUIRY".
+  eventType       String @map("event_type") @db.VarChar(60)
+
+  status IntakeStatus @default(RECEIVED)
+
+  /// SHA-256 of the exact body bytes, hex.
+  ///
+  /// What makes a retry distinguishable from a collision: the same event id
+  /// with the same hash is the same submission and returns the same receipt;
+  /// the same id with a different hash is a caller mistake and is refused
+  /// rather than silently overwriting what was sent first.
+  payloadHash String @map("payload_hash") @db.Char(64)
+
+  // --- the submission itself, canonicalised on the way in -------------------
+  name            String? @db.VarChar(150)
+  email           String? @db.VarChar(320)
+  /// E.164 where the number could be parsed, exactly as the CRM stores one.
+  phone           String? @db.VarChar(20)
+  /// ISO 3166-1 alpha-2.
+  country         String? @db.VarChar(2)
+  company         String? @db.VarChar(200)
+  message         String? @db.VarChar(4000)
+  productInterest String? @map("product_interest") @db.VarChar(120)
+  /// The page or campaign it came from, for attribution.
+  sourcePage      String? @map("source_page") @db.VarChar(200)
+
+  // --- what happened to it --------------------------------------------------
+  receivedAt       DateTime  @default(now()) @map("received_at") @db.Timestamptz(6)
+  processedAt      DateTime? @map("processed_at") @db.Timestamptz(6)
+  /// Set by the conversion phase. Its absence is what "not yet a Lead" means.
+  createdLeadId    String?   @map("created_lead_id") @db.Uuid
+  /// A customer this submission looks like, recorded as a SIGNAL only. Nothing
+  /// in the CRM is written or overwritten on the strength of it.
+  matchedContactId String?   @map("matched_contact_id") @db.Uuid
+  matchedLeadId    String?   @map("matched_lead_id") @db.Uuid
+  /// Why processing failed, in operator-readable words. Never a stack trace
+  /// and never anything from a signature or a secret.
+  failureReason    String?   @map("failure_reason") @db.VarChar(400)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  // --- how it was routed, for the operations queue --------------------------
+  //
+  // Identifiers only. Everything a person would recognise — the name, the
+  // message, the phone number — is already on this row above; copying any of it
+  // down here would be a second place to redact.
+
+  /// When processing last ran, whatever the outcome. Distinguishes "never
+  /// looked at" from "tried and blocked".
+  lastProcessingAt DateTime? @map("last_processing_at") @db.Timestamptz(6)
+  /// How many times processing has run. A row climbing this without reaching
+  /// PROCESSED is the one an operator should look at.
+  processingAttempts Int @default(0) @map("processing_attempts")
+  /// A short machine-readable outcome, e.g. NO_MATCH or NO_ELIGIBLE_AGENTS.
+  /// Paired with failure_reason, which says the same thing in words.
+  processingCode String? @map("processing_code") @db.VarChar(40)
+
+  resolvedTerritoryId    String? @map("resolved_territory_id") @db.Uuid
+  matchedAssignmentRuleId String? @map("matched_assignment_rule_id") @db.Uuid
+  assignedTeamId         String? @map("assigned_team_id") @db.Uuid
+  /// The TeamMember row chosen by the rotation, and the person behind it.
+  /// Both, because the membership is what the rotation ordered and the user is
+  /// who a person recognises.
+  assignedMembershipId String? @map("assigned_membership_id") @db.Uuid
+  assignedUserId       String? @map("assigned_user_id") @db.Uuid
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  /// The lead this became.
+  ///
+  /// A real relation rather than a bare id, so a lead can show the enquiry it
+  /// came from — the original message, the page, the time it arrived — without
+  /// copying four thousand characters into the CRM tables. Composite, so
+  /// another tenant's lead has nothing to match.
+  createdLead Lead? @relation("IntakeConversion", fields: [createdLeadId, organizationId], references: [id, organizationId], onDelete: SetNull)
+
+  /// Routing provenance. All SetNull: retiring a rule or a territory must not
+  /// delete the record of how an enquiry was handled while it was live.
+  resolvedTerritory    Territory?      @relation(fields: [resolvedTerritoryId, organizationId], references: [id, organizationId], onDelete: SetNull)
+  matchedAssignmentRule AssignmentRule? @relation(fields: [matchedAssignmentRuleId, organizationId], references: [id, organizationId], onDelete: SetNull)
+  assignedTeam         Team?           @relation("IntakeAssignedTeam", fields: [assignedTeamId, organizationId], references: [id, organizationId], onDelete: SetNull)
+  /// Who the rotation chose. A plain key, not a composite one: a user is
+  /// global in this product — one person may belong to several organizations —
+  /// so there is no tenant to carry into the key. The MEMBERSHIP above is the
+  /// tenant-scoped half of the same fact.
+  assignedUser         User?           @relation("IntakeAssignee", fields: [assignedUserId], references: [id], onDelete: SetNull)
+
+  /// Idempotency, enforced by the database rather than by a prior read.
+  /// Check-then-insert loses under concurrency: two identical requests both
+  /// find nothing and both insert.
+  @@unique([organizationId, source, externalEventId])
+  /// The review queue: what is waiting, oldest first.
+  @@index([organizationId, status, receivedAt])
+  /// The claim query: unprocessed rows across every tenant, oldest first. NOT
+  /// organization-first, and deliberately — the sweep asks "what is waiting
+  /// anywhere" before it enters any tenant's context.
+  @@index([status, receivedAt])
+  @@map("integration_intakes")
+}
+
+// =============================================================================
+// SALES TEAMS — the structure future assignment rules will read
+// =============================================================================
+
+enum TeamStatus {
+  ACTIVE
+  /// Retired, and kept. A team that once owned work is part of the historical
+  /// record: archiving preserves who was in it and what they did, which
+  /// deleting would destroy.
+  ARCHIVED
+
+  @@map("team_status")
+}
+
+/// A sales team within one organization, e.g. "Pune Sales".
+///
+/// Deliberately has NO routing rules, no territory, no round-robin cursor and
+/// no weights. It is the structure those later phases will reference, and
+/// putting a half-formed version of them here would mean rewriting them as
+/// soon as the real requirements arrive.
+///
+/// A team is not an authorization boundary. Being named manager of a team
+/// carries business responsibility and grants no permission: what somebody may
+/// DO is decided by Role and RolePermission, exactly as before.
+model Team {
+  id             String @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String @map("organization_id") @db.Uuid
+
+  name        String  @db.VarChar(80)
+  /// Lower-cased, whitespace-collapsed `name`, for the duplicate check.
+  ///
+  /// A separate column rather than a functional index, because the same
+  /// normalisation has to be applied by the application when it looks a team
+  /// up — and two expressions of one rule drift.
+  nameKey     String  @map("name_key") @db.VarChar(80)
+  description String? @db.VarChar(500)
+
+  status TeamStatus @default(ACTIVE)
+
+  /**
+   * The person responsible for the team, as an ORGANIZATION MEMBERSHIP.
+   * A membership rather than a user id: a user is global and belongs to no
+   * tenant, so a bare user id could name somebody from another organization
+   * and nothing in the database would object. The composite foreign key below
+   * pins the membership to this team's own organization.
+   * Nullable, because a team between managers is a real state and refusing to
+   * store it would mean either inventing a manager or deleting the team.
+   * NoAction rather than SetNull: the reference is composite, and nulling it
+   * would have to null organization_id too, which is NOT NULL. In practice
+   * nothing hard-deletes a membership — removal is a status and a timestamp —
+   * and the application clears this column itself when a manager leaves the
+   * team.
+   */
+  managerMembershipId String? @map("manager_membership_id") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization    Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  manager         OrganizationUser? @relation("TeamManager", fields: [managerMembershipId, organizationId], references: [id, organizationId], onDelete: NoAction)
+  members         TeamMember[]
+  assignmentRules AssignmentRule[]
+  /// Where this team's rotation has got to. At most one row — see the model.
+  assignmentCursor TeamAssignmentCursor?
+  /// Enquiries routed to this team, kept as routing provenance.
+  intakes         IntegrationIntake[] @relation("IntakeAssignedTeam")
+
+  /// Lets TeamMember point a composite key here and inherit the tenant.
+  @@unique([id, organizationId])
+  /// One ACTIVE team per name per organization. Partial — so an archived
+  /// "Pune Sales" does not block a new one — and therefore created by raw SQL
+  /// in the migration, which Prisma's schema language cannot express.
+  @@index([organizationId, status])
+  @@map("teams")
+}
+
+/// One person's place in one team.
+///
+/// Links a Team to an OrganizationUser MEMBERSHIP, never to a user id, an
+/// email address or a second copy of a person. There is exactly one identity
+/// model in this product — User plus OrganizationUser — and an "agent" is a
+/// membership doing sales work, not a new kind of record.
+model TeamMember {
+  id             String @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String @map("organization_id") @db.Uuid
+  teamId         String @map("team_id") @db.Uuid
+
+  organizationMembershipId String @map("organization_membership_id") @db.Uuid
+
+  /**
+   * Whether FUTURE automatic assignment may route work here.
+   * An operational pause — leave, training, a workload that is already too
+   * high — and nothing more. It does not suspend a login, withdraw a
+   * permission, unassign an existing lead or touch a follow-up. Those are
+   * organization membership concerns and they stay there.
+   */
+  assignmentEnabled Boolean @default(true) @map("assignment_enabled")
+
+  joinedAt  DateTime  @default(now()) @map("joined_at") @db.Timestamptz(6)
+  /// NULL means currently in the team. Set on removal rather than deleting the
+  /// row, so "who was in this team when that deal closed" stays answerable.
+  removedAt DateTime? @map("removed_at") @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  team         Team             @relation(fields: [teamId, organizationId], references: [id, organizationId], onDelete: Cascade)
+  membership   OrganizationUser @relation("TeamMembership", fields: [organizationMembershipId, organizationId], references: [id, organizationId], onDelete: Cascade)
+
+  /// The review queries: who is in this team, and which teams is this person in.
+  @@index([organizationId, teamId, removedAt])
+  @@index([organizationId, organizationMembershipId, removedAt])
+  @@map("team_members")
+}
+
+// =============================================================================
+// ASSIGNMENT RULES — which TEAM handles which work
+// =============================================================================
+
+enum AssignmentRuleStatus {
+  /// Evaluated.
+  ACTIVE
+  /// Kept and editable, but ignored while evaluating. How a rule is switched
+  /// off without losing how it was configured.
+  PAUSED
+  /// Retired. Ignored, kept for the record, and not reactivated — a rule that
+  /// once routed work is evidence of why a customer went where they did.
+  ARCHIVED
+
+  @@map("assignment_rule_status")
+}
+
+/// "Work that looks like THIS goes to THAT team."
+///
+/// Typed columns, not a JSON condition blob. A rule an administrator cannot
+/// read is a rule nobody can audit, and an expression language here would mean
+/// user-supplied logic evaluated on the server — which is a different product
+/// with a different threat model. Two dimensions are supported today, source
+/// and canonical product, combined with AND; an unset dimension means "any".
+///
+/// Deliberately absent: country, state, city, pincode, territory. Geography is
+/// the next phase and it will arrive as a Territory reference, not as a column
+/// here that would then have to be replaced.
+///
+/// A rule targets a TEAM and never a person. Naming an individual would make
+/// the routing wrong the day they went on leave, and who in the team may
+/// actually receive work is decided live by the team's own eligibility rules.
+model AssignmentRule {
+  id             String @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String @map("organization_id") @db.Uuid
+
+  name        String  @db.VarChar(80)
+  /// Lower-cased, whitespace-collapsed `name`, for the duplicate-name check.
+  nameKey     String  @map("name_key") @db.VarChar(80)
+  description String? @db.VarChar(500)
+
+  status AssignmentRuleStatus @default(ACTIVE)
+
+  /**
+   * Precedence: LOWER RUNS FIRST. 10 before 20 before 100.
+   * Unique among a tenant's ACTIVE non-fallback rules, so which rule wins is
+   * never a question of row order or creation time. The cost is that
+   * reordering means choosing a free number rather than swapping two — which
+   * is a refusal an administrator can see and act on, where an ambiguous
+   * ordering is a silent misroute nobody notices.
+   */
+  priority Int
+
+  /**
+   * The lead source this rule matches, as the tenant writes it.
+   * Free text because that is what source IS in this product: every
+   * organization configures its own list (OrganizationSettings.leadSources),
+   * and an enum here would be a second taxonomy that disagrees with theirs.
+   * NULL means "any source".
+   */
+  source    String? @db.VarChar(60)
+  /// `source` normalised for comparison. See normalizeSourceKey.
+  sourceKey String? @map("source_key") @db.VarChar(60)
+
+  /**
+   * The canonical product, by id.
+   * The catalogue entry, never the free text a customer typed. A website
+   * enquiry's `productInterest` is evidence of what was asked for and is
+   * deliberately NOT resolved to a product by guessing — see
+   * ProductMappingService, which offers suggestions and applies only what a
+   * person chose. Until an intake carries a mapped product, a rule with this
+   * set simply does not match it.
+   */
+  productId String? @map("product_id") @db.Uuid
+
+  /**
+   * The geographic scope, by id.
+   * A RESOLVED territory, never a city or a pincode a customer typed. Raw
+   * geography is TerritoriesService's job: it owns the coverage table and the
+   * specificity order, and a rule that matched on a city string would be a
+   * second, private geography database disagreeing with the first.
+   * NULL means "anywhere".
+   */
+  territoryId String? @map("territory_id") @db.Uuid
+
+  /**
+   * The last resort, evaluated only when no specific rule matched.
+   * An explicit flag rather than "a rule with no criteria", because those are
+   * different intentions: one is a deliberate catch-all, the other is usually
+   * a half-finished rule that would otherwise start swallowing everything.
+   * At most one may be ACTIVE per organization, enforced by a partial unique
+   * index.
+   */
+  isFallback Boolean @default(false) @map("is_fallback")
+
+  /**
+   * The normalised criteria, as one comparable string.
+   * Server-generated and never accepted from a caller. It exists so the
+   * database can refuse two ACTIVE rules that match exactly the same input
+   * and disagree about the answer — which would otherwise route identical
+   * enquiries to different teams depending on precedence nobody set
+   * deliberately.
+   */
+  criteriaKey String @map("criteria_key") @db.VarChar(200)
+
+  targetTeamId String @map("target_team_id") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  /// Composite, so a team from another tenant has nothing to match.
+  targetTeam   Team         @relation(fields: [targetTeamId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  /// Composite for the same reason. Restrict, because losing a product must
+  /// not silently delete the routing that referenced it.
+  product      Product?     @relation(fields: [productId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  /// Composite for the same reason, Restrict for the same reason: retiring a
+  /// territory must not silently delete the routing that referenced it.
+  territory    Territory?   @relation(fields: [territoryId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  /// Enquiries this rule routed, kept as routing provenance.
+  intakes      IntegrationIntake[]
+
+  /// Lets an intake point a COMPOSITE foreign key at the rule that routed it
+  /// and carry the tenant into the key. `id` is unique on its own; this adds
+  /// nothing to the assignment_rules table itself.
+  @@unique([id, organizationId])
+  /// The evaluation query: this tenant's active rules, in precedence order.
+  @@index([organizationId, status, priority])
+  /// "Which rules point at this team?" — asked before a team may be archived.
+  @@index([organizationId, targetTeamId, status])
+  /// The same question for a territory, asked before one may be archived.
+  @@index([organizationId, territoryId, status])
+  @@map("assignment_rules")
+}
+
+// =============================================================================
+// TERRITORIES — geography resolved to a name, so routing never parses an address
+// =============================================================================
+
+enum TerritoryStatus {
+  ACTIVE
+  /// Retired, and kept. A territory that once decided where enquiries went is
+  /// part of the record of why a customer reached the team they did.
+  ARCHIVED
+
+  @@map("territory_status")
+}
+
+/// How one coverage row selects a place.
+///
+/// Four explicit shapes rather than a rule language: an administrator has to be
+/// able to read the table and say which enquiries land where, and a stored
+/// expression is a routing decision nobody can audit.
+enum TerritoryCoverageType {
+  COUNTRY
+  STATE
+  CITY
+  POSTAL_CODE
+
+  @@map("territory_coverage_type")
+}
+
+/// A named geographic scope — "Pune / PCMC", "UAE", "South India".
+///
+/// Deliberately has NO team: assignment rules are the one authority that maps
+/// criteria to a team, and a `targetTeamId` here would be a second routing
+/// system quietly disagreeing with the first. A territory answers WHERE, and
+/// stops.
+///
+/// It has no members either. Who may receive work is J3's answer, derived from
+/// organization membership and team configuration; a TerritoryAgent table would
+/// be a second copy of a person, drifting the moment somebody is suspended.
+model Territory {
+  id             String @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String @map("organization_id") @db.Uuid
+
+  name String @db.VarChar(80)
+  /// Lower-cased, whitespace-collapsed `name`, for the duplicate-name check.
+  nameKey     String  @map("name_key") @db.VarChar(80)
+  description String? @db.VarChar(500)
+
+  status TerritoryStatus @default(ACTIVE)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization    Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  coverage        TerritoryCoverage[]
+  assignmentRules AssignmentRule[]
+  /// Enquiries that resolved here, kept as routing provenance.
+  intakes         IntegrationIntake[]
+
+  /// Lets coverage and rules point a COMPOSITE key here and inherit the tenant.
+  @@unique([id, organizationId])
+  @@index([organizationId, status, name])
+  @@map("territories")
+}
+
+/// ONE explicit geographic selector owned by one territory.
+///
+/// A row per selector rather than a JSON blob of rules, for the same reason
+/// assignment criteria are typed: the set of shapes is small, known, and has to
+/// be indexable and uniquely ownable. "IN / Maharashtra" belongs to exactly one
+/// territory at a time, and that is a database guarantee, not a convention.
+///
+/// Soft removal, following TeamMember: a selector that once routed enquiries
+/// explains where they went, and a later re-add is a new row rather than a
+/// resurrection.
+model TerritoryCoverage {
+  id             String @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String @map("organization_id") @db.Uuid
+  territoryId    String @map("territory_id") @db.Uuid
+
+  type TerritoryCoverageType
+
+  /// ISO 3166-1 alpha-2, upper-cased. Required for every shape: a state or a
+  /// pincode with no country is not a place, it is a fragment.
+  countryCode String @map("country_code") @db.VarChar(2)
+
+  /// Trimmed, whitespace-collapsed, lower-cased — identity normalisation only.
+  /// There is no canonical global list of states or cities, and inventing one
+  /// would mean refusing places that exist.
+  stateKey  String? @map("state_key") @db.VarChar(80)
+  /// As the administrator typed it, for display.
+  stateName String? @map("state_name") @db.VarChar(80)
+
+  cityKey  String? @map("city_key") @db.VarChar(80)
+  cityName String? @map("city_name") @db.VarChar(80)
+
+  /// Upper-cased with spaces removed. A STRING, never an integer: SW1A 1AA and
+  /// 08540 are both real, and one of them loses its leading zero as a number.
+  postalCodeKey String? @map("postal_code_key") @db.VarChar(16)
+  postalCode    String? @map("postal_code") @db.VarChar(16)
+
+  /// The whole selector as one comparable string, e.g. `CITY|IN|maharashtra|pune`.
+  /// Server-generated and never accepted from a caller: it is what the database
+  /// uses to refuse two territories claiming the same place.
+  coverageKey String @map("coverage_key") @db.VarChar(200)
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  removedAt DateTime? @map("removed_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  /// Composite, so another tenant's territory has nothing to match.
+  territory    Territory    @relation(fields: [territoryId, organizationId], references: [id, organizationId], onDelete: Cascade)
+
+  /// The territory detail screen: this territory's live selectors.
+  @@index([organizationId, territoryId, removedAt])
+  @@map("territory_coverage")
+}
+
+// =============================================================================
+// ROUND-ROBIN — where each team's rotation has got to
+// =============================================================================
+
+/// One rotation position per team.
+///
+/// The cursor belongs to the TEAM, not to an assignment rule. Several rules may
+/// route to the same team — website enquiries, a product rule, a territory rule
+/// — and they share one rotation, because a salesperson experiences the work
+/// arriving, not the rule that sent it. A cursor per rule would give somebody
+/// three turns for being in a popular team.
+///
+/// It is a MONOTONIC SEQUENCE over the CURRENT candidate list, not a pointer at
+/// a person. That is what makes it survive membership changes with no migration
+/// and no rebuild: the chosen agent is
+///
+///     eligible[sequence % eligible.length]
+///
+/// against the eligible members ordered canonically at the moment of assignment.
+/// Somebody joining, leaving, being suspended or having assignment switched off
+/// changes the list, and the next selection simply uses the new one.
+///
+/// The cost, stated plainly: exact lifetime equal counts are NOT promised across
+/// membership changes. Fair deterministic rotation among the people currently
+/// eligible is, and that is the property a sales team actually asks for.
+///
+/// Holding a user id here instead would be worse in the specific way that
+/// matters: the moment that person left the team the cursor would point at
+/// nobody, and the rotation would need repairing rather than simply continuing.
+model TeamAssignmentCursor {
+  id             String @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String @map("organization_id") @db.Uuid
+  teamId         String @unique @map("team_id") @db.Uuid
+
+  /// How many assignments this team has made. Never decreases, never negative
+  /// — a CHECK constraint in the migration says so — and advances exactly once
+  /// per COMMITTED conversion. A conversion that rolls back consumes no turn.
+  sequence BigInt @default(0)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  /// Composite, so another tenant's team has nothing to match. Cascade: the
+  /// rotation position of a deleted team is not history worth keeping, unlike
+  /// the assignments it produced, which live on the leads.
+  team         Team         @relation(fields: [teamId, organizationId], references: [id, organizationId], onDelete: Cascade)
+
+  @@unique([teamId, organizationId])
+  @@map("team_assignment_cursors")
+}
+
+// =============================================================================
+// CENTRAL ADMIN CONTROL PLANE — what an external administrator asked for
+// =============================================================================
+
+/// One command accepted from the Central Admin control plane.
+///
+/// The IDEMPOTENCY LEDGER, and the audit of who asked. A row exists if and only
+/// if the mutation it describes committed, because the row is written INSIDE the
+/// same transaction as that mutation. That is the whole design, and it rules out
+/// both of the orderings that look reasonable and are not:
+///
+///   claim, commit, then mutate — a crash in between permanently records a
+///   request that never ran, and the retry is refused as a duplicate of nothing;
+///
+///   mutate, commit, then claim — a crash in between loses the record, and the
+///   retry performs the mutation a second time.
+///
+/// Neither can happen here. A failure rolls the row back with the mutation, so
+/// the request id is free to be tried again; a success records both together.
+///
+/// It holds identifiers and a digest, never a payload. The customer data an
+/// administrator's command touches already lives in the tables it touched, and a
+/// copy here would be a second place to find and redact.
+model AdminControlCommand {
+  id             String @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String @map("organization_id") @db.Uuid
+
+  /// The caller's own id for this command — the idempotency key, carried in a
+  /// signed header so it cannot be altered in flight.
+  requestId String @map("request_id") @db.VarChar(120)
+
+  /// The external administrator this is attributable to. Opaque: not a
+  /// LeadFlow user id, not an email, not a permission.
+  actorRef String @map("actor_ref") @db.VarChar(200)
+
+  /// What was asked, in the terms the signature covered. A retry that differs
+  /// in ANY of these is a different command wearing the same id, and is
+  /// refused rather than answered with the first one's result.
+  method      String @db.VarChar(10)
+  path        String @db.VarChar(300)
+  payloadHash String @map("payload_hash") @db.Char(64)
+
+  /// The allowlisted operation, e.g. "team.create". A name from a fixed set,
+  /// never a controller or method chosen by the caller.
+  action String @db.VarChar(60)
+
+  /// What it produced, so a retry can re-read the authoritative record rather
+  /// than replaying the mutation or storing a copy of the response.
+  entityType String? @map("entity_type") @db.VarChar(40)
+  entityId   String? @map("entity_id") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  /// The idempotency guarantee itself. Per tenant, because two organizations
+  /// choosing the same request id are not the same command.
+  @@unique([organizationId, requestId])
+  /// "What has this administrator done lately?"
+  @@index([organizationId, createdAt(sort: Desc)])
+  @@map("admin_control_commands")
 }

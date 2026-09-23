@@ -56,12 +56,85 @@ export function isValidCountry(code: string): boolean {
  * two — both of which are real zones a real tenant might be in.
  */
 export function isValidTimezone(timezone: string): boolean {
+  /*
+   * ICU membership is necessary but NOT sufficient.
+   *
+   * It also accepts the old abbreviations, and resolves them to things nobody
+   * means: "IST" becomes Asia/Calcutta, and "EST" becomes America/Panama —
+   * which is not US Eastern, keeps no daylight saving, and would quietly move
+   * every follow-up in that tenant by an hour for half the year. It is
+   * case-insensitive too, so "asia/kolkata" passes while being nobody's idea
+   * of an identifier.
+   *
+   * So the identifier must also be SHAPED like one: Region/City, spelled as
+   * the tz database spells it, with UTC as the one accepted bare name. That is
+   * a check on form rather than a list of zones, so it cannot go stale when
+   * the database changes.
+   */
+  if (timezone !== 'UTC' && !IANA_IDENTIFIER.test(timezone)) return false;
+
   try {
     new Intl.DateTimeFormat('en-US', { timeZone: timezone });
     return true;
   } catch {
     return false;
   }
+}
+
+/**
+ * Region/City, or Region/Group/City — each part capitalised, as every zone in
+ * the tz database is. `Etc/GMT+5` and `America/Port-au-Prince` are real
+ * identifiers and pass; `IST` and `asia/kolkata` are not and do not.
+ */
+const IANA_IDENTIFIER = /^[A-Z][A-Za-z_-]*(?:\/[A-Z][A-Za-z0-9_+-]*){1,2}$/;
+
+/**
+ * Canonical forms for the tenant identity settings.
+ *
+ * Each returns undefined for something it cannot vouch for, so a caller must
+ * decide what to do rather than receiving a plausible-looking value it never
+ * checked. Case is the common difference — "in" and "inr" are what people
+ * type — and it is corrected here rather than at each call site, so a value
+ * cannot be stored in one case and compared in another.
+ *
+ * Country deliberately uses ICU rather than libphonenumber's list. ICU is
+ * already the source behind organization settings and the public enquiry form,
+ * and two region lists that disagree would mean a country a tenant can save
+ * and then cannot use, or the reverse. Phone parsing keeps its own question —
+ * "is there a numbering plan for this region" — and answers it separately.
+ */
+export function normalizeCountry(raw: string | null | undefined): string | undefined {
+  const code = raw?.trim().toUpperCase();
+
+  return code && isValidCountry(code) ? code : undefined;
+}
+
+/** ISO 4217, upper-cased: "inr" becomes INR. */
+export function normalizeCurrency(raw: string | null | undefined): string | undefined {
+  const code = raw?.trim().toUpperCase();
+
+  return code && isValidCurrency(code) ? code : undefined;
+}
+
+/** BCP 47, in ICU's canonical casing: "en-in" becomes en-IN. */
+export function normalizeLocale(raw: string | null | undefined): string | undefined {
+  const tag = raw?.trim();
+  if (!tag || !isValidLocale(tag)) return undefined;
+
+  return Intl.getCanonicalLocales(tag)[0];
+}
+
+/**
+ * An IANA zone, exactly as given.
+ *
+ * NOT case-corrected: zone identifiers are case-sensitive and there is no
+ * reliable way to repair one, so "asia/kolkata" is rejected rather than
+ * guessed at.
+ */
+export function normalizeTimezone(raw: string | null | undefined): string | undefined {
+  const zone = raw?.trim();
+
+  return zone && isValidTimezone(zone) ? zone : undefined;
 }
 
 /**

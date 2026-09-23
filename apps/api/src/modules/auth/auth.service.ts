@@ -7,6 +7,7 @@ import type {
   OrganizationSummary,
   TokenPair,
 } from '@leadflow/api-types';
+import { AppConfig } from '../../common/config/config.module';
 import { AppException } from '../../common/errors/app.exception';
 import { AUDIT_ACTIONS, AuditRepository } from '../../common/audit/audit.repository';
 import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
@@ -15,6 +16,7 @@ import { PasswordService } from './password.service';
 import { TokenService } from './token.service';
 import { MembershipCacheService } from './membership-cache.service';
 import { SessionService } from './session.service';
+import { GoogleAuthService } from './google-auth.service';
 import type { LoginDto } from './dto/auth.dto';
 
 export interface RequestMetadata {
@@ -39,6 +41,8 @@ export class AuthService {
     private readonly membershipCache: MembershipCacheService,
     private readonly audit: AuditRepository,
     private readonly sessions: SessionService,
+    private readonly google: GoogleAuthService,
+    private readonly config: AppConfig,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -129,6 +133,150 @@ export class AuthService {
   }
 
   /**
+   * Signs in with a verified Google account.
+   *
+   * Everything after the credential check is the SAME machinery the password
+   * login uses — the same membership rules, the same organization selection,
+   * the same session issuing, the same audit trail. Only the way the person
+   * proves who they are differs, and duplicating the rest is how the two paths
+   * would drift until one of them let somebody into an organization the other
+   * would have refused.
+   *
+   * Google is a way to CREATE an account, and a way back into an account it
+   * created — never a way into one somebody else registered with a password.
+   *
+   * That distinction is the whole policy. Signing somebody in just because
+   * Google verified a matching address would mean anyone who controls that
+   * address at Google can take over a LeadFlow account they never registered:
+   * an ex-employee whose company address was recycled, or anyone who registers
+   * a Google Workspace account on a domain later used to sign up here. The
+   * password account's owner never chose to allow that.
+   *
+   * So the account must carry the Google SUBJECT it was created with. Matched
+   * on the subject rather than the email because Google reuses neither — an
+   * address can be released and re-registered by somebody else, a subject id
+   * cannot.
+   *
+   * An account with no password and no subject is one that has never been
+   * used: an invitation that was never accepted. Google adopts it, because
+   * there is no prior owner to displace and no other way in.
+   */
+  async loginWithGoogle(
+    idToken: string,
+    options: { organizationId?: string | undefined; platform?: string | undefined },
+    meta: RequestMetadata,
+  ): Promise<LoginResult> {
+    const identity = await this.google.verify(idToken);
+    const user = await this.repository.findUserByEmail(identity.email);
+
+    if (!user) {
+      /*
+       * No account yet. NOT an error — it is the signup path.
+       *
+       * The client is told to collect an organization name and call the
+       * registration endpoint. Creating one here with a guessed name would
+       * make an organization nobody chose, and organizations are not
+       * something a user should acquire by accident.
+       */
+      return {
+        response: {
+          requiresOrganizationSelection: false,
+          requiresRegistration: true,
+          email: identity.email,
+          fullName: identity.fullName,
+        } as never,
+      };
+    }
+
+    if (user.status === 'SUSPENDED') throw AppException.accountSuspended();
+
+    /*
+     * The gate. An account is enterable by Google only when Google created it.
+     *
+     * Deliberately explicit rather than a generic failure: the person is
+     * holding a valid Google account and needs to know the account exists and
+     * how to get into it, not that "sign-in failed". There is no enumeration
+     * concern here that the registration endpoint does not already have — it
+     * says the same thing.
+     */
+    if (user.googleSubject !== null && user.googleSubject !== identity.subject) {
+      // The address matches an account created from a DIFFERENT Google
+      // account. Almost certainly a recycled address.
+      throw AppException.forbidden(
+        'This email belongs to an account created with a different Google account. ' +
+          'Contact your administrator.',
+      );
+    }
+
+    if (user.googleSubject === null) {
+      if (user.passwordHash) {
+        throw AppException.forbidden(
+          'An account with this email already exists. Sign in with your email and password.',
+        );
+      }
+
+      /*
+       * No password and no Google link: an invitation nobody ever accepted.
+       * Adopting it is safe — there is no prior owner to displace — and is the
+       * only way that person ever gets in.
+       */
+      await this.repository.linkGoogleAccount(user.id, identity.subject);
+    }
+
+    const memberships = await this.repository.findMembershipsForUser(user.id);
+    const usable = memberships.filter(
+      (m) => m.membershipStatus === 'ACTIVE' && m.organizationStatus !== 'SUSPENDED',
+    );
+
+    if (usable.length === 0) {
+      throw AppException.forbidden(
+        'Your account is not active in any organization. Contact your administrator.',
+      );
+    }
+
+    const membership = this.selectMembership(usable, options.organizationId);
+
+    if (!membership) {
+      const organizations: OrganizationSummary[] = usable.map((m) => ({
+        id: m.organizationId,
+        name: m.organizationName,
+        slug: m.organizationSlug,
+        role: m.role,
+      }));
+      return { response: { requiresOrganizationSelection: true, organizations } };
+    }
+
+    const { tokens, refreshToken } = await this.issueSession(
+      membership,
+      { platform: options.platform } as never,
+      meta,
+    );
+    await this.repository.touchLastLogin(user.id);
+
+    await this.audit.record({
+      action: AUDIT_ACTIONS.LOGIN_SUCCESS,
+      organizationId: membership.organizationId,
+      actorUserId: user.id,
+      entityType: 'user',
+      entityId: user.id,
+      // Recorded, because "how did they get in" is the first question asked
+      // when an account is disputed.
+      after: { platform: options.platform ?? 'WEB', method: 'google' },
+      ipAddress: meta.ipAddress,
+      userAgent: meta.userAgent,
+    });
+
+    return {
+      response: {
+        requiresOrganizationSelection: false,
+        tokens,
+        user: toAuthenticatedUser(membership, user),
+      },
+      refreshToken,
+    };
+  }
+
+  /**
    * Resolves which organization the login is for.
    *
    * A requested id is honoured only if it appears in the user's own membership
@@ -197,6 +345,80 @@ export class AuthService {
     const session = await this.repository.findSessionByTokenHash(hash);
 
     if (!session) throw AppException.tokenInvalid();
+
+    /*
+     * --- lost the rotation race, NOT a replay -------------------------------
+     *
+     * Several requests legitimately carrying one token arrive together. One
+     * consumes it; the rest must fail with 401 and leave the family alone, or
+     * the winner's brand-new session dies with them.
+     *
+     * A loser can lose in two places. Losing at the WRITE is handled further
+     * down: rotateSession matches no row and returns null. Losing at the READ
+     * is handled here — the request was sent while the token was still live,
+     * but by the time it reached the database the winner had committed, so it
+     * sees a revoked row. Treating that as reuse revoked the winner's session
+     * (CI run #3: one live session where two were required).
+     *
+     * Two earlier attempts at an exact test failed, and the second failure is
+     * the reason this one is an interval. Comparing application clocks cannot
+     * work across replicas. Comparing a database sequence looked exact, but it
+     * orders requests by when they reach the DATABASE, not by when the client
+     * sent them: under a saturated connection pool a perfectly legitimate
+     * request draws its number after the rotation has already committed (CI
+     * run #4). From database state alone, that request is indistinguishable
+     * from a replay sent immediately afterwards.
+     *
+     * So the distinction is accepted as approximate and made explicit: a
+     * rotated token presented within REFRESH_REUSE_INTERVAL_MS of its own
+     * rotation is treated as a straggler from the same wave. What the interval
+     * suppresses is FAMILY REVOCATION, nothing else — the spent token still
+     * fails with 401, still mints no child, and still returns no credential of
+     * any kind.
+     *
+     * Both sides of the comparison are PostgreSQL's own clock: `revoked_at` is
+     * written by the database during the consume, and the interval is
+     * evaluated by the database. No process clock participates.
+     *
+     * Only a ROTATED parent qualifies. Logout, password change, lost
+     * membership and earlier reuse detection revoke for reasons that have
+     * nothing to do with racing, and get no grace at all.
+     */
+    if (session.revokedAt && session.revokedReason === 'ROTATED') {
+      const intervalMs = this.config.get('REFRESH_REUSE_INTERVAL_MS');
+
+      /*
+       * Zero means strict — no tolerance at all, not a zero-length window.
+       *
+       * The distinction is not academic. The database comparison is
+       * `clock_timestamp() - revoked_at <= interval`, which is TRUE at
+       * difference zero and for any revocation stamped in the future, so a
+       * zero-length interval would still hand out grace at the exact instant
+       * of rotation. Short-circuiting here means a configured 0 never
+       * consults the interval at all: every rotated token takes the ordinary
+       * reuse path.
+       */
+      const withinReuseInterval =
+        intervalMs > 0 &&
+        (await this.repository.isWithinRotationReuseInterval({
+          sessionId: session.id,
+          organizationId: session.organizationId,
+          intervalMs,
+        }));
+
+      if (withinReuseInterval) {
+        this.logger.debug(
+          {
+            userId: session.userId,
+            organizationId: session.organizationId,
+            familyId: session.familyId,
+          },
+          'Refresh presented just after its own rotation — family left intact',
+        );
+
+        throw AppException.tokenInvalid();
+      }
+    }
 
     // --- reuse detection ----------------------------------------------------
     // A revoked token being presented means it leaked: the legitimate client

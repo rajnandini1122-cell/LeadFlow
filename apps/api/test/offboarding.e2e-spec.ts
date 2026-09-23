@@ -1,5 +1,6 @@
 import { ERROR_CODES } from '@leadflow/api-types';
 import { createTestContext, PASSWORD, type TestContext } from './helpers/test-app';
+import { fixtureMobile } from './helpers/phone-fixtures';
 
 /**
  * Phase 7 — organization administration, employee exit and lead reassignment.
@@ -23,11 +24,7 @@ describe('Organization administration and employee exit', () => {
   const unique = (prefix: string): string =>
     `${prefix}.${Date.now()}.${Math.floor(Math.random() * 1_000_000)}`;
 
-  let counter = 0;
-  const mobile = (): string => {
-    counter += 1;
-    return `4155593${String(1000 + counter)}`;
-  };
+  const mobile = (): string => fixtureMobile();
 
   const inDays = (days: number): string => new Date(Date.now() + days * 86_400_000).toISOString();
 

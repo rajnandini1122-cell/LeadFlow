@@ -11,6 +11,8 @@ interface LocaleOptions {
   currencies: string[];
 }
 import { useAuth } from '../auth/auth-context';
+import { AndroidDownloadCard } from './android-download-card';
+import { ProfilePictureCard } from './profile-picture-card';
 
 /**
  * Organization settings — a real, working editor, not a placeholder.
@@ -378,12 +380,25 @@ export function SettingsPage(): React.JSX.Element {
         </div>
 
         <div className="space-y-6">
+          {/* Your own profile, above the read-only access summary. */}
+          <ProfilePictureCard />
+
           <Card>
             <CardHeader title="Your access" />
             <div className="p-5">
               <PermissionList />
             </div>
           </Card>
+
+          {/*
+            * Also here, not only on the marketing page.
+            *
+            * A signed-in visitor to '/' is sent to their dashboard, so the
+            * download card on the home page is only ever seen while signed
+            * out — which is exactly the wrong time to be told the phone app
+            * exists. Renders nothing if no APK has been published.
+            */}
+          <AndroidDownloadCard />
 
         </div>
       </div>

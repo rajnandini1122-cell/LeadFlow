@@ -15,6 +15,7 @@ import {
   type DemoLead,
   type DemoOrganization,
 } from './demo-data';
+import { seedOmnichannel, OMNICHANNEL_SUMMARY } from './seed-omnichannel';
 import {
   DEFAULT_PLAN_CODE,
   PLAN_CATALOGUE,
@@ -143,14 +144,37 @@ async function seedOrganization(
     },
   });
 
+  /*
+   * Omnichannel is ON for the demo organizations.
+   *
+   * The flag defaults to false in the schema, which is right for a real
+   * tenant: an organization that has connected no channel should not be shown
+   * an inbox and a review queue it cannot use. But a DEMO database exists to be
+   * explored, and with the flag off the Inbox, Channel review and Channel
+   * integration screens are all hidden — including the pages you would go to in
+   * order to connect a channel in the first place.
+   */
   await prisma.organizationSettings.upsert({
     where: { organizationId: organization.id },
-    create: { organizationId: organization.id, leadSources: DEFAULT_LEAD_SOURCES },
-    update: { leadSources: DEFAULT_LEAD_SOURCES },
+    create: {
+      organizationId: organization.id,
+      leadSources: DEFAULT_LEAD_SOURCES,
+      omnichannelEnabled: true,
+    },
+    update: { leadSources: DEFAULT_LEAD_SOURCES, omnichannelEnabled: true },
   });
 
   // --- members ---------------------------------------------------------------
   const userIds = new Map<string, string>();
+  /*
+   * email -> id, alongside the role-keyed map above.
+   *
+   * A separate map rather than a change to `userIds`: that one is keyed by role
+   * for two SALES_REPs and by email for the rest, and the omnichannel fixtures
+   * need to name a specific person. Reworking the existing keying would touch
+   * lead assignment, which works.
+   */
+  const memberIds = new Map<string, string>();
 
   for (const member of demo.members) {
     const user = await prisma.user.upsert({
@@ -182,6 +206,7 @@ async function seedOrganization(
     });
 
     userIds.set(member.role === 'SALES_REP' ? member.email : member.role, user.id);
+    memberIds.set(member.email, user.id);
   }
 
   const reps = demo.members.filter((m) => m.role === 'SALES_REP');
@@ -194,6 +219,13 @@ async function seedOrganization(
 
   // --- leads -----------------------------------------------------------------
   let created = 0;
+  /*
+   * Company name -> lead id, for the omnichannel fixtures.
+   *
+   * Filled from BOTH newly created and already-present leads, so a re-run of
+   * the seed can still attach conversations to leads an earlier run made.
+   */
+  const leadsByCompany = new Map<string, string>();
 
   for (const [index, lead] of demo.leads.entries()) {
     const leadNumber = `LD-${String(index + 1).padStart(5, '0')}`;
@@ -201,22 +233,50 @@ async function seedOrganization(
       where: { organizationId: organization.id, leadNumber },
       select: { id: true },
     });
-    if (existing) continue;
+    if (existing) {
+      leadsByCompany.set(lead.companyName, existing.id);
+      continue;
+    }
 
     const isTerminal = lead.status === 'WON' || lead.status === 'LOST';
     const createdAt = daysAgo(lead.createdDaysAgo);
     const assignedToId = assignees[lead.assignTo];
 
+    const mobile = `${demo.phonePrefix}${String(1000 + index * 7).slice(-4)}`;
+
+    /*
+     * The person behind the enquiry.
+     *
+     * Created here because the application creates one on every lead, and a
+     * seeded database without them left the Contacts screen empty while the
+     * Leads screen was full — demo data that does not match what the product
+     * actually produces.
+     */
+    const contact = await prisma.contact.create({
+      data: {
+        organizationId: organization.id,
+        firstName: lead.firstName,
+        lastName: lead.lastName,
+        mobile,
+        email: `${lead.firstName.toLowerCase()}@${slugify(lead.companyName)}.example`,
+        companyName: lead.companyName,
+        city: lead.city,
+        createdBy: ownerId,
+        updatedBy: ownerId,
+      },
+    });
+
     const row = await prisma.lead.create({
       data: {
         organizationId: organization.id,
         leadNumber,
+        contactId: contact.id,
         firstName: lead.firstName,
         lastName: lead.lastName,
         // E.164, built from the organization's own dialling prefix. Unique
         // within the organization so the partial unique index on
         // (organization_id, mobile) is satisfied on re-runs.
-        mobile: `${demo.phonePrefix}${String(1000 + index * 7).slice(-4)}`,
+        mobile,
         email: `${lead.firstName.toLowerCase()}@${slugify(lead.companyName)}.example`,
         companyName: lead.companyName,
         city: lead.city,
@@ -250,12 +310,63 @@ async function seedOrganization(
       })),
     });
 
+    /*
+     * The scheduled next action, as a real FollowUp row.
+     *
+     * `leads.next_follow_up_at` alone is not enough: the follow-up screens, the
+     * overdue badge and every dashboard and report count read the FollowUp
+     * table. Seeding only the column produced a database where eight leads were
+     * overdue and the Follow-ups page was empty — the two disagreeing is
+     * exactly the bug the product exists to prevent.
+     *
+     * Terminal leads get none, matching the rule that a closed lead is not
+     * live work.
+     */
+    if (!isTerminal) {
+      const scheduledAt = daysFromNow(lead.followUpInDays);
+      const overdue = scheduledAt.getTime() < Date.now();
+
+      await prisma.followUp.create({
+        data: {
+          organizationId: organization.id,
+          leadId: row.id,
+          assignedUserId: assignedToId,
+          scheduledAt,
+          type: 'CALL',
+          status: overdue ? 'OVERDUE' : 'UPCOMING',
+          title: `Follow up on ${lead.productInterest}`,
+          createdBy: ownerId,
+        },
+      });
+    }
+
+    leadsByCompany.set(lead.companyName, row.id);
     created += 1;
   }
 
   console.log(
     `  ${demo.name} (${demo.slug}) — ${demo.members.length} members, ${created} leads created`,
   );
+
+  /*
+   * Conversations, for the first organization only.
+   *
+   * One tenant with omnichannel data and one without is deliberate: it makes an
+   * empty inbox in Meridian obviously correct rather than obviously broken, and
+   * it means the cross-tenant checks have a tenant with nothing to leak.
+   */
+  if (demo.slug === DEMO_ORGANIZATIONS[0]?.slug) {
+    await seedOmnichannel({
+      prisma,
+      organizationId: organization.id,
+      userIds: memberIds,
+      leadsByCompany,
+    });
+    console.log(
+      `  ${demo.name} — ${OMNICHANNEL_SUMMARY.conversations} conversations, ` +
+        `${OMNICHANNEL_SUMMARY.messages} messages, ${OMNICHANNEL_SUMMARY.templates} templates`,
+    );
+  }
 
   return organization.id;
 }

@@ -207,6 +207,88 @@ describe('tenant scope extension', () => {
     );
   });
 
+
+  /*
+   * Omnichannel capture.
+   *
+   * Conversations and messages are customer correspondence — the most
+   * sensitive thing the product stores after credentials. A leak here is not a
+   * missing row on a dashboard, it is one company reading another company's
+   * customers' messages, so these get their own assertions rather than relying
+   * on the parameterised coverage above.
+   */
+  describe('omnichannel models', () => {
+    const OMNICHANNEL_MODELS = [
+      'ChannelIntegration',
+      'Conversation',
+      'Message',
+      'ContactChannelIdentity',
+    ];
+
+    it.each(OMNICHANNEL_MODELS)('refuses to read %s with no tenant context', async (model) => {
+      const handler = inTenant(undefined);
+      const query = jest.fn();
+
+      // Webhook handlers run outside a request, so this is the realistic way
+      // an unscoped read gets introduced here. It must throw, not return
+      // every tenant's conversations.
+      await expect(handler({ model, operation: 'findMany', args: {}, query })).rejects.toBeInstanceOf(
+        TenantContextMissingError,
+      );
+      expect(query).not.toHaveBeenCalled();
+    });
+
+    it.each(OMNICHANNEL_MODELS)(
+      'overrides a caller-supplied organizationId on %s',
+      async (model) => {
+        const handler = inTenant(ORG);
+        const query = jest.fn().mockResolvedValue(null);
+
+        // A normalized webhook payload carries an organizationId the provider
+        // never validated. Trusting it would let a forged webhook write into
+        // another tenant.
+        await handler({
+          model,
+          operation: 'findMany',
+          args: { where: { organizationId: OTHER_ORG } },
+          query,
+        });
+
+        const passed = query.mock.calls[0]?.[0] as { where: Record<string, unknown> };
+        expect(passed.where['organizationId']).toBe(ORG);
+      },
+    );
+
+    it.each(OMNICHANNEL_MODELS)('stamps the tenant onto a %s create', async (model) => {
+      const handler = inTenant(ORG);
+      const query = jest.fn().mockResolvedValue(null);
+
+      await handler({ model, operation: 'create', args: { data: { x: 1 } }, query });
+
+      const passed = query.mock.calls[0]?.[0] as { data: Record<string, unknown> };
+      expect(passed.data['organizationId']).toBe(ORG);
+    });
+
+    it('refuses to honour a conversation create that names another tenant', async () => {
+      const handler = inTenant(ORG);
+      const query = jest.fn().mockResolvedValue({});
+
+      // A forged webhook is the realistic attack: the payload is attacker-
+      // controlled and arrives with no session behind it. The extension
+      // overwrites the field rather than throwing, so the write lands in the
+      // caller's own tenant instead of the one the payload asked for.
+      await handler({
+        model: 'Conversation',
+        operation: 'create',
+        args: { data: { organizationId: OTHER_ORG, externalConversationId: 'wamid.1' } },
+        query,
+      });
+
+      const passed = query.mock.calls[0]?.[0] as { data: { organizationId: string } };
+      expect(passed.data.organizationId).toBe(ORG);
+    });
+  });
+
   describe('system context', () => {
     it('passes through unscoped when explicitly running as system', async () => {
       const handler = inTenant(undefined, true);

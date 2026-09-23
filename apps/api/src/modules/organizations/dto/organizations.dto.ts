@@ -10,65 +10,14 @@ import {
   MaxLength,
   Min,
   MinLength,
-  Validate,
   ValidateNested,
-  ValidatorConstraint,
-  type ValidatorConstraintInterface,
 } from 'class-validator';
 import {
-  isValidCountry,
-  isValidCurrency,
-  isValidLocale,
-  isValidTimezone,
-} from '../../../common/utils/locale';
-
-/**
- * Locale validators backed by the runtime's own ICU data.
- *
- * A regex or a hand-maintained list is wrong the moment the tz database or the
- * ISO 4217 list changes, and the symptom is a tenant unable to save their own
- * settings — which is exactly how the previous timezone regex behaved for
- * anyone on `UTC` or `America/Argentina/Buenos_Aires`.
- */
-@ValidatorConstraint({ name: 'isTimezone' })
-class IsTimezoneConstraint implements ValidatorConstraintInterface {
-  validate(value: unknown): boolean {
-    return typeof value === 'string' && isValidTimezone(value);
-  }
-  defaultMessage(): string {
-    return 'must be an IANA timezone, e.g. Europe/London or UTC';
-  }
-}
-
-@ValidatorConstraint({ name: 'isCurrency' })
-class IsCurrencyConstraint implements ValidatorConstraintInterface {
-  validate(value: unknown): boolean {
-    return typeof value === 'string' && isValidCurrency(value);
-  }
-  defaultMessage(): string {
-    return 'must be a three-letter ISO 4217 currency code, e.g. USD';
-  }
-}
-
-@ValidatorConstraint({ name: 'isLocale' })
-class IsLocaleConstraint implements ValidatorConstraintInterface {
-  validate(value: unknown): boolean {
-    return typeof value === 'string' && isValidLocale(value);
-  }
-  defaultMessage(): string {
-    return 'must be a BCP 47 locale, e.g. en-GB';
-  }
-}
-
-@ValidatorConstraint({ name: 'isCountry' })
-class IsCountryConstraint implements ValidatorConstraintInterface {
-  validate(value: unknown): boolean {
-    return typeof value === 'string' && isValidCountry(value);
-  }
-  defaultMessage(): string {
-    return 'must be a two-letter ISO 3166-1 country code, e.g. GB';
-  }
-}
+  IsCountryCode,
+  IsCurrencyCode,
+  IsLocaleTag,
+  IsTimezoneId,
+} from '../../../common/validation/locale.validators';
 
 export class UpdateOrganizationSettingsDto {
   @IsOptional()
@@ -84,6 +33,17 @@ export class UpdateOrganizationSettingsDto {
   @IsOptional()
   @IsBoolean()
   escalateToManager?: boolean;
+
+  /**
+   * Whether ordinary sales users may browse conversations nobody owns.
+   *
+   * Off by default. An unassigned enquiry is a customer's private message to
+   * the business, not a shared noticeboard, so opening it up is a decision the
+   * organization makes deliberately.
+   */
+  @IsOptional()
+  @IsBoolean()
+  sharedUnassignedQueue?: boolean;
 
   @IsOptional()
   @Matches(/^([01]\d|2[0-3]):[0-5]\d$/, { message: 'must be HH:MM in 24-hour form' })
@@ -128,21 +88,19 @@ export class UpdateOrganizationDto {
   /** Decides what "today" means in every report and follow-up bucket. */
   @IsOptional()
   @IsString()
-  @Validate(IsTimezoneConstraint)
+  @IsTimezoneId()
   timezone?: string;
 
   /** Formats every amount the tenant sees. */
   @IsOptional()
   @IsString()
-  @Transform(({ value }) => (typeof value === 'string' ? value.trim().toUpperCase() : value))
-  @Validate(IsCurrencyConstraint)
+  @IsCurrencyCode()
   currency?: string;
 
   /** Decides number, date and currency formatting conventions. */
   @IsOptional()
   @IsString()
-  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
-  @Validate(IsLocaleConstraint)
+  @IsLocaleTag()
   locale?: string;
 
   /**
@@ -153,8 +111,7 @@ export class UpdateOrganizationDto {
    */
   @IsOptional()
   @IsString()
-  @Transform(({ value }) => (typeof value === 'string' ? value.trim().toUpperCase() : value))
-  @Validate(IsCountryConstraint)
+  @IsCountryCode()
   country?: string;
 
   @IsOptional()

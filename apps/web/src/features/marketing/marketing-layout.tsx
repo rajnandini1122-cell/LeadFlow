@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
 import { Copyright, Logo } from '../../components/brand';
+import { useApkManifest } from '../../lib/use-apk-manifest';
 
 const NAV = [
   { to: '/features', label: 'Features' },
@@ -31,6 +32,8 @@ export function MarketingLayout(): React.JSX.Element {
 
 function MarketingHeader(): React.JSX.Element {
   const [menuOpen, setMenuOpen] = useState(false);
+  // The published Android build, if there is one. Null renders no link.
+  const apk = useApkManifest();
   const location = useLocation();
 
   // Close the menu on navigation, or it stays open covering the page arrived at.
@@ -63,6 +66,23 @@ function MarketingHeader(): React.JSX.Element {
         </nav>
 
         <div className="hidden items-center gap-2 md:flex">
+          {/*
+            * The Android app, in the top bar.
+            *
+            * A plain download link rather than a route, and only rendered once
+            * an APK has actually been published — the same manifest the home
+            * page card and the signed-in menu read, so none of the three can
+            * advertise something that is not there.
+            */}
+          {apk && (
+            <a
+              href={apk.url}
+              download={apk.fileName}
+              className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
+            >
+              <span aria-hidden="true">⬇</span> Android app
+            </a>
+          )}
           <Link
             to="/login"
             className="rounded-lg px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
@@ -102,6 +122,15 @@ function MarketingHeader(): React.JSX.Element {
               </NavLink>
             ))}
             <hr className="my-2 border-slate-100" />
+            {apk && (
+              <a
+                href={apk.url}
+                download={apk.fileName}
+                className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
+              >
+                <span aria-hidden="true">⬇</span> Android app
+              </a>
+            )}
             <Link
               to="/login"
               className="rounded-lg px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100"

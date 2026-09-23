@@ -9,6 +9,9 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { CommonModule } from './common/common.module';
 import { EmailModule } from './common/email/email.module';
 import { AppConfig } from './common/config/config.module';
+import { RedisService } from './common/redis/redis.service';
+import { RedisThrottlerStorage } from './common/throttler/redis-throttler.storage';
+import { isCredentialEndpoint } from './common/throttler/credential-throttle.decorator';
 import { AllExceptionsFilter } from './common/errors/all-exceptions.filter';
 import { ResponseEnvelopeInterceptor } from './common/interceptors/response-envelope.interceptor';
 import { StripTenantFieldsInterceptor } from './common/tenancy/strip-tenant-fields.interceptor';
@@ -20,7 +23,15 @@ import { PermissionsGuard } from './modules/auth/guards/permissions.guard';
 import { UsersModule } from './modules/users/users.module';
 import { OrganizationsModule } from './modules/organizations/organizations.module';
 import { LeadsModule } from './modules/leads/leads.module';
+import { ProductsModule } from './modules/products/products.module';
+import { AccountsModule } from './modules/accounts/accounts.module';
+import { NotificationsModule } from './modules/notifications/notifications.module';
+import { QueuesModule } from './queues/queues.module';
+import { ObservabilityModule } from './common/observability/observability.module';
+import { PermissionSyncService } from './common/auth/permission-sync.service';
+import { PermissionSyncRepository } from './common/auth/permission-sync.repository';
 import { ContactsModule } from './modules/contacts/contacts.module';
+import { OmnichannelModule } from './modules/omnichannel/omnichannel.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { ReportsModule } from './modules/reports/reports.module';
 import { SubscriptionsModule } from './modules/subscriptions/subscriptions.module';
@@ -28,6 +39,10 @@ import { ContactModule } from './modules/contact/contact.module';
 import { FollowUpsModule } from './modules/follow-ups/follow-ups.module';
 import { InvitationsModule } from './modules/invitations/invitations.module';
 import { HealthModule } from './modules/health/health.module';
+import { IntegrationsModule } from './modules/integrations/integrations.module';
+import { TeamsModule } from './modules/teams/teams.module';
+import { TerritoriesModule } from './modules/territories/territories.module';
+import { AssignmentRulesModule } from './modules/assignment-rules/assignment-rules.module';
 
 @Module({
   imports: [
@@ -81,12 +96,33 @@ import { HealthModule } from './modules/health/health.module';
       }),
     }),
 
+    /*
+     * Two abuse domains, deliberately separate, and counted in Redis.
+     *
+     *   default    — every route. Generous: it exists to stop a runaway
+     *                client or a scraper, not to police normal work.
+     *   credential — login, registration, password reset and the other
+     *                endpoints where guessing is the attack. Strict, and
+     *                applied ONLY to handlers carrying @CredentialThrottle().
+     *
+     * The `skipIf` is what makes the second policy narrow. @nestjs/throttler
+     * applies every named limiter to every route unless a name is skipped, so
+     * before this the login policy also governed CRM traffic, the refresh
+     * endpoint and Meta's webhooks — five requests per IP per fifteen minutes
+     * across a whole sales office (blocker B2).
+     */
     ThrottlerModule.forRootAsync({
-      inject: [AppConfig],
-      useFactory: (config: AppConfig) => ({
+      inject: [AppConfig, RedisService],
+      useFactory: (config: AppConfig, redis: RedisService) => ({
+        storage: new RedisThrottlerStorage(redis),
         throttlers: [
           { name: 'default', ttl: config.get('THROTTLE_TTL') * 1000, limit: config.get('THROTTLE_LIMIT') },
-          { name: 'auth', ttl: config.get('AUTH_THROTTLE_TTL') * 1000, limit: config.get('AUTH_THROTTLE_LIMIT') },
+          {
+            name: 'credential',
+            ttl: config.get('AUTH_THROTTLE_TTL') * 1000,
+            limit: config.get('AUTH_THROTTLE_LIMIT'),
+            skipIf: (context) => !isCredentialEndpoint(context),
+          },
         ],
       }),
     }),
@@ -96,12 +132,22 @@ import { HealthModule } from './modules/health/health.module';
     OrganizationsModule,
     InvitationsModule,
     LeadsModule,
+    ProductsModule,
+    AccountsModule,
+    NotificationsModule,
+    ObservabilityModule,
+    QueuesModule,
     ContactsModule,
+    OmnichannelModule,
     FollowUpsModule,
     DashboardModule,
     ReportsModule,
     SubscriptionsModule,
     ContactModule,
+    IntegrationsModule,
+    TeamsModule,
+    TerritoriesModule,
+    AssignmentRulesModule,
     HealthModule,
   ],
   providers: [
@@ -110,6 +156,8 @@ import { HealthModule } from './modules/health/health.module';
     //   2. authentication — establishes tenant context
     //   3. authorization  — needs the context from step 2
     { provide: APP_GUARD, useClass: ThrottlerGuard },
+    PermissionSyncService,
+    PermissionSyncRepository,
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: PermissionsGuard },
 

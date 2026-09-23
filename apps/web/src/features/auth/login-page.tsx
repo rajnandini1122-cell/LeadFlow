@@ -35,66 +35,60 @@ export function LoginPage(): React.JSX.Element {
     <AuthLayout title="LeadFlow" subtitle="No lead left behind.">
       <>
         {pendingOrganizations ? (
-            <OrganizationChooser
-              organizations={pendingOrganizations}
-              disabled={submitting}
-              onChoose={(id, event) => void submit(event, id)}
+          <OrganizationChooser
+            organizations={pendingOrganizations}
+            disabled={submitting}
+            onChoose={(id, event) => void submit(event, id)}
+          />
+        ) : (
+          <form onSubmit={(event) => void submit(event)} className="space-y-4">
+            <Field
+              id="email"
+              label="Email"
+              type="email"
+              value={email}
+              onChange={setEmail}
+              autoComplete="username"
+              required
             />
-          ) : (
-            <form onSubmit={(event) => void submit(event)} className="space-y-4">
-              <Field
-                id="email"
-                label="Email"
-                type="email"
-                value={email}
-                onChange={setEmail}
-                autoComplete="username"
-                required
-              />
-              <Field
-                id="password"
-                label="Password"
-                type="password"
-                value={password}
-                onChange={setPassword}
-                autoComplete="current-password"
-                required
-              />
+            <Field
+              id="password"
+              label="Password"
+              type="password"
+              value={password}
+              onChange={setPassword}
+              autoComplete="current-password"
+              required
+            />
 
-              <p className="-mt-2 text-right">
-                <Link
-                  to="/forgot-password"
-                  className="text-xs text-slate-500 transition hover:text-slate-900 hover:underline"
-                >
-                  Forgot password?
-                </Link>
-              </p>
-
-              {error && (
-                <p role="alert" className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
-                  {error}
-                </p>
-              )}
-
-              <button
-                type="submit"
-                disabled={submitting}
-                className="w-full rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:opacity-50"
+            <p className="-mt-2 text-right">
+              <Link
+                to="/forgot-password"
+                className="text-xs text-slate-500 transition hover:text-slate-900 hover:underline"
               >
-                {submitting ? 'Signing in…' : 'Sign in'}
-              </button>
-              <p className="text-center text-sm text-slate-500">
+                Forgot password?
+              </Link>
+            </p>
 
-                New here?{' '}
-
-                <Link to="/register" className="font-medium text-slate-900 hover:underline">
-
-                  Create an organization
-
-                </Link>
-
+            {error && (
+              <p role="alert" className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
+                {error}
               </p>
+            )}
 
+            <button
+              type="submit"
+              disabled={submitting}
+              className="w-full rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:opacity-50"
+            >
+              {submitting ? 'Signing in…' : 'Sign in'}
+            </button>
+            <p className="text-center text-sm text-slate-500">
+              New here?{' '}
+              <Link to="/register" className="font-medium text-slate-900 hover:underline">
+                Create an organization
+              </Link>
+            </p>
           </form>
         )}
       </>

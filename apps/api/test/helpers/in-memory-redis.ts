@@ -42,7 +42,72 @@ export class InMemoryRedis {
     ping: async (): Promise<string> => 'PONG',
     quit: async (): Promise<'OK'> => 'OK',
     on: (): void => {},
+
+    /**
+     * Enough of MULTI for the rate-limit storage, which issues exactly one
+     * transaction: INCR, PEXPIRE ... NX, PTTL.
+     *
+     * Queued rather than executed immediately, and replayed in order on
+     * exec(), so a test sees the same shape ioredis returns: one
+     * `[error, result]` pair per queued command.
+     */
+    multi: () => {
+      const queued: (() => [null, number])[] = [];
+
+      const chain = {
+        incr: (key: string) => {
+          queued.push(() => [null, this.increment(key)]);
+          return chain;
+        },
+        pexpire: (key: string, milliseconds: number, mode?: string) => {
+          queued.push(() => [null, this.expire(key, milliseconds, mode)]);
+          return chain;
+        },
+        pttl: (key: string) => {
+          queued.push(() => [null, this.timeToLive(key)]);
+          return chain;
+        },
+        exec: async (): Promise<[null, number][]> => queued.map((run) => run()),
+      };
+
+      return chain;
+    },
   };
+
+  /** INCR: creates the counter at 1, with no expiry of its own. */
+  private increment(key: string): number {
+    const current = Number(this.read(key) ?? 0) + 1;
+    const existing = this.store.get(key);
+
+    this.store.set(key, {
+      value: String(current),
+      expiresAt: existing && existing.expiresAt > Date.now() ? existing.expiresAt : Number.MAX_SAFE_INTEGER,
+    });
+
+    return current;
+  }
+
+  /** PEXPIRE with optional NX: only sets a window where none exists. */
+  private expire(key: string, milliseconds: number, mode?: string): number {
+    const entry = this.store.get(key);
+    if (!entry) return 0;
+
+    const hasWindow = entry.expiresAt !== Number.MAX_SAFE_INTEGER;
+    if (mode === 'NX' && hasWindow) return 0;
+
+    entry.expiresAt = Date.now() + milliseconds;
+    return 1;
+  }
+
+  /** PTTL: milliseconds left, -1 without a window, -2 when absent. */
+  private timeToLive(key: string): number {
+    const entry = this.store.get(key);
+    if (!entry) return -2;
+    if (entry.expiresAt === Number.MAX_SAFE_INTEGER) return -1;
+
+    const remaining = entry.expiresAt - Date.now();
+    return remaining > 0 ? remaining : -2;
+  }
 
   async ping(): Promise<boolean> {
     return true;

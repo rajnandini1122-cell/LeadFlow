@@ -9,6 +9,8 @@ import { ApiOperation, ApiTags } from '@nestjs/swagger';
 // eslint-disable-next-line no-restricted-imports
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { RedisService } from '../../common/redis/redis.service';
+import { MetricsService } from '../../common/observability/metrics.service';
+import { WorkerHeartbeatService } from '../../common/observability/worker-heartbeat.service';
 import { Public } from '../auth/decorators/public.decorator';
 import { raw } from '../../common/interceptors/response-envelope.interceptor';
 import { withTimeout } from '../../common/utils/with-timeout';
@@ -41,6 +43,8 @@ export class HealthController {
   constructor(
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
+    private readonly metrics: MetricsService,
+    private readonly heartbeat: WorkerHeartbeatService,
   ) {}
 
   @Public()
@@ -48,6 +52,39 @@ export class HealthController {
   @ApiOperation({ summary: 'Liveness probe' })
   health() {
     return raw({ status: 'ok', uptime: Math.floor(process.uptime()) });
+  }
+
+  /**
+   * Operational metrics.
+   *
+   * NOT public. A metrics endpoint exposes request volumes, error rates and
+   * worker health — enough for an outsider to profile the system's load and
+   * spot when it is struggling, which is exactly when an attacker is most
+   * interested. Authenticated, and version-neutral like the probes because
+   * scrapers do not speak API versions.
+   *
+   * Bare JSON rather than the envelope: this is consumed by infrastructure.
+   */
+  @Get('metrics')
+  @ApiOperation({ summary: 'Operational metrics — requests, worker, notifications' })
+  async metricsSnapshot() {
+    /*
+     * `workerProcess` is the SHARED answer; `worker` above it is this
+     * process's own counters and is left exactly as it was.
+     *
+     * Both are reported because they answer different questions. On an API
+     * replica the in-process block is necessarily empty — an API does not
+     * sweep — which is precisely why it could never be the thing to alert on.
+     * `workerProcess` comes from Redis and is the same answer whichever
+     * replica is asked.
+     *
+     * ALERT ON `workerProcess.status`. Anything but HEALTHY means nobody is
+     * being reminded of anything.
+     */
+    return raw({
+      ...this.metrics.snapshot(),
+      workerProcess: await this.heartbeat.read(),
+    });
   }
 
   @Public()

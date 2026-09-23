@@ -84,7 +84,22 @@ export default tseslint.config(
         {
           patterns: [
             {
-              group: ['**/prisma/prisma.service', '**/common/prisma/*'],
+              /*
+               * The last entry is a NEGATION, and order matters: it exempts the
+               * type-only transaction module from the blanket ban above.
+               *
+               * The rule exists to stop non-repository code reaching the Prisma
+               * CLIENT and escaping tenant scoping. A service that composes
+               * several repository writes into one atomic operation has to be
+               * able to NAME the transaction it passes between them, and a type
+               * alias grants access to nothing. Exempting one file by name is
+               * narrower than loosening the rule.
+               */
+              group: [
+                '**/prisma/prisma.service',
+                '**/common/prisma/*',
+                '!**/common/prisma/transaction',
+              ],
               message:
                 'Direct Prisma access is only permitted in *.repository.ts files. ' +
                 'Go through the repository layer so tenant scoping is applied. See docs/tenancy.md.',

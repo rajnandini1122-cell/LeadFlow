@@ -1,4 +1,10 @@
-import { PhoneParseError, formatPhone, toE164 } from './phone';
+import {
+  PhoneParseError,
+  formatPhone,
+  normalizeProviderPhone,
+  parsePhone,
+  toE164,
+} from './phone';
 
 describe('toE164', () => {
   describe('input already international', () => {
@@ -54,8 +60,25 @@ describe('toE164', () => {
     });
 
     it('keeps identical national numbers in different countries distinct', () => {
-      // The reason a bare national number cannot be the stored form.
-      expect(toE164('4155552671', 'US')).not.toBe(toE164('4155552671', 'GB'));
+      /*
+       * The reason a bare national number cannot be the stored form: 7911123456
+       * is a real mobile in India AND a real mobile in the United Kingdom, and
+       * they belong to two different people.
+       *
+       * This case used to use 4155552671 under US and GB, which is not a valid
+       * GB number at all — the old parser prefixed +44 to it anyway and the
+       * assertion passed on a number that could never ring. Two countries that
+       * genuinely share the digits prove the point; a fabricated number only
+       * proved the parser would fabricate.
+       */
+      expect(toE164('7911123456', 'IN')).toBe('+917911123456');
+      expect(toE164('7911123456', 'GB')).toBe('+447911123456');
+    });
+
+    it('refuses a national number that is not valid in the country given', () => {
+      // 4155552671 is a US number. Under GB it is nothing, and inventing
+      // +444155552671 would store a number nobody can call.
+      expect(() => toE164('4155552671', 'GB')).toThrow(PhoneParseError);
     });
   });
 
@@ -67,6 +90,110 @@ describe('toE164', () => {
     it('rejects more than 15 digits, the E.164 maximum', () => {
       expect(() => toE164('+1234567890123456', 'US')).toThrow(PhoneParseError);
     });
+  });
+});
+
+describe('India, the first market', () => {
+  it.each(['9876543210', '+91 98765 43210', '+919876543210', '098765 43210', '0091 9876543210'])(
+    'resolves %s to one canonical number',
+    (input) => {
+      expect(toE164(input, 'IN')).toBe('+919876543210');
+    },
+  );
+
+  it('does NOT mangle a mobile that happens to begin with 91', () => {
+    /*
+     * The bug this whole change exists to remove. The previous parser saw a
+     * national number starting with its own dialling code and cut it off, so
+     * this real ten-digit mobile was stored as +9187654321 — a different
+     * number, and one that cannot be dialled.
+     *
+     * The digits "91" at the front of a national number mean nothing on their
+     * own; only the country's numbering plan can say whether a prefix is
+     * present, which is precisely what a heuristic cannot know.
+     */
+    expect(toE164('9187654321', 'IN')).toBe('+919187654321');
+  });
+
+  it('still does not double a country code somebody pasted', () => {
+    // The other half of the same problem: 919820011001 IS prefixed, and
+    // prefixing it again would produce a number that never matches the same
+    // customer entered normally.
+    expect(toE164('919820011001', 'IN')).toBe('+919820011001');
+  });
+
+  it('leaves a local number under another country out of +91', () => {
+    // An Indian default must never leak into a tenant somewhere else.
+    expect(toE164('612345678', 'FR')).toBe('+33612345678');
+    expect(toE164('612345678', 'DE')).toBe('+49612345678');
+  });
+});
+
+describe('parsePhone', () => {
+  it('distinguishes absent from invalid', () => {
+    /*
+     * The distinction callers need. An optional field nobody filled in is a
+     * normal state; a value somebody DID type that cannot be parsed is an
+     * error they can fix, and turning it into null instead is how unusable
+     * data gets in without anybody noticing.
+     */
+    expect(parsePhone(undefined, { country: 'IN' })).toEqual({ status: 'ABSENT' });
+    expect(parsePhone(null, { country: 'IN' })).toEqual({ status: 'ABSENT' });
+    expect(parsePhone('   ', { country: 'IN' })).toEqual({ status: 'ABSENT' });
+
+    expect(parsePhone('12345', { country: 'IN' })).toMatchObject({ status: 'INVALID' });
+    expect(parsePhone('9876543210', { country: 'IN' })).toEqual({
+      status: 'VALID',
+      e164: '+919876543210',
+    });
+  });
+
+  it('parses an international number with no country context at all', () => {
+    expect(parsePhone('+919876543210')).toEqual({ status: 'VALID', e164: '+919876543210' });
+  });
+
+  it('asks for the country code when a local number has no country to sit in', () => {
+    const result = parsePhone('9876543210', { country: undefined });
+
+    expect(result.status).toBe('INVALID');
+    expect(result).toMatchObject({ reason: expect.stringContaining('country code') });
+  });
+
+  it('ignores a country it has no numbering plan for', () => {
+    // ZZ is the ISO code for "unknown region". Falling back to parsing the
+    // number as international is right; inventing a dialling code is not.
+    expect(parsePhone('9876543210', { country: 'ZZ' })).toMatchObject({ status: 'INVALID' });
+    expect(parsePhone('+919876543210', { country: 'ZZ' })).toMatchObject({ status: 'VALID' });
+  });
+});
+
+describe('normalizeProviderPhone', () => {
+  it('reads provider digits as already international', () => {
+    // Meta sends "919876543210" — a complete number with no plus, not a local
+    // one. Parsing it against a tenant's country would make the result depend
+    // on a setting that has nothing to do with the provider.
+    expect(normalizeProviderPhone('919876543210')).toBe('+919876543210');
+    expect(normalizeProviderPhone('+919876543210')).toBe('+919876543210');
+  });
+
+  it('gives one identity for the same number however the provider spells it', () => {
+    /*
+     * The failure this prevents: two ContactChannelIdentity rows for one real
+     * person, and therefore two conversation histories, because one payload
+     * carried a plus and another did not.
+     */
+    const spellings = ['919876543210', '+919876543210', '+91 98765 43210'];
+
+    expect(new Set(spellings.map(normalizeProviderPhone)).size).toBe(1);
+  });
+
+  it('returns nothing rather than throwing on something unusable', () => {
+    // Non-fatal by contract: an unparseable sender means we cannot match on
+    // the number, not that the message should be rejected.
+    expect(normalizeProviderPhone('0')).toBeUndefined();
+    expect(normalizeProviderPhone('not-a-number')).toBeUndefined();
+    expect(normalizeProviderPhone(undefined)).toBeUndefined();
+    expect(normalizeProviderPhone('')).toBeUndefined();
   });
 });
 

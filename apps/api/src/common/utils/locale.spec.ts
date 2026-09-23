@@ -3,6 +3,10 @@ import {
   isValidCurrency,
   isValidLocale,
   isValidTimezone,
+  normalizeCountry,
+  normalizeCurrency,
+  normalizeLocale,
+  normalizeTimezone,
   supportedCurrencies,
   supportedTimezones,
 } from './locale';
@@ -59,6 +63,93 @@ describe('isValidTimezone', () => {
 
   it.each(['Mars/Olympus_Mons', 'Not/AZone', '', 'GMT+5'])('rejects %s', (zone) => {
     expect(isValidTimezone(zone)).toBe(false);
+  });
+
+  it.each(['IST', 'EST', 'PST', 'CET'])('rejects the abbreviation %s', (abbreviation) => {
+    /*
+     * ICU accepts these and resolves them to somewhere nobody meant. "IST"
+     * becomes Asia/Calcutta, which is at least the right country — but "EST"
+     * becomes America/Panama, which is NOT US Eastern: it keeps no daylight
+     * saving, so a tenant who typed the abbreviation everybody uses would find
+     * every follow-up an hour out for half the year, with nothing to show for
+     * it but a setting that looked accepted.
+     */
+    expect(isValidTimezone(abbreviation)).toBe(false);
+  });
+
+  it('rejects an identifier in the wrong case', () => {
+    // ICU is case-insensitive here; the tz database is not, and a stored value
+    // that does not match any identifier is a value no other tool will read.
+    expect(isValidTimezone('asia/kolkata')).toBe(false);
+    expect(isValidTimezone('Asia/Kolkata')).toBe(true);
+  });
+
+  it('accepts every zone this runtime itself lists', () => {
+    // The property that keeps the tightened shape rule honest: it must not
+    // reject a single real zone.
+    expect(supportedTimezones().filter((zone) => !isValidTimezone(zone))).toEqual([]);
+  });
+});
+
+describe('canonical forms', () => {
+  describe('normalizeCountry', () => {
+    it('upper-cases what a person typed', () => {
+      // "in" is what somebody types; IN is what everything else compares
+      // against. Correcting it here is what stops the same country being
+      // stored two ways and then read as two different places.
+      expect(normalizeCountry('in')).toBe('IN');
+      expect(normalizeCountry(' In ')).toBe('IN');
+      expect(normalizeCountry('IN')).toBe('IN');
+    });
+
+    it.each(['ZZ', 'IND', 'India', '1', 'XX', '', '  ', null, undefined])(
+      'refuses %p rather than storing it',
+      (value) => {
+        // ZZ is ISO's own code for "unknown region" — ICU will happily name it,
+        // which is exactly why it has to be excluded deliberately.
+        expect(normalizeCountry(value)).toBeUndefined();
+      },
+    );
+  });
+
+  describe('normalizeCurrency', () => {
+    it('upper-cases a real code', () => {
+      expect(normalizeCurrency('inr')).toBe('INR');
+      expect(normalizeCurrency(' eur ')).toBe('EUR');
+    });
+
+    it.each(['ZZZ', 'RUPEES', '12', '', null])('refuses %p', (value) => {
+      expect(normalizeCurrency(value)).toBeUndefined();
+    });
+  });
+
+  describe('normalizeLocale', () => {
+    it('returns the canonical casing', () => {
+      expect(normalizeLocale('en-in')).toBe('en-IN');
+      expect(normalizeLocale('DE-de')).toBe('de-DE');
+      expect(normalizeLocale('fr-FR')).toBe('fr-FR');
+    });
+
+    it.each(['en_US', 'not a locale', '', '@@', null])('refuses %p', (value) => {
+      expect(normalizeLocale(value)).toBeUndefined();
+    });
+  });
+
+  describe('normalizeTimezone', () => {
+    it('trims but never re-cases', () => {
+      expect(normalizeTimezone(' Asia/Kolkata ')).toBe('Asia/Kolkata');
+    });
+
+    it('refuses a zone in the wrong case rather than guessing', () => {
+      // Zone identifiers are case-sensitive and there is no reliable repair:
+      // "asia/kolkata" could only be fixed by guessing, and a guess that lands
+      // on the wrong zone moves every follow-up in the tenant by hours.
+      expect(normalizeTimezone('asia/kolkata')).toBeUndefined();
+    });
+
+    it.each(['IST', 'India', 'GMT+5:30', 'xyz', '', null])('refuses %p', (value) => {
+      expect(normalizeTimezone(value)).toBeUndefined();
+    });
   });
 });
 

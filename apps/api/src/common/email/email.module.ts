@@ -3,7 +3,8 @@ import { AppConfig } from '../config/config.module';
 import { EmailService } from './email.service';
 import { EMAIL_PROVIDER, type EmailProvider } from './email.types';
 import { ConsoleEmailProvider } from './providers/console-email.provider';
-import { UnconfiguredEmailProvider } from './providers/smtp-email.provider';
+import { SmtpEmailProvider, type SmtpSettings } from './providers/smtp-email.provider';
+import { UnconfiguredEmailProvider } from './providers/unconfigured-email.provider';
 
 /**
  * Chooses the transport from configuration.
@@ -22,10 +23,55 @@ import { UnconfiguredEmailProvider } from './providers/smtp-email.provider';
  * list is what makes an unsupported value a startup failure rather than a
  * silent one.
  */
-export const SUPPORTED_PROVIDERS = ['console'] as const;
+export const SUPPORTED_PROVIDERS = ['console', 'smtp'] as const;
+
+/**
+ * Reads the SMTP settings, and refuses a half-configured one.
+ *
+ * The env schema already requires these together when EMAIL_PROVIDER=smtp, so
+ * in a real process this check never fires. It stays because the cost of being
+ * wrong is asymmetric: a transporter built with an undefined host would
+ * construct happily and fail on every message, which is precisely the silent
+ * failure the schema exists to prevent.
+ */
+function smtpSettings(config: AppConfig): SmtpSettings {
+  const host = config.get('SMTP_HOST');
+  const port = config.get('SMTP_PORT');
+  const secure = config.get('SMTP_SECURE');
+  const user = config.get('SMTP_USER');
+  const password = config.get('SMTP_PASSWORD');
+
+  const missing = Object.entries({ SMTP_HOST: host, SMTP_PORT: port, SMTP_USER: user, SMTP_PASSWORD: password, SMTP_SECURE: secure })
+    .filter(([, value]) => value === undefined || value === '')
+    .map(([name]) => name);
+
+  if (missing.length > 0) {
+    throw new Error(
+      `EMAIL_PROVIDER=smtp requires ${missing.join(', ')}. Without them the ` +
+        'transport would accept every message and deliver none. See .env.example.',
+    );
+  }
+
+  return {
+    host: host as string,
+    port: port as number,
+    secure: secure as boolean,
+    user: user as string,
+    password: password as string,
+    from: config.get('EMAIL_FROM'),
+  };
+}
 
 export function createEmailProvider(config: AppConfig): EmailProvider {
   const requested = config.get('EMAIL_PROVIDER');
+
+  /*
+   * The production transport: any standards-compliant SMTP server, chosen
+   * entirely by configuration. No vendor lives in this file.
+   */
+  if (requested === 'smtp') {
+    return new SmtpEmailProvider(smtpSettings(config));
+  }
 
   if (requested === 'console') {
     if (config.isProduction) {

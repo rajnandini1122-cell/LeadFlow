@@ -71,15 +71,51 @@ export default async function globalSetup(): Promise<void> {
   process.env['NODE_ENV'] = 'test';
   process.env['DATABASE_URL'] = url;
   process.env['DIRECT_DATABASE_URL'] = url;
-  // PGlite serves a single connection; a real Postgres does not need the cap
-  // but is unharmed by it, and keeping one value keeps the two paths identical.
-  process.env['DATABASE_POOL_MAX'] = '1';
+  /*
+   * PGlite serves ONE connection, so the pool must be capped at one there.
+   *
+   * A real Postgres must NOT be, and that distinction became load-bearing with
+   * the intake pipeline: its concurrency tests assert that two conversions
+   * racing for the same team take different rotation slots, and a pool of one
+   * would serialise them at the pool instead of at the row lock. The test would
+   * still pass, while testing nothing — the worst kind of green.
+   *
+   * So the cap follows the backend rather than being one value for both.
+   */
+  process.env['DATABASE_POOL_MAX'] = useExternalDatabase ? '10' : '1';
   process.env['REDIS_URL'] ??= 'redis://127.0.0.1:6379'; // replaced by an in-memory double
   process.env['JWT_ACCESS_SECRET'] = 'test-access-secret-at-least-32-characters-long';
   process.env['JWT_REFRESH_SECRET'] = 'test-refresh-secret-at-least-32-characters-diff';
   process.env['JWT_ACCESS_TTL'] = '15m';
   process.env['JWT_REFRESH_TTL'] = '30d';
   process.env['LOG_LEVEL'] = 'fatal';
+
+  /*
+   * WhatsApp webhook credentials for the suite.
+   *
+   * Fixed test values, never real ones — the point of these is that the
+   * signature and verification tests can compute the SAME HMAC the server
+   * will. A deployment reading these from a committed file would be a
+   * different matter; a test fixture is exactly what they are.
+   */
+  /*
+   * The stale-outbound sweep is invoked directly by the tests that cover it.
+   *
+   * Left on, its timer would race assertions that depend on a message still
+   * being PENDING, and would keep a handle open after the suite finishes —
+   * which this configuration deliberately does not paper over with forceExit.
+   */
+  process.env['OUTBOUND_RECOVERY_ENABLED'] = 'false';
+
+  process.env['WHATSAPP_APP_SECRET'] = 'test-whatsapp-app-secret';
+  process.env['INSTAGRAM_APP_SECRET'] = 'test-instagram-app-secret';
+  process.env['INSTAGRAM_VERIFY_TOKEN'] = 'test-instagram-verify-token';
+  process.env['FACEBOOK_APP_SECRET'] = 'test-facebook-app-secret';
+  process.env['FACEBOOK_VERIFY_TOKEN'] = 'test-facebook-verify-token';
+  process.env['WHATSAPP_VERIFY_TOKEN'] = 'test-whatsapp-verify-token';
+  // 32 zero bytes, base64. Sufficient for a round-trip; obviously not a key
+  // anything real would use.
+  process.env['CREDENTIAL_ENCRYPTION_KEY'] = Buffer.alloc(32).toString('base64');
   process.env['CORS_ORIGINS'] = 'http://localhost:5173';
   // Keep argon2 at its floor: the suite hashes many passwords and production
   // cost parameters would dominate the runtime.
