@@ -84,8 +84,15 @@ describe('Lead number allocation', () => {
   const convert = (intakeId: string, organizationId = ctx.orgA.id) =>
     asTenant(organizationId, () => ctx.app.get(IntakeProcessingService).process(intakeId));
 
-  /** A team with one eligible rep, and a fallback rule pointing at it. */
-  const routeEverythingToATeam = async (): Promise<void> => {
+  /**
+   * A team with one eligible rep, and a fallback rule pointing at it.
+   *
+   * Returns the team's id, and callers must keep it. The rotation cursor is
+   * per team, and the e2e database is SHARED — every suite before this one has
+   * left its own teams and cursors in it. A read that does not name this exact
+   * team can pick up somebody else's row, which nothing here increments.
+   */
+  const routeEverythingToATeam = async (): Promise<string> => {
     const team = await ctx
       .http()
       .post('/api/v1/teams')
@@ -120,6 +127,8 @@ describe('Lead number allocation', () => {
       .set(owner())
       .send({ name: unique('Fallback'), isFallback: true, targetTeamId: team.body.data.id })
       .expect(201);
+
+    return team.body.data.id as string;
   };
 
   const leadNumbersIn = async (organizationId: string): Promise<string[]> =>
@@ -140,9 +149,33 @@ describe('Lead number allocation', () => {
     return numbers;
   };
 
+  /** The team every conversion in this suite routes to. */
+  let fallbackTeamId: string;
+
+  /**
+   * This suite's own rotation cursor, addressed exactly.
+   *
+   * Named by team AND organization — the composite the row is unique on —
+   * because these reads run as SYSTEM, which switches tenant scoping off. An
+   * unscoped read here is a read of the whole database.
+   *
+   * Absent until the first conversion creates it, which is a sequence of zero
+   * rather than a missing fact.
+   */
+  const cursorSequence = async (): Promise<bigint> => {
+    const cursor = await asSystem('e2e cursor', () =>
+      prisma().teamAssignmentCursor.findFirst({
+        where: { teamId: fallbackTeamId, organizationId: ctx.orgA.id },
+        select: { sequence: true },
+      }),
+    );
+
+    return cursor?.sequence ?? 0n;
+  };
+
   beforeAll(async () => {
     ctx = await createTestContext();
-    await routeEverythingToATeam();
+    fallbackTeamId = await routeEverythingToATeam();
   });
 
   afterAll(async () => {
@@ -378,21 +411,17 @@ describe('Lead number allocation', () => {
     it('loses no rotation increments under load', async () => {
       const intakeIds = await Promise.all(Array.from({ length: 5 }, () => seedIntake()));
 
-      const teamBefore = await asSystem('e2e cursor before', () =>
-        prisma().teamAssignmentCursor.findFirst({ select: { teamId: true, sequence: true } }),
-      );
+      const before = await cursorSequence();
 
       const outcomes = await Promise.all(intakeIds.map((id) => convert(id)));
       const converted = outcomes.filter((outcome) => outcome.result === 'CONVERTED').length;
 
-      const teamAfter = await asSystem('e2e cursor after', () =>
-        prisma().teamAssignmentCursor.findFirst({
-          where: { teamId: teamBefore!.teamId },
-          select: { sequence: true },
-        }),
-      );
+      const after = await cursorSequence();
 
-      expect(Number(teamAfter!.sequence) - Number(teamBefore!.sequence)).toBe(converted);
+      // Exactly one turn per committed conversion. Not "at least" — a lost
+      // increment and a double increment are both failures of the same
+      // property, and an inequality would hide one of them.
+      expect(Number(after - before)).toBe(converted);
       await expectNoDuplicateNumbers(ctx.orgA.id);
     });
   });
