@@ -6,19 +6,14 @@ import cookieParser from 'cookie-parser';
 import * as argon2 from 'argon2';
 import request from 'supertest';
 import { PrismaPg } from '@prisma/adapter-pg';
-import {
-  PERMISSIONS,
-  ROLE_KEYS,
-  ROLE_PERMISSION_MATRIX,
-  type RoleKey,
-} from '@leadflow/api-types';
-import { PLAN_CATALOGUE } from '../../src/modules/subscriptions/plan-catalogue';
+import { type RoleKey } from '@leadflow/api-types';
 import { AppModule } from '../../src/app.module';
 import { AppConfig } from '../../src/common/config/config.module';
 import { RedisService } from '../../src/common/redis/redis.service';
 import { PrismaClient } from '../../src/generated/prisma/client';
 import { InMemoryRedis, asRedisService } from './in-memory-redis';
 import { serveWebApp } from '../../src/common/web/spa';
+import { syncReferenceData, systemRoleIdsByKey } from '../../prisma/reference-data';
 
 /**
  * A stand-in for `apps/web/dist`.
@@ -104,68 +99,21 @@ async function connectWithRetry(prisma: PrismaClient, attempts = 25): Promise<vo
   }
 }
 
-async function seedRolesAndPermissions(prisma: PrismaClient): Promise<Map<RoleKey, string>> {
-  await prisma.permission.createMany({
-    data: Object.values(PERMISSIONS).map((key) => ({ key })),
-    skipDuplicates: true,
-  });
-
-  const permissions = await prisma.permission.findMany({ select: { id: true, key: true } });
-  const permissionIds = new Map(permissions.map((p) => [p.key, p.id]));
-  const roleIds = new Map<RoleKey, string>();
-
-  for (const key of ROLE_KEYS) {
-    const existing = await prisma.role.findFirst({
-      where: { key, organizationId: null, isSystem: true },
-    });
-    const role =
-      existing ??
-      (await prisma.role.create({
-        data: { key, name: key, isSystem: true, organizationId: null },
-      }));
-
-    await prisma.rolePermission.createMany({
-      data: ROLE_PERMISSION_MATRIX[key]
-        .map((permissionKey) => permissionIds.get(permissionKey))
-        .filter((id): id is string => Boolean(id))
-        .map((permissionId) => ({ roleId: role.id, permissionId })),
-      skipDuplicates: true,
-    });
-
-    roleIds.set(key, role.id);
-  }
-
-  return roleIds;
-}
-
 /**
- * Seeds the plan catalogue.
+ * Reference data, from the SAME function production bootstraps with.
  *
- * The application creates a trial subscription on registration, so a test
- * database with no plans makes every registration silently subscription-less.
+ * Previously a third copy of the role, permission and plan definitions lived
+ * here. Three implementations of "what a system role is" is two too many: the
+ * suite could drift from production and still be green, which is exactly the
+ * shape of the defect this consolidation came from.
+ *
+ * Calling the real thing also means every e2e suite runs against a database
+ * prepared the way a production database is — so `prisma/reference-data.ts` is
+ * exercised by all of them, not only by its own spec.
  */
-async function seedPlans(prisma: PrismaClient): Promise<void> {
-  for (const plan of PLAN_CATALOGUE) {
-    await prisma.plan.upsert({
-      where: { code: plan.code },
-      create: {
-        code: plan.code,
-        name: plan.name,
-        tagline: plan.tagline,
-        description: plan.description,
-        sortOrder: plan.sortOrder,
-        featured: plan.featured,
-        currency: plan.currency,
-        monthlyPrice: plan.monthlyPrice,
-        yearlyPrice: plan.yearlyPrice,
-        maxUsers: plan.maxUsers,
-        maxActiveLeads: plan.maxActiveLeads,
-        features: plan.features,
-        active: true,
-      },
-      update: { active: true },
-    });
-  }
+async function seedReferenceData(prisma: PrismaClient): Promise<Map<RoleKey, string>> {
+  await syncReferenceData(prisma);
+  return systemRoleIdsByKey(prisma);
 }
 
 async function seedOrganization(
@@ -295,8 +243,7 @@ export async function createTestContext(): Promise<TestContext> {
 
   try {
     await connectWithRetry(prisma);
-    const roleIds = await seedRolesAndPermissions(prisma);
-    await seedPlans(prisma);
+    const roleIds = await seedReferenceData(prisma);
 
     a = await seedOrganization(prisma, roleIds, {
       name: 'Cravion',

@@ -16,15 +16,20 @@ import {
   type DemoOrganization,
 } from './demo-data';
 import { seedOmnichannel, OMNICHANNEL_SUMMARY } from './seed-omnichannel';
-import {
-  DEFAULT_PLAN_CODE,
-  PLAN_CATALOGUE,
-  TRIAL_DAYS,
-  WITHDRAWN_PLAN_CODES,
-} from '../src/modules/subscriptions/plan-catalogue';
+import { planIdsByCode, syncReferenceData, systemRoleIdsByKey } from './reference-data';
+import { DEFAULT_PLAN_CODE, TRIAL_DAYS } from '../src/modules/subscriptions/plan-catalogue';
 
 /**
- * Idempotent seed.
+ * Idempotent DEVELOPMENT seed.
+ *
+ * Reference data — permissions, system roles, plans — plus demo organizations
+ * with demo people, demo leads and a shared password, so a fresh checkout has
+ * something to look at.
+ *
+ * NOT FOR PRODUCTION, and it refuses to run there (see the guard below). For a
+ * real deployment the reference half of this lives in `prisma/bootstrap.ts`,
+ * which creates no organizations and no users. Both call the same
+ * `syncReferenceData`, so there is one definition of what a role is.
  *
  * Uses the UNEXTENDED PrismaClient deliberately: seeding writes across several
  * organizations, which the tenant-scoping extension exists to prevent. This is
@@ -33,6 +38,32 @@ import {
  * Safe to run repeatedly — organizations, users and memberships are upserted,
  * and leads are keyed on (organization_id, lead_number).
  */
+
+/*
+ * Refuses to run in production, BEFORE anything is written.
+ *
+ * This seed creates organizations called Northwind Supply and Meridian Foods,
+ * staffed by demo users who all share one password. In a development database
+ * that is the point. In a production database it is a set of working
+ * credentials nobody chose and nobody is watching, sitting in the same tenant
+ * table as real customers.
+ *
+ * First statement in the file on purpose: the check has to happen before the
+ * client is constructed, let alone before a write. A guard inside main() would
+ * still be a guard, but it would sit below code that could grow a side effect.
+ *
+ * Production's path is `npm run db:bootstrap -w apps/api`, which writes the
+ * reference data this shares and nothing else.
+ */
+if (process.env['NODE_ENV'] === 'production') {
+  console.error(
+    'Refusing to seed: this creates DEMO organizations, demo users and a shared ' +
+      'demo password, which must never exist in a production database.\n' +
+      'Use `npm run db:bootstrap -w apps/api` instead — it writes reference data ' +
+      '(permissions, system roles, plans) and creates no tenant data.',
+  );
+  process.exit(1);
+}
 
 const connectionString =
   process.env['DIRECT_DATABASE_URL'] ?? process.env['DATABASE_URL'] ?? '';
@@ -61,57 +92,6 @@ function daysFromNow(days: number, hour = 11): Date {
 
 function daysAgo(days: number): Date {
   return new Date(Date.now() - days * DAY_MS);
-}
-
-// -----------------------------------------------------------------------------
-// Reference data
-// -----------------------------------------------------------------------------
-
-async function seedPermissions(): Promise<Map<string, string>> {
-  await prisma.permission.createMany({
-    data: Object.values(PERMISSIONS).map((key) => ({ key, description: describe(key) })),
-    skipDuplicates: true,
-  });
-
-  const rows = await prisma.permission.findMany({ select: { id: true, key: true } });
-  console.log(`  permissions: ${rows.length}`);
-  return new Map(rows.map((row) => [row.key, row.id]));
-}
-
-async function seedSystemRoles(permissionIds: Map<string, string>): Promise<Map<RoleKey, string>> {
-  const roleIds = new Map<RoleKey, string>();
-
-  for (const key of ROLE_KEYS) {
-    // System roles are shared by every tenant: organizationId is NULL.
-    const existing = await prisma.role.findFirst({
-      where: { key, organizationId: null, isSystem: true },
-    });
-
-    const role =
-      existing ??
-      (await prisma.role.create({
-        data: {
-          key,
-          name: toTitleCase(key),
-          description: ROLE_DESCRIPTIONS[key],
-          isSystem: true,
-          organizationId: null,
-        },
-      }));
-
-    await prisma.rolePermission.createMany({
-      data: ROLE_PERMISSION_MATRIX[key]
-        .map((permissionKey) => permissionIds.get(permissionKey))
-        .filter((id): id is string => Boolean(id))
-        .map((permissionId) => ({ roleId: role.id, permissionId })),
-      skipDuplicates: true,
-    });
-
-    roleIds.set(key, role.id);
-    console.log(`  role ${key}: ${ROLE_PERMISSION_MATRIX[key].length} permissions`);
-  }
-
-  return roleIds;
 }
 
 // -----------------------------------------------------------------------------
@@ -471,68 +451,6 @@ function timelineFor(
 // -----------------------------------------------------------------------------
 
 
-/**
- * Seeds the plan catalogue.
- *
- * Upserts by `code`, so editing a price in plan-catalogue.ts and re-running
- * updates the catalogue without disturbing any organization already subscribed
- * to that plan — the subscription points at the plan id, which does not change.
- */
-async function seedPlans(): Promise<Map<string, string>> {
-  const ids = new Map<string, string>();
-
-  for (const plan of PLAN_CATALOGUE) {
-    const row = await prisma.plan.upsert({
-      where: { code: plan.code },
-      create: {
-        code: plan.code,
-        name: plan.name,
-        tagline: plan.tagline,
-        description: plan.description,
-        sortOrder: plan.sortOrder,
-        featured: plan.featured,
-        currency: plan.currency,
-        monthlyPrice: plan.monthlyPrice,
-        yearlyPrice: plan.yearlyPrice,
-        maxUsers: plan.maxUsers,
-        maxActiveLeads: plan.maxActiveLeads,
-        features: plan.features,
-        active: true,
-      },
-      update: {
-        name: plan.name,
-        tagline: plan.tagline,
-        description: plan.description,
-        sortOrder: plan.sortOrder,
-        featured: plan.featured,
-        currency: plan.currency,
-        monthlyPrice: plan.monthlyPrice,
-        yearlyPrice: plan.yearlyPrice,
-        maxUsers: plan.maxUsers,
-        maxActiveLeads: plan.maxActiveLeads,
-        features: plan.features,
-        active: true,
-      },
-      select: { id: true, code: true },
-    });
-
-    ids.set(row.code, row.id);
-  }
-
-  // Retire codes that are no longer offered. Deactivating leaves any
-  // organization still on one working while removing it from the pricing page;
-  // deleting would orphan their subscription.
-  const retired = await prisma.plan.updateMany({
-    where: { code: { in: WITHDRAWN_PLAN_CODES } },
-    data: { active: false },
-  });
-
-  console.log(
-    `  ${ids.size} plans in the catalogue` +
-      (retired.count > 0 ? `, ${retired.count} withdrawn` : ''),
-  );
-  return ids;
-}
 
 /**
  * Gives a demo organization a trial subscription if it has none.
@@ -566,9 +484,15 @@ async function seedSubscription(organizationId: string, planIds: Map<string, str
 async function main(): Promise<void> {
   console.log('Seeding LeadFlow…\n');
 
-  const permissionIds = await seedPermissions();
-  const roleIds = await seedSystemRoles(permissionIds);
-  const planIds = await seedPlans();
+  /*
+   * The same reference data production bootstraps with, from the same
+   * function. Demo organizations are what this file adds on top — and the
+   * only thing it adds.
+   */
+  await syncReferenceData(prisma, (message) => console.log(message));
+
+  const roleIds = await systemRoleIdsByKey(prisma);
+  const planIds = await planIdsByCode(prisma);
 
   const password = process.env['SEED_PASSWORD'] ?? 'ChangeMe!2026';
   const passwordHash = await argon2.hash(password, {
