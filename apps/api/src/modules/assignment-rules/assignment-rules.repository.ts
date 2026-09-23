@@ -3,6 +3,7 @@ import { PrismaService, type PrismaTransaction } from '../../common/prisma/prism
 import { TenantContextService } from '../../common/tenancy/tenant-context.service';
 import type { AssignmentRuleStatus } from '../../generated/prisma/enums';
 import { lockActiveTerritory } from '../territories/territories.repository';
+import { lockActiveTeam } from '../teams/teams.repository';
 
 /**
  * Assignment rule data access.
@@ -100,11 +101,16 @@ export class AssignmentRulesRepository {
    * afterwards by asking — three cheap scoped reads, on a path that only runs
    * when something was already refused.
    *
-   * A rule with a TERRITORY is written inside a transaction that first takes
-   * that territory's row lock. A prior "is it active?" read would be stale the
-   * moment another administrator archived it, and the two requests would
-   * otherwise both succeed — leaving live routing pointed at a retired
-   * territory. See lockActiveTerritory.
+   * The rule is written inside a transaction that first takes the row lock of
+   * everything it will route to: its TERRITORY, when it names one, and always
+   * its TARGET TEAM. A prior "is it active?" read would be stale the moment
+   * another administrator archived either, and the two requests would
+   * otherwise both succeed — leaving live routing pointed at something
+   * retired. See lockActiveTerritory and lockActiveTeam.
+   *
+   * Territory first, then team, in this method and in `update`. A consistent
+   * order is what keeps two rule writes from deadlocking on each other; the
+   * archive paths take only their own row, so they cannot close a cycle.
    */
   async create(input: {
     name: string;
@@ -126,6 +132,9 @@ export class AssignmentRulesRepository {
         const territory = await lockActiveTerritory(tx, input.territoryId);
         if (!territory) return { conflict: 'TERRITORY_UNAVAILABLE' } as const;
       }
+
+      const team = await lockActiveTeam(tx, input.targetTeamId);
+      if (!team) return { conflict: 'TEAM_UNAVAILABLE' } as const;
 
       const [created] = await tx.assignmentRule.createManyAndReturn({
         skipDuplicates: true,
@@ -218,12 +227,30 @@ export class AssignmentRulesRepository {
      * than routing.
      */
     lockTerritoryId?: string | undefined,
+    /**
+     * The team this rule will route to once the change lands, when the rule
+     * will be ACTIVE afterwards.
+     *
+     * Locked for the same reason as the territory, and against the same race:
+     * an administrator activating or retargeting a rule and another archiving
+     * the team it points at must not both succeed. Undefined when the rule
+     * will not be active — a paused rule may keep pointing at an archived
+     * team, which is a record of where work used to go rather than a live
+     * decision.
+     */
+    lockTeamId?: string | undefined,
     outer?: PrismaTransaction,
   ): Promise<'UPDATED' | RuleConflict> {
     const run = async (tx: PrismaTransaction) => {
       if (lockTerritoryId) {
         const territory = await lockActiveTerritory(tx, lockTerritoryId);
         if (!territory) return { conflict: 'TERRITORY_UNAVAILABLE' } as const;
+      }
+
+      // Same order as `create`: territory, then team.
+      if (lockTeamId) {
+        const team = await lockActiveTeam(tx, lockTeamId);
+        if (!team) return { conflict: 'TEAM_UNAVAILABLE' } as const;
       }
 
       // updateMany, so the tenant scope is part of the WHERE: another
@@ -336,7 +363,9 @@ export type RuleConflict =
   | { conflict: 'CRITERIA_TAKEN' }
   | { conflict: 'PRIORITY_TAKEN' }
   /** The territory was archived by somebody else while this write was in flight. */
-  | { conflict: 'TERRITORY_UNAVAILABLE' };
+  | { conflict: 'TERRITORY_UNAVAILABLE' }
+  /** The target team was archived by somebody else while this write was in flight. */
+  | { conflict: 'TEAM_UNAVAILABLE' };
 
 /**
  * Which invariant a unique violation hit.

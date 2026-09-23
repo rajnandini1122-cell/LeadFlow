@@ -306,6 +306,9 @@ export class AssignmentRulesService {
         // paused rule may keep pointing at an archived territory: that is a
         // record of where work used to go, not a live decision.
         willBeActive && nextTerritoryId ? nextTerritoryId : undefined,
+        // Same condition, same reason: only a rule that will actually be
+        // routing afterwards needs the team it routes to held still.
+        willBeActive ? changes.targetTeamId ?? rule.targetTeamId : undefined,
         tx,
       );
       if (result !== 'UPDATED') throw conflictError(result);
@@ -564,7 +567,11 @@ function conflictError(conflict: RuleConflict): AppException {
             // "priority taken" would send an administrator looking in
             // completely the wrong place.
             'That territory was archived while this was being saved. Reload and choose another.'
-          : 'Another active rule already uses this priority. Choose a different one.';
+          : conflict.conflict === 'TEAM_UNAVAILABLE'
+            ? // The same race, on the team. Named separately so the message
+              // points at the field the administrator has to change.
+              'That team was archived while this was being saved. Reload and choose another.'
+            : 'Another active rule already uses this priority. Choose a different one.';
 
   return AppException.conflict(ERROR_CODES.CONFLICT, message);
 }

@@ -121,6 +121,80 @@ export class TeamsRepository {
     }
   }
 
+  /**
+   * Applies a change that ARCHIVES a team, unless live routing points at it.
+   *
+   * The ORDER inside the transaction is the whole point, and it is the reverse
+   * of the obvious one. The team row is written FIRST, which takes its row
+   * lock, and only THEN are the rules targeting it read. A rule being created
+   * or activated concurrently must take the same lock before it may write (see
+   * `lockActiveTeam`), so it is either already committed and visible to the
+   * read below, or still waiting — and when its turn comes it finds the team
+   * archived and is refused. There is no ordering in which both succeed.
+   *
+   * Asking first and writing afterwards is the natural way round and is wrong.
+   * Under READ COMMITTED each request reads the world as it was before either
+   * wrote: the archive sees no rules, the rule sees an active team, and both
+   * commit. What is left is production sending enquiries to a team nobody is
+   * watching — a silent failure, found by a customer who was never called.
+   *
+   * That is not hypothetical. It is what a real PostgreSQL did on CI, and what
+   * the single-connection development database cannot show, because it
+   * serialises the two requests before they can race at all.
+   *
+   * PostgreSQL decides this, not a mutex in one process — there are several
+   * processes.
+   *
+   * Returning the blocking rules rather than a bare refusal: an administrator
+   * needs to know what to pause, and a message that only says no is a message
+   * that sends them looking.
+   */
+  async archiveIfUnused(
+    id: string,
+    changes: {
+      name?: string;
+      nameKey?: string;
+      description?: string | null;
+      managerMembershipId?: string | null;
+      status?: TeamStatus;
+    },
+    outer?: PrismaTransaction,
+  ): Promise<'UPDATED' | 'NAME_TAKEN' | { blockedBy: { id: string; name: string }[] }> {
+    const run = async (tx: PrismaTransaction) => {
+      await tx.team.updateMany({ where: { id }, data: changes });
+
+      const routing = await tx.assignmentRule.findMany({
+        where: { targetTeamId: id, status: 'ACTIVE' },
+        select: { id: true, name: true },
+        orderBy: { priority: 'asc' },
+      });
+
+      // Rolls the archive back. A thrown sentinel rather than a returned
+      // value, because returning would COMMIT the archive we just decided
+      // against.
+      if (routing.length > 0) throw new TeamInUse(routing);
+
+      return 'UPDATED' as const;
+    };
+
+    try {
+      /*
+       * A caller's transaction is used as-is rather than nested inside a
+       * second one. The lock ordering that makes this safe is unchanged either
+       * way: the team row is written before the rules are read.
+       *
+       * Note that the rollback which normally undoes a refused archive becomes
+       * the CALLER's rollback when they supply a transaction — so a caller
+       * must treat the blocked result as fatal to their own unit of work.
+       */
+      return await (outer ? run(outer) : this.prisma.client.$transaction(run));
+    } catch (error) {
+      if (error instanceof TeamInUse) return { blockedBy: error.rules };
+      if ((error as { code?: string }).code === 'P2002') return 'NAME_TAKEN';
+      throw error;
+    }
+  }
+
   /** The membership behind a user id, in THIS organization. */
   async findMembership(userId: string, tx?: PrismaTransaction) {
     return this.db(tx).organizationUser.findFirst({
@@ -277,6 +351,57 @@ export class TeamsRepository {
     // one: the atomicity this method needs is already theirs to provide.
     return outer ? run(outer) : this.prisma.client.$transaction(run);
   }
+}
+
+/** Carries the blocking rules out of a rolled-back archive. */
+class TeamInUse extends Error {
+  constructor(readonly rules: { id: string; name: string }[]) {
+    super('Team is referenced by active assignment rules');
+    this.name = 'TeamInUse';
+  }
+}
+
+/**
+ * Takes the team row's write lock, and reports whether it may be routed to.
+ *
+ * Called by the assignment-rules repository INSIDE the transaction that writes
+ * the rule, so that an ACTIVE rule and an archived team cannot both come into
+ * existence. The archive path (`archiveIfUnused`) writes the same row first and
+ * then looks for rules, so the two serialise on this row: whichever gets the
+ * lock first, the other sees its committed result.
+ *
+ * The write is a lock, not a change. `status` is set to the value it already
+ * has and `updatedAt` to the value it already has, so the row version changes —
+ * which is what acquires the lock — while nothing an administrator can see
+ * does. An UPDATE is used rather than SELECT ... FOR UPDATE because raw SQL
+ * bypasses tenant scoping and is banned; this takes the same row-level
+ * exclusive lock through the scoped client.
+ *
+ * Returns null when the team is archived, absent, or another tenant's — three
+ * cases the caller is right to treat alike, since distinguishing them would say
+ * whether an id exists somewhere else.
+ */
+export async function lockActiveTeam(
+  tx: PrismaTransaction,
+  teamId: string,
+): Promise<{ id: string; name: string } | null> {
+  const team = await tx.team.findFirst({
+    where: { id: teamId },
+    select: { id: true, name: true, status: true, updatedAt: true },
+  });
+
+  if (!team || team.status !== 'ACTIVE') return null;
+
+  const locked = await tx.team.updateMany({
+    where: { id: teamId, status: 'ACTIVE' },
+    data: { status: 'ACTIVE', updatedAt: team.updatedAt },
+  });
+
+  // Zero rows means a concurrent archive committed while this transaction
+  // waited for the lock. The team is gone as far as new routing goes.
+  if (locked.count === 0) return null;
+
+  return { id: team.id, name: team.name };
 }
 
 /** Everything a team view needs, in one query rather than one per team. */

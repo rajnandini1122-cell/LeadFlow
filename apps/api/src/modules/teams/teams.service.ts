@@ -179,22 +179,17 @@ export class TeamsService {
        *
        * So the refusal names the rules, and the administrator pauses,
        * archives or retargets them first.
+       *
+       * This read is the FRIENDLY check, not the authority. It turns the
+       * ordinary case — rules that were already there — into a message naming
+       * them, without writing anything. The authority is the row lock taken by
+       * `archiveIfUnused` below, because between this read and that write
+       * another administrator may be creating a rule that points here.
        */
       if (dto.status === 'ARCHIVED') {
         const routing = await this.repository.activeRulesTargeting(id, tx);
 
-        if (routing.length > 0) {
-          throw AppException.validation(
-            'Assignment rules still send work to this team.',
-            {
-              status: [
-                `pause, archive or retarget these rules first: ${routing
-                  .map((rule) => rule.name)
-                  .join(', ')}`,
-              ],
-            },
-          );
-        }
+        if (routing.length > 0) throw stillRouting(routing);
       }
 
       changes.status = dto.status;
@@ -204,7 +199,21 @@ export class TeamsService {
     }
 
     if (Object.keys(changes).length > 0) {
-      const result = await this.repository.update(id, changes, tx);
+      /*
+       * Archiving goes through the path that writes the team row BEFORE
+       * reading the rules that target it, so an archive and a concurrent rule
+       * creation cannot both succeed. Every other change is an ordinary
+       * update: none of them can leave routing pointing somewhere dead.
+       */
+      const result =
+        statusChanged === 'ARCHIVED'
+          ? await this.repository.archiveIfUnused(id, changes, tx)
+          : await this.repository.update(id, changes, tx);
+
+      // Reached when a rule was created or activated while this archive was in
+      // flight. The archive has been rolled back; the message is the same one
+      // the pre-check gives, because to an administrator it is the same fact.
+      if (typeof result === 'object') throw stillRouting(result.blockedBy);
 
       if (result === 'NAME_TAKEN') {
         throw AppException.conflict(
@@ -514,6 +523,23 @@ function toListItem(team: LoadedTeam): TeamListItem {
     createdAt: team.createdAt.toISOString(),
     updatedAt: team.updatedAt.toISOString(),
   };
+}
+
+/**
+ * One refusal, stated once.
+ *
+ * Reached from two places — the read before the write, and the row lock that
+ * decides the race — and they must say the same thing. An administrator who
+ * saw a different message depending on whether their colleague's rule landed a
+ * millisecond earlier would reasonably conclude the two were different
+ * problems.
+ */
+function stillRouting(rules: { name: string }[]): AppException {
+  return AppException.validation('Assignment rules still send work to this team.', {
+    status: [
+      `pause, archive or retarget these rules first: ${rules.map((rule) => rule.name).join(', ')}`,
+    ],
+  });
 }
 
 function toMemberView(member: LoadedTeam['members'][number], teamStatus: string): TeamMemberView {
