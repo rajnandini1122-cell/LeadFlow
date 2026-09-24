@@ -25,8 +25,38 @@ describe('Platform owner', () => {
 
   const PASSWORD = 'CorrectHorse!2026';
 
+  /**
+   * Claims the platform-organization slot before using it.
+   *
+   * At most one INTERNAL organization may exist database-wide, enforced by a
+   * partial unique index, and the e2e database is shared between the suites
+   * that legitimately create one. Suites run sequentially, so each one clears
+   * the slot on entry rather than depending on which file Jest scheduled first
+   * — the previous arrangement passed by ordering luck, which is a green run
+   * waiting to go red for no visible reason.
+   */
+  const clearPlatformOrganizations = async (): Promise<void> => {
+    await asSystem(async () => {
+      const internal = await prisma().organization.findMany({
+        where: { organizationType: 'INTERNAL' },
+        select: { id: true },
+      });
+
+      for (const organization of internal) {
+        await prisma().organizationUser.deleteMany({
+          where: { organizationId: organization.id },
+        });
+        await prisma().organizationSettings.deleteMany({
+          where: { organizationId: organization.id },
+        });
+        await prisma().organization.delete({ where: { id: organization.id } });
+      }
+    });
+  };
+
   beforeAll(async () => {
     ctx = await createTestContext();
+    await clearPlatformOrganizations();
     platform = await seedPlatformOwner();
   });
 
