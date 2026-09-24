@@ -6,13 +6,14 @@ import cookieParser from 'cookie-parser';
 import * as argon2 from 'argon2';
 import request from 'supertest';
 import { PrismaPg } from '@prisma/adapter-pg';
-import { type RoleKey } from '@leadflow/api-types';
+import { type AnyRoleKey, type RoleKey } from '@leadflow/api-types';
 import { AppModule } from '../../src/app.module';
 import { AppConfig } from '../../src/common/config/config.module';
 import { RedisService } from '../../src/common/redis/redis.service';
 import { PrismaClient } from '../../src/generated/prisma/client';
 import { InMemoryRedis, asRedisService } from './in-memory-redis';
 import { serveWebApp } from '../../src/common/web/spa';
+import { validationException } from '../../src/common/validation/validation-errors';
 import { syncReferenceData, systemRoleIdsByKey } from '../../prisma/reference-data';
 
 /**
@@ -111,14 +112,14 @@ async function connectWithRetry(prisma: PrismaClient, attempts = 25): Promise<vo
  * prepared the way a production database is — so `prisma/reference-data.ts` is
  * exercised by all of them, not only by its own spec.
  */
-async function seedReferenceData(prisma: PrismaClient): Promise<Map<RoleKey, string>> {
+async function seedReferenceData(prisma: PrismaClient): Promise<Map<AnyRoleKey, string>> {
   await syncReferenceData(prisma);
   return systemRoleIdsByKey(prisma);
 }
 
 async function seedOrganization(
   prisma: PrismaClient,
-  roleIds: Map<RoleKey, string>,
+  roleIds: Map<AnyRoleKey, string>,
   spec: { name: string; slug: string; ownerEmail: string; repEmail: string },
 ): Promise<Omit<SeededOrg, 'owner' | 'rep'> & { ownerId: string; repId: string }> {
   const passwordHash = await argon2.hash(PASSWORD, {
@@ -300,8 +301,21 @@ export async function createTestContext(): Promise<TestContext> {
 
   app.setGlobalPrefix('api', { exclude: ['health', 'readiness'] });
   app.enableVersioning({ type: VersioningType.URI, defaultVersion: '1' });
+  /*
+   * Also must match main.ts — including the exceptionFactory.
+   *
+   * Without it the suite would see the pipe's default flat-array error while
+   * production returns per-field details, so a test asserting that a client can
+   * tell WHICH field was rejected would pass against a shape no deployment
+   * produces.
+   */
   app.useGlobalPipes(
-    new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }),
+    new ValidationPipe({
+      transform: true,
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      exceptionFactory: validationException,
+    }),
   );
 
   /*

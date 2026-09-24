@@ -68,7 +68,29 @@ enum RoleKey {
   MANAGER
   SALES_REP
 
+  /// CRAVION operating the platform, above tenant OWNER.
+  ///
+  /// Deliberately absent from ROLE_KEYS in packages/api-types: that list is
+  /// what invite and role-change DTOs validate against, so leaving this out of
+  /// it is what makes "no tenant can grant it" a property of the types rather
+  /// than a rule to remember. It lives here because it is a real system role
+  /// that reference bootstrap creates.
+  PLATFORM_OWNER
+
   @@map("role_key")
+}
+
+/// What an organization IS, as opposed to what state it is in.
+///
+/// Separate from OrganizationStatus, which is a lifecycle position that an
+/// internal organization also has.
+enum OrganizationType {
+  /// A tenant. Everything self-service registration creates.
+  CUSTOMER
+  /// CRAVION itself. At most one row, enforced by a partial unique index.
+  INTERNAL
+
+  @@map("organization_type")
 }
 
 enum DevicePlatform {
@@ -173,6 +195,17 @@ model Organization {
   /// ISO 3166-1 alpha-2. Default dialling region for phone entry.
   country  String             @default("US") @db.VarChar(2)
   status   OrganizationStatus @default(TRIAL)
+
+  /// CUSTOMER or INTERNAL. See the enum.
+  ///
+  /// Defaults to CUSTOMER, which is what makes this safe to add to a running
+  /// database: every existing organization, and every one self-service
+  /// registration creates, is a customer without anything having to say so.
+  /// Becoming INTERNAL is a deliberate act performed by one bootstrap command.
+  ///
+  /// This column is the AUTHORITY for billing exemption and for recognising
+  /// the platform operator. Nothing infers either from a name or a slug.
+  organizationType OrganizationType @default(CUSTOMER) @map("organization_type")
 
   /// Soft delete, for recovery.
   ///

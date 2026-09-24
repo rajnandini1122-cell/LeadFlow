@@ -1,4 +1,4 @@
-import type { RoleKey } from './domain';
+import type { AnyRoleKey } from './domain';
 
 /**
  * Permission catalogue.
@@ -112,9 +112,55 @@ export const PERMISSIONS = {
 
   SUBSCRIPTION_VIEW: 'subscription.view',
   SUBSCRIPTION_MANAGE: 'subscription.manage',
+
+  /*
+   * PLATFORM permissions — CRAVION operating LeadFlow, not a customer using it.
+   *
+   * Namespaced `platform.*` so the boundary is visible at a glance in a grant
+   * table, an audit row and a guard. No tenant role holds any of these, and no
+   * tenant API can grant one: they are absent from every ROLE_PERMISSION_MATRIX
+   * entry except PLATFORM_OWNER's.
+   *
+   * Enumerated rather than expressed as a wildcard. The permission model has no
+   * wildcard mechanism, and inventing one for the single most privileged role in
+   * the system would mean the first use of `*` in this codebase granted
+   * everything that will ever be added, including permissions written years
+   * from now by somebody who never considered the platform role.
+   */
+  PLATFORM_CONFIG_VIEW: 'platform.config.view',
+  PLATFORM_CONFIG_MANAGE: 'platform.config.manage',
+  /** Read the tenant list and one tenant's status. Never their business data. */
+  PLATFORM_ORGANIZATION_VIEW: 'platform.organization.view',
+  /** Suspend, reactivate or retire a customer organization. */
+  PLATFORM_ORGANIZATION_MANAGE: 'platform.organization.manage',
+  PLATFORM_SUBSCRIPTION_VIEW: 'platform.subscription.view',
+  PLATFORM_SUBSCRIPTION_MANAGE: 'platform.subscription.manage',
+  /** Read platform-level audit history, including cross-tenant actions. */
+  PLATFORM_AUDIT_VIEW: 'platform.audit.view',
+  /** Manage CRAVION's own internal staff accounts. */
+  PLATFORM_USER_MANAGE: 'platform.user.manage',
+  PLATFORM_INTEGRATION_MANAGE: 'platform.integration.manage',
+  /** Readiness, worker heartbeat, queue depth — operating the deployment. */
+  PLATFORM_OPERATIONS_VIEW: 'platform.operations.view',
 } as const;
 
 export type Permission = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
+
+/**
+ * The platform permissions, as a set.
+ *
+ * Derived from the catalogue by prefix rather than listed a second time, so a
+ * new `platform.*` permission cannot be added and then forgotten here — which
+ * would leave PLATFORM_OWNER without it and the feature quietly unreachable.
+ */
+export const PLATFORM_PERMISSIONS: Permission[] = Object.values(PERMISSIONS).filter(
+  (key): key is Permission => key.startsWith('platform.'),
+);
+
+/** Whether a permission is a platform-level one. No tenant role holds these. */
+export function isPlatformPermission(permission: string): boolean {
+  return permission.startsWith('platform.');
+}
 
 const SALES_REP_PERMISSIONS: Permission[] = [
   PERMISSIONS.LEAD_VIEW_OWN,
@@ -189,10 +235,38 @@ const OWNER_PERMISSIONS: Permission[] = [
   PERMISSIONS.SUBSCRIPTION_MANAGE,
 ];
 
-/** Seeded into role_permissions by prisma/seed.ts. */
-export const ROLE_PERMISSION_MATRIX: Record<RoleKey, Permission[]> = {
+/**
+ * CRAVION's platform administrator.
+ *
+ * The platform permissions, PLUS the tenant OWNER set. The second half needs
+ * saying: a platform owner also operates CRAVION's own internal organization as
+ * an ordinary tenant — their leads, their team, their settings — and holding no
+ * tenant permissions would mean the master account could administer every
+ * customer but not use the product.
+ *
+ * What this does NOT do is grant access to another tenant's data. These
+ * permissions are checked against the caller's own membership, and the Prisma
+ * tenant scope still narrows every ordinary query to the organization they are
+ * signed in to. Reaching another tenant requires an explicit platform-admin
+ * repository running under an audited system scope — a permission is
+ * permission to ask, never a change to what the scoper allows.
+ */
+const PLATFORM_OWNER_PERMISSIONS: Permission[] = [
+  ...OWNER_PERMISSIONS,
+  ...PLATFORM_PERMISSIONS,
+];
+
+/**
+ * Seeded into role_permissions by prisma/reference-data.ts.
+ *
+ * Keyed by AnyRoleKey rather than RoleKey so PLATFORM_OWNER is covered: the
+ * matrix has to describe every role the database enum holds, while the
+ * tenant-assignable list stays shorter.
+ */
+export const ROLE_PERMISSION_MATRIX: Record<AnyRoleKey, Permission[]> = {
   OWNER: OWNER_PERMISSIONS,
   ADMIN: ADMIN_PERMISSIONS,
   MANAGER: MANAGER_PERMISSIONS,
   SALES_REP: SALES_REP_PERMISSIONS,
+  PLATFORM_OWNER: PLATFORM_OWNER_PERMISSIONS,
 };

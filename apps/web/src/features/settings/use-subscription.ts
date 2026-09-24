@@ -7,6 +7,7 @@ import {
 } from '@tanstack/react-query';
 import type {
   BillingInterval,
+  EntitlementView,
   PlanView,
   SubscriptionStatus,
   SubscriptionView,
@@ -17,6 +18,21 @@ export function useSubscription(): UseQueryResult<SubscriptionView> {
   return useQuery({
     queryKey: ['subscription'],
     queryFn: () => apiGet<SubscriptionView>('/subscriptions/current'),
+  });
+}
+
+/**
+ * What this organization is entitled to, and whether to mention money at all.
+ *
+ * Read INSTEAD of `useSubscription` when deciding what billing UI to show. The
+ * CRAVION platform organization has no subscription row — `/subscriptions/current`
+ * is a 404 there and should be — so a screen that asked for the subscription
+ * first would show an error to the operator on every visit.
+ */
+export function useEntitlement(): UseQueryResult<EntitlementView> {
+  return useQuery({
+    queryKey: ['entitlement'],
+    queryFn: () => apiGet<EntitlementView>('/subscriptions/entitlement'),
   });
 }
 

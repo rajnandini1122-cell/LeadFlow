@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { Permission, RoleKey } from '@leadflow/api-types';
+import type { AnyRoleKey, Permission } from '@leadflow/api-types';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { uuidv7 } from '../../common/utils/uuid';
 import { TenantContextService } from '../../common/tenancy/tenant-context.service';
@@ -16,7 +16,7 @@ export interface MembershipRecord {
   organizationCountry: string;
   organizationStatus: 'TRIAL' | 'ACTIVE' | 'SUSPENDED';
   userId: string;
-  role: RoleKey;
+  role: AnyRoleKey;
   permissions: Permission[];
   membershipStatus: 'ACTIVE' | 'INVITED' | 'SUSPENDED' | 'REMOVED';
   userStatus: 'ACTIVE' | 'INVITED' | 'SUSPENDED';
@@ -352,7 +352,7 @@ function toMembershipRecord(row: MembershipRow): MembershipRecord {
     organizationCountry: row.organization.country,
     organizationStatus: row.organization.status as MembershipRecord['organizationStatus'],
     userId: row.userId,
-    role: row.role.key as RoleKey,
+    role: row.role.key as AnyRoleKey,
     permissions: row.role.permissions.map((rp) => rp.permission.key as Permission),
     membershipStatus: row.status as MembershipRecord['membershipStatus'],
     userStatus: row.user.status as MembershipRecord['userStatus'],

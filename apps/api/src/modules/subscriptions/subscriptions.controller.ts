@@ -1,11 +1,17 @@
 import { Body, Controller, Get, Patch } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { PERMISSIONS, type PlanView, type SubscriptionView } from '@leadflow/api-types';
+import {
+  PERMISSIONS,
+  type EntitlementView,
+  type PlanView,
+  type SubscriptionView,
+} from '@leadflow/api-types';
 import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Public } from '../auth/decorators/public.decorator';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { SubscriptionsService } from './subscriptions.service';
+import { EntitlementsService } from './entitlements.service';
 import { ChangePlanDto } from './dto/subscriptions.dto';
 
 /**
@@ -47,13 +53,42 @@ export class PlansController {
 @ApiTags('subscriptions')
 @Controller('subscriptions')
 export class SubscriptionsController {
-  constructor(private readonly subscriptions: SubscriptionsService) {}
+  constructor(
+    private readonly subscriptions: SubscriptionsService,
+    private readonly entitlements: EntitlementsService,
+  ) {}
 
   @Get('current')
   @RequirePermissions(PERMISSIONS.SUBSCRIPTION_VIEW)
   @ApiOperation({ summary: 'The signed-in organization’s subscription' })
   async current(): Promise<SubscriptionView> {
     return this.subscriptions.current();
+  }
+
+  /**
+   * What this organization is entitled to, and why.
+   *
+   * A SEPARATE endpoint from `current` rather than a change to it, because the
+   * two answer different questions and one of them has no answer for CRAVION:
+   * the platform organization has no subscription row, so `current` is a 404
+   * there and should be — inventing one would mean fabricating a plan and a
+   * period for an organization nobody bills.
+   *
+   * This is what a client should read to decide whether to show price, trial
+   * countdown or upgrade prompt. It answers for both kinds of organization.
+   */
+  @Get('entitlement')
+  @RequirePermissions(PERMISSIONS.SUBSCRIPTION_VIEW)
+  @ApiOperation({
+    summary: 'Entitlement — subscription-derived, or platform-internal',
+    description:
+      'Customers are entitled by their subscription. The CRAVION platform ' +
+      'organization is entitled because it operates the platform: no plan, no ' +
+      'period, no payment, and billable=false. A client must not present that ' +
+      'as "paid".',
+  })
+  async entitlement(): Promise<EntitlementView> {
+    return this.entitlements.current(this.subscriptions);
   }
 
   @Patch('current')

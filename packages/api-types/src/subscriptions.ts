@@ -65,6 +65,99 @@ export function grantsAccess(status: SubscriptionStatus): boolean {
   return ACCESS_GRANTING_STATUSES.includes(status);
 }
 
+/**
+ * WHY an organization is entitled to use LeadFlow.
+ *
+ * Two answers, and keeping them separate is the point:
+ *
+ *   CUSTOMER_SUBSCRIPTION  the ordinary case. A plan, a period, a trial or a
+ *                          payment, and the status machine above decides.
+ *
+ *   PLATFORM_INTERNAL      CRAVION operating its own platform. There is no
+ *                          plan, no period and no payment, because there is
+ *                          nobody to bill — the operator billing itself is a
+ *                          fiction that would then have to be maintained
+ *                          forever, with a trial that expires and an invoice
+ *                          nobody sends.
+ *
+ * Stated as its own dimension rather than as a sixth SubscriptionStatus. A
+ * status is a position in the customer lifecycle, and every transition rule,
+ * dunning path and expiry sweep is written against that lifecycle. Adding
+ * INTERNAL to it would put a state into the machine that must never transition,
+ * never expire and never be billed — a special case in every one of those
+ * rules. This way the customer state machine is untouched.
+ */
+export const ENTITLEMENT_SOURCES = ['CUSTOMER_SUBSCRIPTION', 'PLATFORM_INTERNAL'] as const;
+export type EntitlementSource = (typeof ENTITLEMENT_SOURCES)[number];
+
+/**
+ * What an organization is entitled to, and why.
+ *
+ * ONE place both clients and the server read the answer from, so "may this
+ * organization use the product" and "should it be shown a payment prompt" are
+ * not re-derived — and not re-derived differently — in a guard, a controller
+ * and a React component.
+ */
+export interface EntitlementView {
+  source: EntitlementSource;
+  /** Whether the organization may use the product at all. */
+  grantsAccess: boolean;
+  /**
+   * Whether anything about billing should be shown: price, trial countdown,
+   * upgrade prompt, payment warning.
+   *
+   * False for the platform operator. Not because the bill is paid — there is no
+   * bill — so a client must not present this as "paid".
+   */
+  billable: boolean;
+  /** Seat cap, or null for no stated limit. */
+  maxUsers: number | null;
+  /** Active-lead cap, or null for no stated limit. */
+  maxActiveLeads: number | null;
+  /**
+   * Whether the server actually applies the caps above.
+   *
+   * Published so a client never implies a limit the product does not enforce.
+   */
+  limitsEnforced: boolean;
+  /** Present only for CUSTOMER_SUBSCRIPTION. Null for the platform operator. */
+  subscription: SubscriptionView | null;
+}
+
+/**
+ * The platform operator's entitlement.
+ *
+ * Unlimited, unbillable, permanent, and derived in one function so no caller
+ * assembles its own version. `limitsEnforced` follows the customer value it is
+ * given rather than being hardcoded false: if limits are ever enforced, the
+ * honest statement for an organization with no caps is still "enforced, and
+ * there are none".
+ */
+export function platformInternalEntitlement(limitsEnforced: boolean): EntitlementView {
+  return {
+    source: 'PLATFORM_INTERNAL',
+    grantsAccess: true,
+    billable: false,
+    maxUsers: null,
+    maxActiveLeads: null,
+    limitsEnforced,
+    subscription: null,
+  };
+}
+
+/** A customer's entitlement, derived from their subscription. */
+export function customerEntitlement(subscription: SubscriptionView): EntitlementView {
+  return {
+    source: 'CUSTOMER_SUBSCRIPTION',
+    grantsAccess: subscription.grantsAccess,
+    billable: true,
+    maxUsers: subscription.plan.maxUsers,
+    maxActiveLeads: subscription.plan.maxActiveLeads,
+    limitsEnforced: subscription.limitsEnforced,
+    subscription,
+  };
+}
+
 /** A plan as the public pricing page and the billing screen see it. */
 export interface PlanView {
   id: string;

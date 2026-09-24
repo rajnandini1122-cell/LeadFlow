@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { uuidv7 } from '../../common/utils/uuid';
-import type { RoleKey } from '@leadflow/api-types';
+import type { AnyRoleKey } from '@leadflow/api-types';
 import { AppConfig } from '../../common/config/config.module';
 import { RedisService } from '../../common/redis/redis.service';
 import { AppException } from '../../common/errors/app.exception';
@@ -19,7 +19,7 @@ import { AppException } from '../../common/errors/app.exception';
 export interface AccessTokenClaims {
   sub: string;
   org: string;
-  role: RoleKey;
+  role: AnyRoleKey;
   /** Session id — ties the access token to a refresh-token family. */
   sid: string;
   /** Token id — the deny-list key, so logout is immediate. */

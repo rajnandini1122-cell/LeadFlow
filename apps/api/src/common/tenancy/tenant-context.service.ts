@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { ClsService, type ClsStore } from 'nestjs-cls';
-import type { Permission, RoleKey } from '@leadflow/api-types';
+import type { AnyRoleKey, Permission } from '@leadflow/api-types';
 import { TenantContextMissingError } from './tenancy.errors';
 
 /**
@@ -14,7 +14,15 @@ export interface TenantPrincipal {
   organizationId: string;
   userId: string;
   membershipId: string;
-  role: RoleKey;
+  /**
+   * The membership's role, which may be PLATFORM_OWNER.
+   *
+   * AnyRoleKey rather than RoleKey because this carries whatever the database
+   * holds, and PLATFORM_OWNER is a real membership role. The narrower RoleKey
+   * stays where a TENANT chooses a role — invitations, role changes — so those
+   * still cannot name it.
+   */
+  role: AnyRoleKey;
   permissions: readonly Permission[];
   sessionId: string;
 }

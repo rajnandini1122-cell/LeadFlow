@@ -1,4 +1,11 @@
-import type { OrganizationStatus, RoleKey, UserStatus } from './domain';
+import type {
+  AnyRoleKey,
+  OrganizationStatus,
+  OrganizationType,
+  RoleKey,
+  UserStatus,
+} from './domain';
+import type { EntitlementSource } from './subscriptions';
 import type { Permission } from './permissions';
 
 // -----------------------------------------------------------------------------
@@ -34,7 +41,8 @@ export interface OrganizationSummary {
   id: string;
   name: string;
   slug: string;
-  role: RoleKey;
+  /** May be PLATFORM_OWNER: this describes a real membership, not a choice. */
+  role: AnyRoleKey;
 }
 
 /**
@@ -63,7 +71,8 @@ export interface AuthenticatedUser {
     country: string;
     status: OrganizationStatus;
   };
-  role: RoleKey;
+  /** The signed-in user's role. PLATFORM_OWNER identifies CRAVION's operator. */
+  role: AnyRoleKey;
   permissions: Permission[];
 }
 
@@ -218,7 +227,7 @@ export interface MembershipSummary {
   id: string;
   name: string;
   slug: string;
-  role: RoleKey;
+  role: AnyRoleKey;
   /** True for the organization the current access token is scoped to. */
   current: boolean;
 }
@@ -637,4 +646,35 @@ export interface LeadSourceIntake {
   territory: { id: string; name: string } | null;
   rule: { id: string; name: string } | null;
   team: { id: string; name: string } | null;
+}
+
+// -----------------------------------------------------------------------------
+// Platform console (CRAVION only)
+// -----------------------------------------------------------------------------
+
+/**
+ * An organization as the PLATFORM operator sees it.
+ *
+ * Identity, lifecycle and size. Deliberately no business data: a platform
+ * operator needs to know a tenant exists, whether it is active and how large it
+ * is; reading their pipeline is a different act that this contract does not
+ * provide for.
+ */
+export interface PlatformOrganizationView {
+  id: string;
+  name: string;
+  slug: string;
+  status: string;
+  organizationType: OrganizationType;
+  country: string;
+  createdAt: string;
+  memberCount: number;
+  leadCount: number;
+  /** Why this organization may use the product, in one place. */
+  entitlement: {
+    source: EntitlementSource;
+    /** Null for the platform organization — it has no subscription. */
+    subscriptionStatus: string | null;
+    planCode: string | null;
+  };
 }

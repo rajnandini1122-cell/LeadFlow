@@ -129,4 +129,18 @@ export const AUDIT_ACTIONS = {
   ACCOUNT_FOLLOW_UP_CREATED: 'account.follow_up_created',
   ACCOUNT_CONTACT_LINKED: 'account.contact_linked',
   SUBSCRIPTION_CHANGED: 'subscription.changed',
+
+  /*
+   * PLATFORM actions — CRAVION operating the platform, not a tenant using it.
+   *
+   * Namespaced `platform.*` so they are one filter away in an audit search, and
+   * so a cross-tenant action can never be mistaken for something the customer
+   * did in their own organization. Every one of these is written with the
+   * TARGET organization's id, so it appears in that tenant's history too: a
+   * customer asking "who suspended us" gets an answer.
+   */
+  PLATFORM_OWNER_BOOTSTRAPPED: 'platform.owner_bootstrapped',
+  PLATFORM_ORGANIZATION_VIEWED: 'platform.organization_viewed',
+  PLATFORM_ORGANIZATION_SUSPENDED: 'platform.organization_suspended',
+  PLATFORM_ORGANIZATION_REACTIVATED: 'platform.organization_reactivated',
 } as const;
