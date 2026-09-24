@@ -9,6 +9,7 @@ import {
   STATUS_PRESENTATION,
   daysUntil,
   useChangePlan,
+  useEntitlement,
   usePlanCatalogue,
   useSubscription,
 } from './use-subscription';
@@ -23,8 +24,34 @@ import {
  */
 export function BillingPage(): React.JSX.Element {
   const { can } = useAuth();
+  const entitlement = useEntitlement();
   const subscription = useSubscription();
   const canManage = can('subscription.manage');
+
+  /*
+   * The entitlement is read FIRST, and decides whether this screen is about
+   * money at all.
+   *
+   * CRAVION operates the platform: there is no plan, no period and no payment,
+   * so a trial countdown would be counting down to nothing and an upgrade
+   * prompt would be offering the operator a plan to buy from itself. The
+   * subscription query is a 404 for that organization, which is why asking it
+   * first would show an error instead.
+   */
+  if (entitlement.isPending) {
+    return (
+      <>
+        <PageHeader title="Plan and billing" />
+        <Card>
+          <SkeletonRows rows={4} />
+        </Card>
+      </>
+    );
+  }
+
+  if (entitlement.data && !entitlement.data.billable) {
+    return <InternalAccountCard />;
+  }
 
   if (subscription.isPending) {
     return (
@@ -344,5 +371,42 @@ function Row({ label, value }: { label: string; value: string }): React.JSX.Elem
       <dt className="text-sm text-slate-600">{label}</dt>
       <dd className="text-sm font-medium text-slate-900">{value}</dd>
     </div>
+  );
+}
+
+/**
+ * Plan and billing, for CRAVION's own organization.
+ *
+ * Deliberately says what is true rather than dressing the operator up as a
+ * customer: there is no plan, no renewal date and no payment method, because
+ * CRAVION runs the platform. It does NOT claim the account is "paid" — that
+ * would be a different false statement from the one this replaces.
+ *
+ * No trial countdown, no upgrade prompt, no price.
+ */
+function InternalAccountCard(): React.JSX.Element {
+  return (
+    <>
+      <PageHeader title="Plan and billing" />
+      <Card>
+        <CardHeader title="Internal CRAVION account" />
+        <div className="space-y-3 px-4 pb-4 text-sm text-slate-600">
+          <p>
+            <span className="inline-flex items-center rounded-full bg-slate-900 px-2.5 py-0.5 text-xs font-medium text-white">
+              Platform Owner
+            </span>
+          </p>
+          <p>
+            This organization operates LeadFlow. It has full access with no plan, no
+            billing period and no renewal — there is nothing to pay and nothing to
+            expire.
+          </p>
+          <p className="text-slate-500">
+            Customer organizations are billed normally; this applies only to CRAVION’s
+            own account.
+          </p>
+        </div>
+      </Card>
+    </>
   );
 }

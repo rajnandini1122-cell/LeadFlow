@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { PlanView, SubscriptionView } from '@leadflow/api-types';
+import type { EntitlementView, PlanView, SubscriptionView } from '@leadflow/api-types';
 
 import { BillingPage } from '../features/settings/billing-page';
 import * as apiClient from '../lib/api-client';
@@ -65,6 +65,27 @@ function subscription(overrides: Partial<SubscriptionView> = {}): SubscriptionVi
   };
 }
 
+/**
+ * A customer's entitlement.
+ *
+ * The page reads this BEFORE the subscription, to decide whether the screen is
+ * about money at all. Every existing assertion below depends on `billable`
+ * being true — without it the page correctly renders CRAVION's internal card
+ * instead, which is the behaviour the new tests at the bottom cover.
+ */
+function entitlement(overrides: Partial<EntitlementView> = {}): EntitlementView {
+  return {
+    source: 'CUSTOMER_SUBSCRIPTION',
+    grantsAccess: true,
+    billable: true,
+    maxUsers: 5,
+    maxActiveLeads: 500,
+    limitsEnforced: false,
+    subscription: subscription(),
+    ...overrides,
+  };
+}
+
 function mockAuth(permissions: string[]): void {
   vi.spyOn(authContext, 'useAuth').mockReturnValue({
     can: (permission: string) => permissions.includes(permission),
@@ -88,9 +109,11 @@ function renderBilling(): void {
 describe('Plan and billing', () => {
   beforeEach(() => {
     mockAuth(['subscription.view', 'subscription.manage']);
-    vi.spyOn(apiClient, 'apiGet').mockImplementation((url: string) =>
-      Promise.resolve((url === '/plans' ? PLANS : subscription()) as never),
-    );
+    vi.spyOn(apiClient, 'apiGet').mockImplementation((url: string) => {
+      if (url === '/plans') return Promise.resolve(PLANS as never);
+      if (url === '/subscriptions/entitlement') return Promise.resolve(entitlement() as never);
+      return Promise.resolve(subscription() as never);
+    });
   });
 
   afterEach(() => {
@@ -193,11 +216,11 @@ describe('Plan and billing', () => {
   });
 
   it('explains a past-due account without alarming the user', async () => {
-    vi.spyOn(apiClient, 'apiGet').mockImplementation((url: string) =>
-      Promise.resolve(
-        (url === '/plans' ? PLANS : subscription({ status: 'PAST_DUE' })) as never,
-      ),
-    );
+    vi.spyOn(apiClient, 'apiGet').mockImplementation((url: string) => {
+      if (url === '/plans') return Promise.resolve(PLANS as never);
+      if (url === '/subscriptions/entitlement') return Promise.resolve(entitlement() as never);
+      return Promise.resolve(subscription({ status: 'PAST_DUE' }) as never);
+    });
 
     renderBilling();
 
@@ -208,12 +231,85 @@ describe('Plan and billing', () => {
   });
 
   it('reports a missing subscription as the fault it is', async () => {
-    vi.spyOn(apiClient, 'apiGet').mockRejectedValue(
-      new apiClient.ApiError('SUBSCRIPTION_NOT_FOUND', 'none', 404),
-    );
+    // A BILLABLE organization with no subscription row really is a fault. The
+    // platform organization is a different case entirely — it is not billable,
+    // and never reaches this branch.
+    vi.spyOn(apiClient, 'apiGet').mockImplementation((url: string) => {
+      if (url === '/subscriptions/entitlement') return Promise.resolve(entitlement() as never);
+      return Promise.reject(new apiClient.ApiError('SUBSCRIPTION_NOT_FOUND', 'none', 404));
+    });
 
     renderBilling();
 
     expect(await screen.findByText(/should not happen/i)).toBeInTheDocument();
+  });
+
+  /**
+   * CRAVION's own organization.
+   *
+   * The platform operator has no plan, no period and no payment. The screen has
+   * to say that without claiming the account is "paid", which would be a
+   * different false statement from the one it replaces.
+   */
+  describe('the internal CRAVION account', () => {
+    beforeEach(() => {
+      vi.spyOn(apiClient, 'apiGet').mockImplementation((url: string) => {
+        if (url === '/plans') return Promise.resolve(PLANS as never);
+        if (url === '/subscriptions/entitlement') {
+          return Promise.resolve(
+            entitlement({
+              source: 'PLATFORM_INTERNAL',
+              billable: false,
+              maxUsers: null,
+              maxActiveLeads: null,
+              subscription: null,
+            }) as never,
+          );
+        }
+
+        // The platform organization has no subscription row, and asking for one
+        // is a 404. A screen that read this first would show an error on every
+        // visit — which is why the entitlement is read first.
+        return Promise.reject(new apiClient.ApiError('SUBSCRIPTION_NOT_FOUND', 'none', 404));
+      });
+    });
+
+    it('identifies the account as the platform owner', async () => {
+      renderBilling();
+
+      expect(await screen.findByText('Internal CRAVION account')).toBeInTheDocument();
+      expect(screen.getByText('Platform Owner')).toBeInTheDocument();
+    });
+
+    it('shows no trial countdown, no price and no upgrade prompt', async () => {
+      renderBilling();
+
+      await screen.findByText('Internal CRAVION account');
+
+      expect(screen.queryByText(/days left/i)).toBeNull();
+      expect(screen.queryByRole('heading', { name: 'Change plan' })).toBeNull();
+      expect(screen.queryByText(/upgrade/i)).toBeNull();
+      expect(screen.queryByText(/₹/)).toBeNull();
+    });
+
+    it('does not claim the account is paid', async () => {
+      renderBilling();
+
+      await screen.findByText('Internal CRAVION account');
+
+      // "No bill" is not "bill settled". Implying payment would be a new
+      // falsehood rather than the removal of one.
+      expect(screen.queryByText(/paid/i)).toBeNull();
+      expect(screen.queryByText(/active subscription/i)).toBeNull();
+    });
+
+    it('shows no subscription error, even though there is no subscription', async () => {
+      renderBilling();
+
+      await screen.findByText('Internal CRAVION account');
+
+      expect(screen.queryByText(/should not happen/i)).toBeNull();
+      expect(screen.queryByText(/Could not load/i)).toBeNull();
+    });
   });
 });

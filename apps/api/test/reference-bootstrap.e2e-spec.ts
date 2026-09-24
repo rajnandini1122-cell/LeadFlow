@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
-import { PERMISSIONS, ROLE_KEYS, ROLE_PERMISSION_MATRIX } from '@leadflow/api-types';
+import { ALL_ROLE_KEYS, PERMISSIONS, ROLE_PERMISSION_MATRIX } from '@leadflow/api-types';
 import { createTestContext, type TestContext } from './helpers/test-app';
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import { TenantContextService } from '../src/common/tenancy/tenant-context.service';
@@ -80,7 +80,16 @@ describe('Production reference bootstrap', () => {
         }),
       );
 
-      expect(roles.map((role) => role.key).sort()).toEqual([...ROLE_KEYS].sort());
+      /*
+       * ALL_ROLE_KEYS, not ROLE_KEYS.
+       *
+       * Reference bootstrap creates every role the database enum holds,
+       * including PLATFORM_OWNER. ROLE_KEYS is deliberately shorter — it is the
+       * TENANT-ASSIGNABLE set that invite DTOs validate against — so asserting
+       * against it here would require bootstrap to skip the platform role and
+       * leave the CRAVION bootstrap with nothing to attach.
+       */
+      expect(roles.map((role) => role.key).sort()).toEqual([...ALL_ROLE_KEYS].sort());
     });
 
     it('creates every permission the code defines', async () => {
@@ -95,7 +104,7 @@ describe('Production reference bootstrap', () => {
     });
 
     it('grants each system role exactly the matrix', async () => {
-      for (const roleKey of ROLE_KEYS) {
+      for (const roleKey of ALL_ROLE_KEYS) {
         const role = await asSystem(() =>
           prisma().role.findFirst({
             where: { key: roleKey, organizationId: null, isSystem: true },
@@ -204,7 +213,7 @@ describe('Production reference bootstrap', () => {
     it('keeps exactly one row per system role', async () => {
       await bootstrap();
 
-      for (const key of ROLE_KEYS) {
+      for (const key of ALL_ROLE_KEYS) {
         const rows = await asSystem(() =>
           prisma().role.count({ where: { key, organizationId: null, isSystem: true } }),
         );

@@ -1,4 +1,9 @@
-import { PERMISSIONS, ROLE_KEYS, ROLE_PERMISSION_MATRIX, type RoleKey } from '@leadflow/api-types';
+import {
+  ALL_ROLE_KEYS,
+  PERMISSIONS,
+  ROLE_PERMISSION_MATRIX,
+  type AnyRoleKey,
+} from '@leadflow/api-types';
 import type { PrismaClient } from '../src/generated/prisma/client';
 import {
   PLAN_CATALOGUE,
@@ -32,11 +37,20 @@ import {
  * password they chose.
  */
 
-const ROLE_DESCRIPTIONS: Record<RoleKey, string> = {
+/**
+ * Every role the database enum holds, including the platform one.
+ *
+ * Keyed by AnyRoleKey rather than RoleKey on purpose: reference bootstrap must
+ * create PLATFORM_OWNER, while the tenant-assignable list stays shorter so no
+ * invite form can offer it.
+ */
+const ROLE_DESCRIPTIONS: Record<AnyRoleKey, string> = {
   OWNER: 'Full company access: dashboard, team, leads, reports, settings, billing',
   ADMIN: 'Manage users, manage leads, configure company settings',
   MANAGER: 'View team, assign leads, monitor follow-ups, view team performance',
   SALES_REP: 'View and update assigned leads, log activity, schedule follow-ups',
+  PLATFORM_OWNER:
+    'CRAVION platform operator: manage customer organizations, platform configuration and operations',
 };
 
 /**
@@ -109,10 +123,12 @@ async function syncSystemRoles(
   prisma: ReferenceDataClient,
   permissionIds: Map<string, string>,
   log: ReferenceLogger,
-): Promise<Map<RoleKey, string>> {
-  const roleIds = new Map<RoleKey, string>();
+): Promise<Map<AnyRoleKey, string>> {
+  const roleIds = new Map<AnyRoleKey, string>();
 
-  for (const key of ROLE_KEYS) {
+  // ALL roles, not the tenant-assignable subset: PLATFORM_OWNER is a system
+  // role that must exist for the platform bootstrap to attach later.
+  for (const key of ALL_ROLE_KEYS) {
     // System roles are shared by every tenant: organizationId is NULL.
     const existing = await prisma.role.findFirst({
       where: { key, organizationId: null, isSystem: true },
@@ -203,13 +219,15 @@ export async function planIdsByCode(prisma: ReferenceDataClient): Promise<Map<st
 }
 
 /** System role ids, by key, for a caller that needs to grant one. */
-export async function systemRoleIdsByKey(prisma: ReferenceDataClient): Promise<Map<RoleKey, string>> {
+export async function systemRoleIdsByKey(
+  prisma: ReferenceDataClient,
+): Promise<Map<AnyRoleKey, string>> {
   const rows = await prisma.role.findMany({
     where: { organizationId: null, isSystem: true },
     select: { id: true, key: true },
   });
 
-  return new Map(rows.map((row) => [row.key as RoleKey, row.id]));
+  return new Map(rows.map((row) => [row.key as AnyRoleKey, row.id]));
 }
 
 function describe(key: string): string {

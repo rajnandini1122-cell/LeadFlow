@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { Permission, RoleKey, TokenPair } from '@leadflow/api-types';
+import type { AnyRoleKey, Permission, TokenPair } from '@leadflow/api-types';
 import { uuidv7 } from '../../common/utils/uuid';
 import { AuthRepository } from './auth.repository';
 import { TokenService } from './token.service';
@@ -35,7 +35,7 @@ export class SessionService {
   async issue(input: {
     organizationId: string;
     userId: string;
-    role: RoleKey;
+    role: AnyRoleKey;
     platform: 'WEB' | 'ANDROID' | 'IOS';
     meta: RequestMetadata;
     deviceId?: string | undefined;

@@ -8,6 +8,7 @@ import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
 import { AppModule } from './app.module';
 import { AppConfig } from './common/config/config.module';
+import { validationException } from './common/validation/validation-errors';
 import { serveWebApp, webDistPath } from './common/web/spa';
 
 /**
@@ -69,6 +70,15 @@ async function bootstrap(): Promise<void> {
       // so a client sending a field we do not support learns about it.
       forbidNonWhitelisted: true,
       transformOptions: { enableImplicitConversion: false },
+      /*
+       * Report failures PER FIELD.
+       *
+       * Without this the pipe's default throws a flat string[] that the
+       * exception filter could only file under one key, so a form showed
+       * "Request validation failed." and highlighted nothing. See
+       * validationException.
+       */
+      exceptionFactory: validationException,
     }),
   );
 

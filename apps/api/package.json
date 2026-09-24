@@ -21,6 +21,7 @@
     "db:migrate": "prisma migrate dev",
     "db:migrate:deploy": "prisma migrate deploy",
     "db:bootstrap": "tsx prisma/bootstrap.ts",
+    "db:bootstrap-platform-owner": "tsx prisma/bootstrap-platform-owner.ts",
     "db:seed": "tsx prisma/seed.ts",
     "db:studio": "prisma studio",
     "db:reset": "prisma migrate reset --force"

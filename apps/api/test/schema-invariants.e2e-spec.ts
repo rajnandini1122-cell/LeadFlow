@@ -75,6 +75,13 @@ describe('Database invariants', () => {
     });
   }
 
+  const createOrgOfType = (slug: string, type: 'CUSTOMER' | 'INTERNAL') =>
+    attempt(
+      `insert into organizations (name, slug, organization_type, updated_at)
+       values ($1, $2, $3::organization_type, now())`,
+      [slug, slug, type],
+    );
+
   const insertLead = (
     organizationId: string,
     leadNumber: string,
@@ -121,6 +128,110 @@ describe('Database invariants', () => {
       // The ordering property is the whole reason for choosing v7: it keeps
       // index inserts appending rather than scattering.
       expect(first < second).toBe(true);
+    });
+  });
+
+  describe('one platform organization (organizations_single_internal_uniq)', () => {
+    /**
+     * At most ONE organization may be INTERNAL, and the database says so.
+     *
+     * Tested here, against raw `pg`, for the reason this whole file exists: a
+     * constraint violation through Prisma drops the connection on the
+     * in-process PGlite the development suite uses, so refusals are asserted
+     * with a driver that survives them.
+     *
+     * The stake is worth stating. A second platform organization is not a
+     * duplicate record — it is a second set of keys to the building, because
+     * its owner would hold PLATFORM_OWNER over every customer. A bootstrap run
+     * twice with a different name is exactly how that would happen, so the
+     * guarantee belongs in the schema rather than in the command.
+     */
+    const insertInternal = (slug: string) =>
+      attempt(
+        `insert into organizations (name, slug, organization_type, updated_at)
+         values ($1, $2, 'INTERNAL'::organization_type, now())`,
+        [slug, slug],
+      );
+
+    /*
+     * THE SINGLETON PROBLEM, and why both hooks are here.
+     *
+     * This index is GLOBAL: at most one INTERNAL row may exist in the entire
+     * database. Three suites in this project legitimately want to create "the"
+     * platform organization, and the e2e database is shared between them — so
+     * whichever runs second is refused, correctly, by the index.
+     *
+     * The suites run sequentially (`--runInBand`, maxWorkers 1), so the
+     * deterministic answer is for each one to CLAIM the slot on the way in and
+     * RELEASE it on the way out. Clearing only its own rows afterwards is not
+     * enough: this suite would still fail if it ran after one of the others.
+     *
+     * Before this, the full suite passed by ordering luck. That is worth naming
+     * — a green run that depends on which file Jest happens to schedule first
+     * is a run that will go red on somebody else's machine for no reason they
+     * can see.
+     */
+    const clearInternalOrganizations = () =>
+      withClient(async (client) => {
+        await client.query(
+          `delete from organization_users where organization_id in
+             (select id from organizations
+               where organization_type = 'INTERNAL'::organization_type)`,
+        );
+        await client.query(
+          `delete from organization_settings where organization_id in
+             (select id from organizations
+               where organization_type = 'INTERNAL'::organization_type)`,
+        );
+        await client.query(
+          `delete from organizations
+             where organization_type = 'INTERNAL'::organization_type`,
+        );
+      });
+
+    beforeAll(clearInternalOrganizations);
+    afterAll(clearInternalOrganizations);
+
+    it('accepts the first internal organization', async () => {
+      expect(await insertInternal(`internal-first-${Date.now()}`)).toBe('OK');
+    });
+
+    it('refuses a second one', async () => {
+      const refusal = await insertInternal(`internal-second-${Date.now()}`);
+
+      // The index name, not merely "some error" — so a future migration that
+      // dropped it would fail here rather than silently allowing two.
+      expect(refusal).toBe('organizations_single_internal_uniq');
+    });
+
+    it('still accepts any number of CUSTOMER organizations', async () => {
+      /*
+       * The other half of a PARTIAL index: customers are not in it at all.
+       * An index that accidentally covered every row would refuse the second
+       * customer who ever signed up — a total outage with a very confusing
+       * error, so it is worth an explicit test.
+       */
+      const stamp = Date.now();
+      expect(await createOrgOfType(`customer-a-${stamp}`, 'CUSTOMER')).toBe('OK');
+      expect(await createOrgOfType(`customer-b-${stamp}`, 'CUSTOMER')).toBe('OK');
+      expect(await createOrgOfType(`customer-c-${stamp}`, 'CUSTOMER')).toBe('OK');
+    });
+
+    it('defaults an organization with no stated type to CUSTOMER', async () => {
+      // What makes the column safe to add to a running database: every existing
+      // row, and every future registration, is a customer without saying so.
+      const slug = `defaulted-${Date.now()}`;
+      await createOrg(slug);
+
+      const type = await withClient(async (client) => {
+        const result = await client.query(
+          'select organization_type from organizations where slug = $1',
+          [slug],
+        );
+        return result.rows[0].organization_type as string;
+      });
+
+      expect(type).toBe('CUSTOMER');
     });
   });
 

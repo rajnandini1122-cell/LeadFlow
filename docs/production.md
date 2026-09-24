@@ -317,7 +317,58 @@ that it changed neither.
 > `db:bootstrap`, which shares the same reference-data code and creates no
 > tenant data.
 
-### 3.2 Creating the first organization
+### 3.2 Creating the CRAVION platform owner
+
+CRAVION operates the platform and is not a customer. Its master account holds a
+distinct system role, `PLATFORM_OWNER`, which no tenant API can grant.
+
+```bash
+# After db:migrate:deploy and db:bootstrap.
+PLATFORM_OWNER_EMAIL=... PLATFORM_OWNER_FIRST_NAME=... PLATFORM_OWNER_LAST_NAME=... PLATFORM_OWNER_PASSWORD=...   npm run db:bootstrap-platform-owner -w apps/api
+```
+
+| Variable | Notes |
+|---|---|
+| `PLATFORM_OWNER_EMAIL` | Validated for shape before anything is written |
+| `PLATFORM_OWNER_FIRST_NAME` / `_LAST_NAME` | Required |
+| `PLATFORM_OWNER_PASSWORD` | **12 characters minimum** — the same bar as a customer OWNER |
+
+The password is read from the environment so it stays out of shell history and
+process listings. It is never echoed, never logged, and never included in an
+error message.
+
+It creates the organization **CRAVION VENTURES (OPC) PRIVATE LIMITED**
+(`cravion-ventures`) with `organization_type = INTERNAL`, the master user, and a
+membership carrying `PLATFORM_OWNER`. Idempotent: a re-run reconciles and
+reports, and **never rewrites an existing password** — a bootstrap that reset
+credentials would be a takeover tool wearing a safe name.
+
+It refuses, by name, rather than guessing:
+
+* an existing organization already holding the slug — converting a customer into
+  the platform operator would hand their owner access to every other customer;
+* a soft-deleted platform organization — resurrection is a decision;
+* an existing user who is not ACTIVE — reactivation is a decision;
+* a missing `PLATFORM_OWNER` role — run `db:bootstrap` first, which owns
+  reference data.
+
+**Billing.** The internal organization has **no subscription row**, and that is
+correct: there is no plan, no period and no payment. `GET
+/api/v1/subscriptions/entitlement` reports `PLATFORM_INTERNAL` with
+`billable: false`, and the billing screen shows an "Internal CRAVION account"
+card instead of a trial countdown or an upgrade prompt. It does **not** claim the
+account is paid. Customer organizations are unaffected — same trial, same
+statuses, same screen.
+
+**Privilege boundary.** A `platform.*` permission does not widen the Prisma
+tenant scope. A platform owner's ordinary requests see only the organization
+their token is scoped to, exactly like anybody else's; crossing tenants happens
+only through `PlatformAdminRepository` under an audited system scope, and reads
+identity, lifecycle and counts — never a customer's leads, contacts or
+conversations. Every cross-tenant action is audited against the **target**
+organization, so a customer can see that it happened.
+
+### 3.3 Creating the first customer organization
 
 Through the application's supported registration flow, not a script:
 
