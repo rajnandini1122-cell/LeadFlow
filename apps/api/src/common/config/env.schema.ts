@@ -119,6 +119,19 @@ export const envSchema = z
       .optional(),
     SMTP_USER: z.string().min(1).optional(),
     SMTP_PASSWORD: z.string().min(1).optional(),
+
+    /**
+     * Resend's API key. Required when EMAIL_PROVIDER=resend, ignored otherwise.
+     *
+     * An HTTPS transport exists because Railway blocks outbound SMTP:
+     * connections time out before authentication, so no SMTP credential can
+     * fix it — the network path is the problem, not the password.
+     *
+     * No default, for the same reason the SMTP block has none. A placeholder
+     * key would let a deployment boot and send nowhere, which is the failure
+     * mode every rule in this file exists to prevent.
+     */
+    RESEND_API_KEY: z.string().min(1).optional(),
     // Where emailed links point. The WEB app, not the API.
     WEB_BASE_URL: z.string().url().default('http://localhost:5173'),
     // Where public contact-form enquiries are delivered. Configuration rather
@@ -604,6 +617,25 @@ export const envSchema = z
      * Nothing is required when the provider is not smtp — a developer running
      * the console provider must not need mail credentials to start the app.
      */
+    /*
+     * Resend needs one secret and nothing else.
+     *
+     * Stated as its own branch rather than folded into the SMTP check,
+     * because the two transports must not require each other's configuration:
+     * a deployment moving to Resend should not have to keep SMTP credentials
+     * around to satisfy a validator, and one staying on SMTP should not need
+     * an API key it will never use.
+     */
+    if (env.EMAIL_PROVIDER === 'resend' && !env.RESEND_API_KEY) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['RESEND_API_KEY'],
+        message:
+          'is required when EMAIL_PROVIDER=resend — without it the transport ' +
+          'would accept every message and deliver none',
+      });
+    }
+
     if (env.EMAIL_PROVIDER === 'smtp') {
       const required = {
         SMTP_HOST: env.SMTP_HOST,
