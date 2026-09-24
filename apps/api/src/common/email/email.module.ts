@@ -3,6 +3,7 @@ import { AppConfig } from '../config/config.module';
 import { EmailService } from './email.service';
 import { EMAIL_PROVIDER, type EmailProvider } from './email.types';
 import { ConsoleEmailProvider } from './providers/console-email.provider';
+import { ResendEmailProvider } from './providers/resend-email.provider';
 import { SmtpEmailProvider, type SmtpSettings } from './providers/smtp-email.provider';
 import { UnconfiguredEmailProvider } from './providers/unconfigured-email.provider';
 
@@ -23,7 +24,7 @@ import { UnconfiguredEmailProvider } from './providers/unconfigured-email.provid
  * list is what makes an unsupported value a startup failure rather than a
  * silent one.
  */
-export const SUPPORTED_PROVIDERS = ['console', 'smtp'] as const;
+export const SUPPORTED_PROVIDERS = ['console', 'smtp', 'resend'] as const;
 
 /**
  * Reads the SMTP settings, and refuses a half-configured one.
@@ -71,6 +72,34 @@ export function createEmailProvider(config: AppConfig): EmailProvider {
    */
   if (requested === 'smtp') {
     return new SmtpEmailProvider(smtpSettings(config));
+  }
+
+  /*
+   * The HTTPS transport, and on Railway the only one that works.
+   *
+   * Outbound SMTP is blocked there: the connection times out before
+   * authentication, so nodemailer never reaches a point where it can report
+   * anything useful and no credential change helps. An API call over 443 goes
+   * out from the same host that could not open 587.
+   *
+   * SMTP above is untouched and still selectable — this is a second option,
+   * not a replacement.
+   */
+  if (requested === 'resend') {
+    const apiKey = config.get('RESEND_API_KEY');
+
+    if (!apiKey) {
+      // The schema already requires this when the provider is selected, so in
+      // a real process this never fires. It stays for the same reason the SMTP
+      // equivalent does: a transport built without its credential would accept
+      // every message and deliver none.
+      throw new Error(
+        'EMAIL_PROVIDER=resend requires RESEND_API_KEY. Without it the transport ' +
+          'would accept every message and deliver none. See .env.example.',
+      );
+    }
+
+    return new ResendEmailProvider({ apiKey, from: config.get('EMAIL_FROM') });
   }
 
   if (requested === 'console') {

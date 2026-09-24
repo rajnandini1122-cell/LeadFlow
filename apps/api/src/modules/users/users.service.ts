@@ -1,4 +1,4 @@
-import { HttpStatus, Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import {
   ERROR_CODES,
   type InviteUserResponse,
@@ -22,6 +22,8 @@ import type { InviteUserDto, UpdateUserDto } from './dto/users.dto';
 
 @Injectable()
 export class UsersService {
+  private readonly logger = new Logger(UsersService.name);
+
   constructor(
     private readonly repository: UsersRepository,
     private readonly audit: AuditRepository,
@@ -77,16 +79,26 @@ export class UsersService {
       inviteExpiresAt: minted.expiresAt,
     });
 
-    // Delivery outcome is not surfaced to the caller: the invitation exists
-    // either way, and an admin can resend from the pending list if it did not
-    // arrive. Failing the request would leave a pending invitation the UI
-    // reported as failed.
+    /*
+     * The delivery outcome IS surfaced to the caller — it did not used to be,
+     * and that is how a broken mail transport stayed invisible.
+     *
+     * The old reasoning was sound as far as it went: the invitation exists
+     * whether or not the email lands, so failing the request would report a
+     * pending invitation as failed. But discarding the result entirely made
+     * the opposite error, and a worse one — the screen said "invitation sent"
+     * while nothing had been. An administrator had no way to tell, and the
+     * person they invited simply never heard from us.
+     *
+     * So the request still succeeds, and the response says which of the two
+     * things actually happened.
+     */
     const [inviter, organizationName] = await Promise.all([
       this.repository.findMember(principal.userId),
       this.repository.organizationName(),
     ]);
 
-    await this.email.sendInvitation({
+    const delivery = await this.email.sendInvitation({
       to: dto.email,
       inviterName: inviter?.user.fullName ?? 'A colleague',
       organizationName,
@@ -102,6 +114,19 @@ export class UsersService {
       after: { email: dto.email, role: dto.role },
     });
 
+    if (!delivery.accepted) {
+      /*
+       * An invitation nobody was told about is an operational problem, not a
+       * caller-facing failure — the same treatment the contact form gives a
+       * lost notification. It goes to the operator, and the response below
+       * tells the administrator so they can resend.
+       */
+      this.logger.error(
+        { invitationId: membership.id, provider: this.email.providerName },
+        'Invitation email was not accepted by the mail provider',
+      );
+    }
+
     return {
       userId: user.id,
       // The membership row IS the invitation; its id is what resend and revoke
@@ -110,6 +135,7 @@ export class UsersService {
       email: user.email,
       role: membership.role.key as RoleKey,
       status: membership.status as UserStatus,
+      emailDelivered: delivery.accepted,
       // Returned outside production so the invite flow is testable without an
       // email provider. In production this would leak a credential into logs
       // and proxies, so it is withheld and the link is emailed instead.

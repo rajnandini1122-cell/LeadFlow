@@ -75,6 +75,10 @@ describe('production configuration', () => {
         NODE_ENV: 'production',
         RELEASE_SHA: 'abc1234',
         CORS_ORIGINS: 'https://app.leadflow.example',
+        // A real public address. The schema now refuses the localhost default
+        // in production, because every password-reset and invitation link is
+        // built from this value.
+        WEB_BASE_URL: 'https://leadflow.example',
         ...overrides,
       });
 
@@ -347,6 +351,84 @@ describe('production configuration', () => {
       expect(() =>
         validateEnv(baseEnv({ JWT_ACCESS_SECRET: shared, JWT_REFRESH_SECRET: shared })),
       ).toThrow(/JWT_REFRESH_SECRET/);
+    });
+  });
+
+  describe('WEB_BASE_URL', () => {
+    const production = (overrides: Record<string, string> = {}) =>
+      baseEnv({
+        NODE_ENV: 'production',
+        RELEASE_SHA: 'abc1234',
+        CORS_ORIGINS: 'https://app.leadflow.example',
+        WEB_BASE_URL: 'https://leadflow.example',
+        ...overrides,
+      });
+
+    it('accepts a real public address', () => {
+      expect(() => validateEnv(production())).not.toThrow();
+    });
+
+    it('REFUSES the localhost default in production', () => {
+      /*
+       * The silent one. Every emailed link — password reset, invitation — is
+       * built from this value, so a deployment that forgets it sends real
+       * customers a link to their own machine. The mail is delivered, the link
+       * is dead, and nothing in the logs says so: the user just reports that
+       * the email "did not work".
+       */
+      expect(() => validateEnv(production({ WEB_BASE_URL: 'http://localhost:5173' }))).toThrow(
+        /WEB_BASE_URL/,
+      );
+    });
+
+    it('keeps the localhost default usable outside production', () => {
+      // A developer must not need a public hostname to run the app.
+      expect(() => validateEnv(baseEnv())).not.toThrow();
+    });
+  });
+
+  describe('EMAIL_PROVIDER=resend', () => {
+    const production = (overrides: Record<string, string> = {}) =>
+      baseEnv({
+        NODE_ENV: 'production',
+        RELEASE_SHA: 'abc1234',
+        CORS_ORIGINS: 'https://app.leadflow.example',
+        WEB_BASE_URL: 'https://leadflow.example',
+        EMAIL_PROVIDER: 'resend',
+        ...overrides,
+      });
+
+    it('boots with an API key and NO SMTP configuration', () => {
+      /*
+       * The two transports must not require each other's configuration. A
+       * deployment moving to Resend should not have to keep SMTP credentials
+       * around to satisfy a validator.
+       */
+      expect(() =>
+        validateEnv(production({ RESEND_API_KEY: 're_test_key_value' })),
+      ).not.toThrow();
+    });
+
+    it('refuses to boot without an API key', () => {
+      expect(() => validateEnv(production())).toThrow(/RESEND_API_KEY/);
+    });
+
+    it('does not quote the key in the failure message', () => {
+      const key = 're_should_never_appear';
+
+      try {
+        validateEnv(production({ RESEND_API_KEY: '' }));
+        throw new Error('should have thrown');
+      } catch (error) {
+        expect((error as Error).message).not.toContain(key);
+      }
+    });
+
+    it('leaves SMTP validation exactly as it was', () => {
+      // Selecting smtp still requires the whole block — unchanged behaviour.
+      expect(() =>
+        validateEnv(production({ EMAIL_PROVIDER: 'smtp', SMTP_HOST: 'smtp.example.test' })),
+      ).toThrow(/SMTP_/);
     });
   });
 
