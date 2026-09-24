@@ -95,7 +95,7 @@ export class AuthService {
       );
     }
 
-    const membership = this.selectMembership(usable, dto.organizationId);
+    const membership = this.selectMembership(usable, dto.targetOrganizationId);
 
     // Multiple organizations and no choice made — ask, do not guess.
     if (!membership) {

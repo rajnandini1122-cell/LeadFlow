@@ -185,7 +185,7 @@ export class AuthController {
   ): Promise<LoginResponse> {
     const result = await this.auth.loginWithGoogle(
       dto.idToken,
-      { organizationId: dto.organizationId, platform: dto.platform },
+      { organizationId: dto.targetOrganizationId, platform: dto.platform },
       metadataFrom(request),
     );
 

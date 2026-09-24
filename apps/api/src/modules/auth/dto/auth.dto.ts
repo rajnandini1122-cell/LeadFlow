@@ -27,13 +27,26 @@ export class LoginDto {
   password!: string;
 
   /**
-   * Which organization to sign in to. Only meaningful when the user belongs to
-   * more than one; the server still verifies the membership exists and is
-   * active, so supplying an arbitrary id gains nothing.
+   * Which organization to sign in to, when the account belongs to several.
+   *
+   * Named `targetOrganizationId`, and the name is what makes it work.
+   * StripTenantFieldsInterceptor deletes any field called `organizationId`
+   * from every request body before a controller sees it, and that rule has no
+   * exemptions on purpose — so this field must not use the forbidden name.
+   *
+   * It did, and multi-organization login was broken outright: the user's choice
+   * was stripped in flight, the server saw an unresolved account again and
+   * returned the chooser, which re-rendered forever while the network showed
+   * nothing but repeated 200s.
+   *
+   * A SELECTOR, never an assertion of scope. The server re-reads live
+   * membership and refuses an id the caller does not hold, so supplying an
+   * arbitrary one gains nothing. See SwitchOrganizationDto, which is named this
+   * way for the same reason.
    */
   @IsOptional()
   @IsUUID('7', { message: 'must be a valid organization id' })
-  organizationId?: string;
+  targetOrganizationId?: string;
 
   @IsOptional()
   @IsString()
@@ -71,10 +84,16 @@ export class GoogleSignInDto {
   @MaxLength(4096)
   idToken!: string;
 
-  /** Which organization to enter, when the account belongs to several. */
+  /**
+   * Which organization to enter, when the account belongs to several.
+   *
+   * `targetOrganizationId` for the same reason as LoginDto above: a field named
+   * `organizationId` is stripped from every request body before it arrives.
+   * Google multi-organization sign-in was broken by exactly that.
+   */
   @IsOptional()
   @IsUUID()
-  organizationId?: string;
+  targetOrganizationId?: string;
 
   @IsOptional()
   @IsIn(['WEB', 'ANDROID', 'IOS'])

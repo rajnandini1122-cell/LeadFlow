@@ -15,8 +15,16 @@ export function LoginPage(): React.JSX.Element {
 
   if (status === 'authenticated') return <Navigate to="/dashboard" replace />;
 
-  const submit = async (event: FormEvent, organizationId?: string): Promise<void> => {
-    event.preventDefault();
+  /**
+   * Signs in, optionally naming which organization to enter.
+   *
+   * Shared by the credentials form and the chooser. There is no separate
+   * "select organization" endpoint by design: the choice is a second login
+   * carrying the selection, which the server re-verifies against live
+   * membership. So one network call, `POST /auth/login`, is the expected
+   * traffic for both — not evidence of a resubmitted form.
+   */
+  const signIn = async (organizationId?: string): Promise<void> => {
     setError(null);
     setSubmitting(true);
 
@@ -31,14 +39,37 @@ export function LoginPage(): React.JSX.Element {
     }
   };
 
+  const submit = async (event: FormEvent): Promise<void> => {
+    event.preventDefault();
+    await signIn();
+  };
+
   return (
     <AuthLayout title="LeadFlow" subtitle="No lead left behind.">
       <>
+        {/*
+          * The error sits ABOVE the branch, not inside the credentials form.
+          *
+          * It used to live in the form, which is not rendered while the chooser
+          * is showing — so a refused organization choice displayed nothing at
+          * all. The click appeared to do nothing, which is indistinguishable
+          * from the bug this screen was just fixed for, and would have hidden
+          * a 403 completely.
+          */}
+        {error && (
+          <p
+            role="alert"
+            className="mb-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700"
+          >
+            {error}
+          </p>
+        )}
+
         {pendingOrganizations ? (
           <OrganizationChooser
             organizations={pendingOrganizations}
             disabled={submitting}
-            onChoose={(id, event) => void submit(event, id)}
+            onChoose={(id) => void signIn(id)}
           />
         ) : (
           <form onSubmit={(event) => void submit(event)} className="space-y-4">
@@ -69,12 +100,6 @@ export function LoginPage(): React.JSX.Element {
                 Forgot password?
               </Link>
             </p>
-
-            {error && (
-              <p role="alert" className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
-                {error}
-              </p>
-            )}
 
             <button
               type="submit"
@@ -110,7 +135,7 @@ function OrganizationChooser({
 }: {
   organizations: OrganizationSummary[];
   disabled: boolean;
-  onChoose: (id: string, event: FormEvent) => void;
+  onChoose: (id: string) => void;
 }): React.JSX.Element {
   return (
     <div>
@@ -120,18 +145,26 @@ function OrganizationChooser({
       <ul className="space-y-2">
         {organizations.map((organization) => (
           <li key={organization.id}>
-            <form onSubmit={(event) => onChoose(organization.id, event)}>
-              <button
-                type="submit"
-                disabled={disabled}
-                className="w-full rounded-md border border-slate-200 px-4 py-3 text-left transition hover:border-slate-400 disabled:opacity-50"
-              >
-                <span className="block text-sm font-medium text-slate-900">
-                  {organization.name}
-                </span>
-                <span className="block text-xs text-slate-500">{organization.role}</span>
-              </button>
-            </form>
+            {/*
+              * A plain button with an explicit type, and NO form around it.
+              *
+              * Each card used to be its own single-button <form>, which worked
+              * but meant a click travelled through a submit event to get to a
+              * function it could have called directly. `type="button"` is
+              * stated rather than relied upon: a button inside a form defaults
+              * to `type="submit"`, so if this list is ever moved inside the
+              * credentials form, the default would silently re-submit the login
+              * rather than choose an organization.
+              */}
+            <button
+              type="button"
+              onClick={() => onChoose(organization.id)}
+              disabled={disabled}
+              className="w-full rounded-md border border-slate-200 px-4 py-3 text-left transition hover:border-slate-400 disabled:opacity-50"
+            >
+              <span className="block text-sm font-medium text-slate-900">{organization.name}</span>
+              <span className="block text-xs text-slate-500">{organization.role}</span>
+            </button>
           </li>
         ))}
       </ul>

@@ -200,7 +200,16 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
         email,
         password,
         platform: clientPlatform(),
-        ...(organizationId ? { organizationId } : {}),
+        /*
+         * `targetOrganizationId`, not `organizationId`.
+         *
+         * The server strips any field called `organizationId` from every
+         * request body before it reaches a controller — a tenant-isolation rule
+         * with no exemptions. Sending the forbidden name meant the user's
+         * choice never arrived, the server saw an unresolved multi-membership
+         * account again, and the chooser re-rendered forever.
+         */
+        ...(organizationId ? { targetOrganizationId: organizationId } : {}),
       });
 
       if (result.requiresOrganizationSelection) {
@@ -283,7 +292,8 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
       >('/auth/google', {
         idToken,
         platform: clientPlatform(),
-        ...(organizationId ? { organizationId } : {}),
+        // Same rule as password login above: the forbidden name is stripped.
+        ...(organizationId ? { targetOrganizationId: organizationId } : {}),
       });
 
       // Verified by Google, but no account here yet. The caller collects an

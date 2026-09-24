@@ -16,10 +16,24 @@ export interface LoginRequest {
   email: string;
   password: string;
   /**
-   * Only required when the user belongs to more than one organization and the
-   * first login attempt returned `requiresOrganizationSelection`.
+   * Which organization to sign in to, when the account belongs to several and
+   * the first attempt returned `requiresOrganizationSelection`.
+   *
+   * Named `targetOrganizationId`, NOT `organizationId`, and the name is
+   * load-bearing: `StripTenantFieldsInterceptor` deletes any field called
+   * `organizationId` from every request body before a controller sees it. That
+   * rule has no exemptions on purpose, so a field that needs to survive it must
+   * not use the forbidden name.
+   *
+   * It was called `organizationId` until it broke multi-organization login
+   * outright — the choice was stripped in flight, the server saw an
+   * unresolved account again, and the chooser re-rendered forever. It is a
+   * SELECTOR among organizations the caller already belongs to, never an
+   * assertion of scope: the server re-reads live membership and refuses
+   * anything else. `SwitchOrganizationDto` uses the same name for the same
+   * reason.
    */
-  organizationId?: string;
+  targetOrganizationId?: string;
   deviceId?: string;
   deviceName?: string;
   platform?: 'WEB' | 'ANDROID' | 'IOS';
