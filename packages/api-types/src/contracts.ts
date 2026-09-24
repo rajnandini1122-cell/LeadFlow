@@ -130,6 +130,19 @@ export interface InviteUserResponse {
    * returning it in the API response would be a token-leak vector.
    */
   inviteToken?: string;
+  /**
+   * Whether the invitation email was actually accepted by the mail provider.
+   *
+   * Reported because the invitation and its delivery are two different facts,
+   * and conflating them is what made a broken mail transport invisible: the
+   * row was created, the API answered 200, the screen said "invitation sent",
+   * and nobody was ever emailed.
+   *
+   * False does NOT mean the invitation failed — it exists and can be resent.
+   * It means the client must say so rather than claim delivery it cannot
+   * vouch for.
+   */
+  emailDelivered: boolean;
 }
 
 export interface UpdateUserRequest {

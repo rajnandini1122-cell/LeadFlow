@@ -56,6 +56,20 @@ export class InvitationsRepository {
     });
   }
 
+  /**
+   * This tenant's name, for the invitation email.
+   *
+   * Tenant-scoped, so it needs no id: the extension narrows it to the caller's
+   * organization. Mirrors UsersRepository.organizationName so invite and
+   * resend describe the organization the same way.
+   */
+  async organizationName(): Promise<string> {
+    const organization = await this.prisma.client.organization.findFirst({
+      select: { name: true },
+    });
+    return organization?.name ?? 'your organization';
+  }
+
   async rotateToken(id: string, inviteTokenHash: string, inviteExpiresAt: Date): Promise<number> {
     // updateMany, not update: it carries the tenant scope, so a foreign id
     // updates zero rows instead of raising a distinguishable error.

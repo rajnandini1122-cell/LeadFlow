@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
-import { Copyright, Logo } from '../../components/brand';
+import { COMPANY_SALES_EMAIL, Copyright, Logo, OperatedBy } from '../../components/brand';
 import { useApkManifest } from '../../lib/use-apk-manifest';
 
 const NAV = [
@@ -175,7 +175,25 @@ function MarketingFooter(): React.JSX.Element {
           </nav>
         </div>
 
-        <div className="mt-8 border-t border-slate-100 pt-6 text-center md:text-left">
+        <div className="mt-8 space-y-2 border-t border-slate-100 pt-6 text-center md:text-left">
+          {/*
+            * Ownership, stated in the footer of every public page.
+            *
+            * LeadFlow previously named Cravion Ventures only in a copyright
+            * line, which reads as a vendor credit rather than as the operator
+            * of the service. Who runs the platform is something a customer is
+            * entitled to see plainly before trusting it with their pipeline.
+            */}
+          <OperatedBy />
+          <p className="text-xs text-slate-500">
+            Enquiries:{' '}
+            <a
+              href={`mailto:${COMPANY_SALES_EMAIL}`}
+              className="font-medium text-slate-600 underline-offset-2 hover:text-slate-900 hover:underline"
+            >
+              {COMPANY_SALES_EMAIL}
+            </a>
+          </p>
           <Copyright />
         </div>
       </div>

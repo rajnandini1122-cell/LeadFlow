@@ -26,6 +26,15 @@ export function InviteMemberDialog({
   const [fullName, setFullName] = useState('');
   const [role, setRole] = useState<RoleKey>('SALES_REP');
   const [inviteLink, setInviteLink] = useState<string | null>(null);
+  /**
+   * Set when the invitation exists but its email was NOT accepted.
+   *
+   * A distinct state from success and from failure, because it is genuinely a
+   * third outcome: the person is invited and can be resent, but nobody has
+   * been told yet. Claiming "invitation sent" here is what hid a broken mail
+   * transport for as long as it was hidden.
+   */
+  const [undelivered, setUndelivered] = useState(false);
   const [copied, setCopied] = useState(false);
 
   const dialog = useRef<HTMLDivElement>(null);
@@ -84,9 +93,17 @@ export function InviteMemberDialog({
       // usable in local development.
       if (result.inviteToken) {
         setInviteLink(`${window.location.origin}/invite/${result.inviteToken}`);
-      } else {
-        onClose();
+        return;
       }
+
+      if (!result.emailDelivered) {
+        // The invitation is real; the email is not. Hold the dialog open and
+        // say exactly that rather than closing as though it had been sent.
+        setUndelivered(true);
+        return;
+      }
+
+      onClose();
     },
   });
 
@@ -104,6 +121,7 @@ export function InviteMemberDialog({
     setFullName('');
     setRole('SALES_REP');
     setInviteLink(null);
+    setUndelivered(false);
     setCopied(false);
     onClose();
   };
@@ -134,7 +152,26 @@ export function InviteMemberDialog({
           </button>
         </div>
 
-        {inviteLink ? (
+        {undelivered ? (
+          <div className="space-y-4 p-5">
+            <p
+              role="alert"
+              className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900"
+            >
+              The invitation for <strong className="font-medium">{email}</strong> was
+              created, but the email could not be delivered. They have not been
+              notified yet — use <strong className="font-medium">Resend</strong> from the
+              pending list to try again.
+            </p>
+            <button
+              type="button"
+              onClick={reset}
+              className="w-full rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800"
+            >
+              Close
+            </button>
+          </div>
+        ) : inviteLink ? (
           <div className="space-y-4 p-5">
             <p role="status" aria-live="polite" className="text-sm text-slate-700">
               Invitation created for <strong className="font-medium">{email}</strong>.

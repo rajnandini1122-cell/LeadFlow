@@ -90,7 +90,48 @@ export function Logo({
  * cannot drift between the marketing site and the application.
  */
 export const COMPANY_NAME = 'Cravion Ventures';
+
+/**
+ * The registered entity that operates LeadFlow.
+ *
+ * The full legal name, used where ownership is being STATED rather than where
+ * the brand is being shown — a footer notice, an about section, a contact
+ * page. `COMPANY_NAME` remains the short form for ordinary prose.
+ *
+ * Only details already verified in this repository are published here: the
+ * legal name, the public website and the sales address that SALES_EMAIL
+ * defaults to. No phone number or postal address appears, because none is
+ * verified here — PLATFORM_MASTER_PHONE carries a placeholder, and printing a
+ * placeholder as a company contact number is worse than printing nothing.
+ */
+export const COMPANY_LEGAL_NAME = 'CRAVION VENTURES (OPC) PRIVATE LIMITED';
+export const COMPANY_WEBSITE = 'https://www.cravionventures.com';
+export const COMPANY_SALES_EMAIL = 'sales@cravionventures.com';
 export const COPYRIGHT_YEAR = 2026;
+
+/**
+ * Who operates this platform.
+ *
+ * Stated plainly so LeadFlow does not read as an anonymous SaaS product with
+ * no one behind it. Ownership is a fact a customer is entitled to see before
+ * they put their pipeline into it.
+ */
+export function OperatedBy({ className = '' }: { className?: string }): React.JSX.Element {
+  return (
+    <p className={`text-xs text-slate-500 ${className}`}>
+      LeadFlow is a digital platform operated by{' '}
+      <a
+        href={COMPANY_WEBSITE}
+        target="_blank"
+        rel="noreferrer"
+        className="font-medium text-slate-600 underline-offset-2 hover:text-slate-900 hover:underline"
+      >
+        {COMPANY_LEGAL_NAME}
+      </a>
+      .
+    </p>
+  );
+}
 
 export function Copyright({ className = '' }: { className?: string }): React.JSX.Element {
   return (

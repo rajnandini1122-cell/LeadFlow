@@ -693,6 +693,33 @@ export const envSchema = z
             'see docs/production.md',
         });
       }
+
+      /*
+       * WEB_BASE_URL decides where every emailed link points.
+       *
+       * It defaults to http://localhost:5173 so a developer needs no
+       * configuration, and that default is silently catastrophic in
+       * production: password-reset and invitation emails are built from it, so
+       * a deployment that forgets it sends real customers links to their own
+       * machine. The mail is delivered, the link is dead, and nothing in the
+       * logs says so — the user simply reports that the email "did not work".
+       *
+       * Refused at boot rather than discovered by the first person who cannot
+       * get into their account. The check is for the localhost default
+       * specifically, not merely for presence, because the failure is the
+       * default silently surviving rather than the variable being absent.
+       */
+      if (!env.WEB_BASE_URL || env.WEB_BASE_URL.includes('localhost')) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['WEB_BASE_URL'],
+          message:
+            'must be the real public web address in production (for example ' +
+            'https://leadflow.cravionventures.com). Password reset and ' +
+            'invitation links are built from it, so the localhost default ' +
+            'would send customers a link to their own machine',
+        });
+      }
     }
   });
 

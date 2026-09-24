@@ -1,9 +1,10 @@
-import { HttpStatus, Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { createHash, randomBytes } from 'node:crypto';
 import { ERROR_CODES, type RoleKey } from '@leadflow/api-types';
 import { AppConfig } from '../../common/config/config.module';
 import { AppException } from '../../common/errors/app.exception';
 import { AuditRepository } from '../../common/audit/audit.repository';
+import { EmailService } from '../../common/email/email.service';
 import { PasswordService } from '../auth/password.service';
 import { InvitationsRepository } from './invitations.repository';
 import type { AcceptInvitationDto } from './dto/invitations.dto';
@@ -31,11 +32,14 @@ export interface InvitationPreview {
 
 @Injectable()
 export class InvitationsService {
+  private readonly logger = new Logger(InvitationsService.name);
+
   constructor(
     private readonly repository: InvitationsRepository,
     private readonly passwords: PasswordService,
     private readonly audit: AuditRepository,
     private readonly config: AppConfig,
+    private readonly email: EmailService,
   ) {}
 
   /**
@@ -79,7 +83,9 @@ export class InvitationsService {
     }));
   }
 
-  async resend(id: string): Promise<{ id: string; email: string; inviteToken?: string }> {
+  async resend(
+    id: string,
+  ): Promise<{ id: string; email: string; emailDelivered: boolean; inviteToken?: string }> {
     const invitation = await this.repository.findPendingById(id);
     // Tenant-scoped lookup: another organization's id is simply not found.
     if (!invitation) throw AppException.notFound(ERROR_CODES.NOT_FOUND, 'Invitation not found.');
@@ -95,11 +101,46 @@ export class InvitationsService {
       after: { email: invitation.user.email },
     });
 
+    /*
+     * SEND THE EMAIL.
+     *
+     * Resend did not, and that was the whole defect: it rotated the token,
+     * wrote an audit row and returned success — inviting the administrator to
+     * believe a fresh link was on its way while nothing left the building. It
+     * was strictly worse than doing nothing, because rotating the hash
+     * invalidates the previous link, so the one email the invitee might
+     * actually have had stopped working too.
+     *
+     * Worse still, this was the documented recovery path for a failed
+     * invitation email. The advice was to resend, and resending sent nothing.
+     */
+    const organizationName = await this.repository.organizationName();
+
+    const delivery = await this.email.sendInvitation({
+      to: invitation.user.email,
+      // The original inviter is not carried on the membership row, so the
+      // organization speaks for itself rather than naming somebody who may no
+      // longer be here.
+      inviterName: organizationName,
+      organizationName,
+      role: invitation.role.key,
+      token: minted.token,
+      expiresInDays: INVITE_TTL_DAYS,
+    });
+
+    if (!delivery.accepted) {
+      this.logger.error(
+        { invitationId: id, provider: this.email.providerName },
+        'Resent invitation email was not accepted by the mail provider',
+      );
+    }
+
     // Rotating the hash invalidates the previous link, so a forwarded old email
     // stops working — otherwise every resend would add another live way in.
     return {
       id,
       email: invitation.user.email,
+      emailDelivered: delivery.accepted,
       ...(this.revealToken(minted.token) ? { inviteToken: minted.token } : {}),
     };
   }
