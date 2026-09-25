@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom';
 import { usePageMeta } from '../../lib/use-page-meta';
 import { SectionHeading } from './marketing-layout';
 import { PricingTable } from './pricing-table';
-import { SALES_EMAIL } from './contact-page';
+import { COMPANY_LEGAL_NAME, COMPANY_SALES_EMAIL, COMPANY_WEBSITE } from '../../components/brand';
 import { AndroidDownload } from './android-download';
 import { useHeroBackground } from './use-hero-background';
 import { DemoVideo } from './demo-video';
@@ -156,6 +156,32 @@ function Hero(): React.JSX.Element {
             LeadFlow keeps every enquiry owned, scheduled and visible. Capture leads, assign them to
             a salesperson, log every call and message, and see exactly what is overdue — before the
             customer goes quiet.
+          </p>
+
+          {/*
+            Who runs this, on the first screen.
+            Ownership was previously only in the footer, which reads as a vendor
+            credit rather than as the operator of the service. One line, using
+            the shared constants so it cannot drift from the footer or the About
+            page — and no new import weight, since brand is already in the shell.
+          */}
+          <p className="mx-auto mt-4 max-w-2xl text-sm text-slate-500">
+            A customer lead management and sales operations platform, developed and operated by{' '}
+            <a
+              href={COMPANY_WEBSITE}
+              target="_blank"
+              rel="noreferrer"
+              className="font-medium text-slate-700 underline decoration-slate-300 underline-offset-2 transition hover:text-slate-900 hover:decoration-slate-900"
+            >
+              {COMPANY_LEGAL_NAME}
+            </a>
+            .{' '}
+            <Link
+              to="/about"
+              className="font-medium text-slate-700 underline decoration-slate-300 underline-offset-2 transition hover:text-slate-900 hover:decoration-slate-900"
+            >
+              About LeadFlow
+            </Link>
           </p>
 
           <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
@@ -548,10 +574,10 @@ function ContactCta(): React.JSX.Element {
               Contact us
             </Link>
             <a
-              href={`mailto:${SALES_EMAIL}`}
+              href={`mailto:${COMPANY_SALES_EMAIL}`}
               className="rounded-lg border border-slate-300 bg-white px-6 py-3 text-center text-sm font-medium text-slate-700 transition hover:bg-slate-100"
             >
-              {SALES_EMAIL}
+              {COMPANY_SALES_EMAIL}
             </a>
           </div>
         </div>
