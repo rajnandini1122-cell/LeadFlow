@@ -1,5 +1,10 @@
 import { ERROR_CODES } from '@leadflow/api-types';
-import { createTestContext, PASSWORD, type TestContext } from './helpers/test-app';
+import {
+  createTestContext,
+  PASSWORD,
+  registerVerifiedOrganization,
+  type TestContext,
+} from './helpers/test-app';
 import { TenantContextService } from '../src/common/tenancy/tenant-context.service';
 import { SubscriptionsService } from '../src/modules/subscriptions/subscriptions.service';
 
@@ -26,21 +31,17 @@ describe('Subscriptions', () => {
     `${prefix}.${Date.now()}.${Math.floor(Math.random() * 1_000_000)}`;
 
   const freshOrg = async (): Promise<{ token: string; organizationId: string }> => {
-    const response = await ctx
-      .http()
-      .post('/api/v1/auth/register')
-      .send({
-        organizationName: `Billing ${unique('org')}`,
-        email: `${unique('founder')}@example.test`,
-        password: PASSWORD,
-        firstName: 'Bill',
-        lastName: 'Payer',
-      })
-      .expect(201);
+    const created = await registerVerifiedOrganization(ctx.app, {
+      organizationName: `Billing ${unique('org')}`,
+      email: `${unique('founder')}@example.test`,
+      password: PASSWORD,
+      firstName: 'Bill',
+      lastName: 'Payer',
+    });
 
     return {
-      token: response.body.data.tokens.accessToken as string,
-      organizationId: response.body.data.user.organization.id as string,
+      token: created.tokens.accessToken as string,
+      organizationId: created.registration.body.data.user.organization.id as string,
     };
   };
 

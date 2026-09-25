@@ -202,6 +202,27 @@ vendor in the code. Two things are worth knowing before the first deploy:
   is down; an operator reads `SMTP delivery failed` in the log, with the tag
   and the recipient's domain, never the address, the link or the credential.
 
+**Mail is now on the signup critical path.** Registration issues no session
+until the new owner clicks a link in their inbox, so a mail outage no longer
+degrades one recovery flow — it stops every new organization from being created.
+Two consequences for operating this:
+
+* The registration response reports whether the PROVIDER accepted the message,
+  and the screen tells the person their account exists but the email could not
+  be sent, pointing them at "send a new link". Nobody is left with an
+  unreachable account, but nobody gets in either until mail works.
+* Existing users are unaffected by design. The migration back-fills
+  `users.email_verified_at` from `created_at` for every row that already
+  exists, so shipping verification does not sign the customer base out. If that
+  back-fill is ever skipped on a restore, **every** account is locked out at
+  once, including the platform owner — check the column is populated after any
+  manual schema work.
+
+Verification links last 24 hours, are single-use, and are stored only as a
+SHA-256 hash. A resend spends the previous link, so there is never more than
+one live link per account, and a per-account budget of five per hour limits how
+much mail any one mailbox can be made to receive.
+
 Set `SMTP_SECURE` to match the port the server actually offers — `true` for
 implicit TLS (465), `false` for a STARTTLS upgrade (587). It is never inferred,
 and `false` still requires the upgrade to succeed.

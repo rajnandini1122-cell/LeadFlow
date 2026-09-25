@@ -1,4 +1,9 @@
-import { createTestContext, PASSWORD, type TestContext } from './helpers/test-app';
+import {
+  createTestContext,
+  PASSWORD,
+  registerVerifiedOrganization,
+  type TestContext,
+} from './helpers/test-app';
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import { TenantContextService } from '../src/common/tenancy/tenant-context.service';
 import { fixtureMobile } from './helpers/phone-fixtures';
@@ -993,25 +998,21 @@ describe('Reports', () => {
     userId: string;
     token: string;
   }> {
-    const response = await ctx
-      .http()
-      .post('/api/v1/auth/register')
-      .send({
-        organizationName: `Reporting ${unique('org')}`,
-        email: `${unique('founder')}@example.test`,
-        password: PASSWORD,
-        firstName: 'Report',
-        lastName: 'Owner',
-      })
-      .expect(201);
+    const created = await registerVerifiedOrganization(ctx.app, {
+      organizationName: `Reporting ${unique('org')}`,
+      email: `${unique('founder')}@example.test`,
+      password: PASSWORD,
+      firstName: 'Report',
+      lastName: 'Owner',
+    });
 
-    const data = response.body.data;
+    const data = created.registration.body.data;
     await setOrganizationTimezone(data.user.organization.id as string, 'UTC');
 
     return {
       organizationId: data.user.organization.id as string,
       userId: data.user.id as string,
-      token: data.tokens.accessToken as string,
+      token: created.tokens.accessToken,
     };
   }
 });

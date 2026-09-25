@@ -38,7 +38,10 @@ function acceptRegistration(): void {
   mockApi.apiPost.mockImplementation((path: string) =>
     path === '/auth/register'
       ? Promise.resolve({
-          tokens: { accessToken: 'a', refreshToken: 'r' },
+          // The real shape: a local registration is NOT signed in, so there
+          // are no tokens here and the page stops on "check your email".
+          verified: false,
+          verificationEmailSent: true,
           user: {
             id: 'u1',
             email: 'priya@example.test',

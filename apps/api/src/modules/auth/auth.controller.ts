@@ -22,6 +22,8 @@ import { AuthService, type RequestMetadata } from './auth.service';
 import { GoogleRegisterDto, GoogleSignInDto, LoginDto, RefreshDto } from './dto/auth.dto';
 import { RegisterDto } from './dto/register.dto';
 import { SwitchOrganizationDto } from './dto/switch-organization.dto';
+import { ResendVerificationDto, VerifyEmailDto } from './dto/email-verification.dto';
+import { EmailVerificationService } from './email-verification.service';
 import { RegistrationService } from './registration.service';
 import { PasswordResetService } from './password-reset.service';
 import { GoogleAuthService } from './google-auth.service';
@@ -53,6 +55,7 @@ export class AuthController {
   constructor(
     private readonly auth: AuthService,
     private readonly registration: RegistrationService,
+    private readonly verification: EmailVerificationService,
     private readonly passwordReset: PasswordResetService,
     private readonly config: AppConfig,
     private readonly google: GoogleAuthService,
@@ -75,12 +78,26 @@ export class AuthController {
   ) {
     const result = await this.registration.register(dto, metadataFrom(request));
 
+    /*
+     * An unverified account gets NO tokens and NO refresh cookie.
+     *
+     * Local registration always lands here. The client is told the account
+     * exists and whether the verification email was accepted by the provider —
+     * never that it was delivered, which nobody can know — and shows "check
+     * your email" rather than a dashboard.
+     */
+    if (!result.verified) {
+      return { verified: false, verificationEmailSent: result.verificationEmailSent, user: result.user };
+    }
+
+    // Reached only when an identity provider already proved the mailbox.
     if ((dto.platform ?? 'WEB') === 'WEB') {
       this.setRefreshCookie(response, result.refreshToken);
-      return { tokens: result.tokens, user: result.user };
+      return { verified: true, tokens: result.tokens, user: result.user };
     }
 
     return {
+      verified: true,
       tokens: { ...result.tokens, refreshToken: result.refreshToken },
       user: result.user,
     };
@@ -228,10 +245,79 @@ export class AuthController {
       metadataFrom(request),
     );
 
+    /*
+     * Google registration DOES sign in, and the narrow reason is the
+     * `email_verified` claim on a token Google signed: the provider has
+     * already delivered a challenge to that mailbox and had it returned.
+     * Emailing our own link would be asking the same question twice.
+     *
+     * If that claim is ever absent or false, GoogleAuthService refuses the
+     * identity outright, so this branch cannot be reached by an unverified
+     * external account.
+     */
+    if (!result.verified) {
+      // Defensive: registerWithGoogle always passes the provider-proven flag,
+      // so this is unreachable today. It exists because the alternative to an
+      // explicit refusal here would be reading `tokens` off a union member
+      // that does not have them.
+      throw AppException.internal();
+    }
+
     const payload = { requiresOrganizationSelection: false as const, tokens: result.tokens, user: result.user };
     this.attachRefreshToken(response, result.refreshToken, dto.platform ?? 'WEB', payload);
 
     return payload;
+  }
+
+  /**
+   * Redeems a verification link.
+   *
+   * PUBLIC, because the person clicking it has no session by definition — an
+   * unverified account cannot sign in, which is the whole point.
+   *
+   * Throttled with the credential limiter: the token is 32 random bytes, so
+   * guessing is not a realistic attack, but an unauthenticated endpoint that
+   * hits the database on every call should not be free.
+   */
+  @Public()
+  @Post('verify-email')
+  @HttpCode(HttpStatus.OK)
+  @CredentialThrottle()
+  @ApiOperation({
+    summary: 'Confirm an email address',
+    description:
+      'Single-use and time-limited. Answers with a stable code — INVALID, ' +
+      'EXPIRED or ALREADY_COMPLETED — so the client can route to the right ' +
+      'screen rather than matching on prose.',
+  })
+  async verifyEmail(@Body() dto: VerifyEmailDto, @Req() request: Request) {
+    return this.verification.verify(dto.token, metadataFrom(request));
+  }
+
+  /**
+   * Sends another verification link.
+   *
+   * PUBLIC and ENUMERATION-SAFE: the response is identical whether the address
+   * has an unverified account, a verified one, or none at all. An
+   * unauthenticated endpoint that distinguished them would tell a competitor
+   * exactly who uses this product.
+   *
+   * Rate-limited twice over — this route's own throttle bounds one caller, and
+   * a per-account budget in the service bounds how much mail any single
+   * mailbox can be made to receive.
+   */
+  @Public()
+  @Post('verify-email/resend')
+  @HttpCode(HttpStatus.OK)
+  @CredentialThrottle()
+  @ApiOperation({
+    summary: 'Send a new verification link',
+    description:
+      'Always answers the same way, whatever the address. Rotates the token, ' +
+      'so any previous link stops working.',
+  })
+  async resendVerification(@Body() dto: ResendVerificationDto, @Req() request: Request) {
+    return this.verification.resend(dto.email, metadataFrom(request));
   }
 
   @Public()

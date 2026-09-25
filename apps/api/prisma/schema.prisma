@@ -351,6 +351,19 @@ model User {
   googleSubject String?    @unique @map("google_subject") @db.VarChar(64)
   status        UserStatus @default(INVITED)
 
+  /// When this person proved they control this mailbox. NULL means unverified.
+  ///
+  /// A timestamp rather than a boolean: "verified" and "verified at 09:14 on
+  /// Tuesday" cost the same to store, and the second answers questions the
+  /// first cannot — when a support case began, whether a wave of signups
+  /// predates a change, how long a link sat unused.
+  ///
+  /// Proof of mailbox ownership can arrive three ways, and all three set this:
+  /// clicking a verification link, accepting an emailed invitation (the token
+  /// only reaches the mailbox it was sent to), or a trusted verified-email
+  /// claim from an identity provider. Nothing else sets it.
+  emailVerifiedAt DateTime? @map("email_verified_at") @db.Timestamptz(6)
+
   lastLoginAt DateTime? @map("last_login_at") @db.Timestamptz(6)
   createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -360,6 +373,7 @@ model User {
   invitedMembers    OrganizationUser[]   @relation("MembershipInviter")
   sessions          Session[]
   passwordResets    PasswordResetToken[]
+  emailVerifications EmailVerificationToken[]
   auditLogs         AuditLog[]
   assignedLeads     Lead[]               @relation("LeadAssignee")
   leadsAssignedByMe Lead[]               @relation("LeadAssigner")
@@ -540,6 +554,40 @@ model PasswordResetToken {
   /// Supports expiry sweeps without scanning the table.
   @@index([expiresAt])
   @@map("password_reset_tokens")
+}
+
+/// Proof that somebody controls the mailbox they registered with.
+///
+/// A SEPARATE table from PasswordResetToken, deliberately. The two look alike
+/// and mean different things: one proves ownership of an address, the other
+/// grants the power to change a credential. Sharing a table would mean a
+/// verification link could be redeemed as a password reset the moment anybody
+/// confused the two columns, and the blast radius of that confusion is an
+/// account takeover.
+model EmailVerificationToken {
+  id     String @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  userId String @map("user_id") @db.Uuid
+
+  /// SHA-256 of the token. The raw value exists only in transit and in the
+  /// email — a database disclosure yields nothing usable.
+  tokenHash String @unique @map("token_hash") @db.VarChar(64)
+
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz(6)
+  /// Non-null means spent. Retained rather than deleted so a replay attempt is
+  /// visible in the audit trail.
+  usedAt    DateTime? @map("used_at") @db.Timestamptz(6)
+
+  ipAddress String? @map("ip_address") @db.VarChar(64)
+  userAgent String? @map("user_agent") @db.VarChar(400)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, usedAt])
+  /// Supports expiry sweeps without scanning the table.
+  @@index([expiresAt])
+  @@map("email_verification_tokens")
 }
 
 // =============================================================================

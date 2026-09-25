@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { uuidv7 } from '../../common/utils/uuid';
+import { ERROR_CODES } from '@leadflow/api-types';
 import type {
   AuthenticatedUser,
   LoginResponse,
@@ -8,6 +9,7 @@ import type {
   TokenPair,
 } from '@leadflow/api-types';
 import { AppConfig } from '../../common/config/config.module';
+import { EmailVerificationRepository } from './email-verification.repository';
 import { AppException } from '../../common/errors/app.exception';
 import { AUDIT_ACTIONS, AuditRepository } from '../../common/audit/audit.repository';
 import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
@@ -43,6 +45,7 @@ export class AuthService {
     private readonly sessions: SessionService,
     private readonly google: GoogleAuthService,
     private readonly config: AppConfig,
+    private readonly verification: EmailVerificationRepository,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -81,6 +84,42 @@ export class AuthService {
     }
 
     if (user.status === 'SUSPENDED') throw AppException.accountSuspended();
+
+    /*
+     * THE ENFORCEMENT POINT for email verification.
+     *
+     * Here, after the password is confirmed and before a single token exists.
+     * Placing it after authentication is deliberate: an unverified address is
+     * not a reason to tell an anonymous caller anything, so the password must
+     * be right before this is disclosed — otherwise the response becomes a way
+     * to ask "does this address have an unverified account?".
+     *
+     * Placing it before `sessions.issue` is what makes it real. No access
+     * token and no refresh token are minted, so there is nothing to replay,
+     * nothing to refresh and nothing cached on a device that could later be
+     * exchanged for access. The refresh path enforces the same rule again for
+     * sessions that predate this feature.
+     *
+     * A distinct code, not a 401: the client has to send somebody to "check
+     * your email" rather than to "wrong password", and branching on prose
+     * would break the first time the wording improved.
+     */
+    if (!user.emailVerifiedAt) {
+      await this.audit.record({
+        action: 'auth.login.refused',
+        actorUserId: user.id,
+        entityType: 'user',
+        entityId: user.id,
+        after: { reason: 'email_unverified' },
+        ipAddress: meta.ipAddress,
+        userAgent: meta.userAgent,
+      });
+
+      throw AppException.forbiddenWithCode(
+        ERROR_CODES.EMAIL_VERIFICATION_REQUIRED,
+        'Confirm your email address before signing in. Check your inbox for the link.',
+      );
+    }
 
     const memberships = await this.repository.findMembershipsForUser(user.id);
     const usable = memberships.filter(
@@ -463,6 +502,41 @@ export class AuthService {
     }
     if (membership.organizationStatus === 'SUSPENDED') throw AppException.organizationSuspended();
     if (membership.userStatus === 'SUSPENDED') throw AppException.accountSuspended();
+
+    /*
+     * The same gate as login, enforced again on every rotation.
+     *
+     * Defence in depth, and the depth is the point: login refuses to mint a
+     * session for an unverified account, so in a correct system no refresh
+     * token for one can exist. This closes the cases where one might anyway —
+     * a session issued before this feature shipped, a token cached on a device
+     * that has been offline, a future code path that forgets the rule. An
+     * access token lives fifteen minutes; without this, a stale refresh token
+     * would keep renewing it indefinitely.
+     *
+     * Read from the database rather than the membership cache. The cache
+     * exists to answer "is this membership still active" quickly, and adding a
+     * security-critical field to it would mean a privilege decision made from
+     * a copy that can be up to its TTL out of date.
+     */
+    const account = await this.verification.findUserById(session.userId);
+
+    if (account && !account.emailVerifiedAt) {
+      await this.audit.record({
+        action: 'auth.refresh.refused',
+        actorUserId: session.userId,
+        entityType: 'user',
+        entityId: session.userId,
+        after: { reason: 'email_unverified' },
+        ipAddress: meta.ipAddress,
+        userAgent: meta.userAgent,
+      });
+
+      throw AppException.forbiddenWithCode(
+        ERROR_CODES.EMAIL_VERIFICATION_REQUIRED,
+        'Confirm your email address before signing in. Check your inbox for the link.',
+      );
+    }
 
     const next = this.tokens.issueRefreshToken();
     const rotated = await this.repository.rotateSession({

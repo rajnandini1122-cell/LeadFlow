@@ -1,5 +1,9 @@
 import { PERMISSIONS, PLATFORM_ROLE_KEY, ROLE_PERMISSION_MATRIX } from '@leadflow/api-types';
-import { createTestContext, type TestContext } from './helpers/test-app';
+import {
+  createTestContext,
+  registerVerifiedOrganization,
+  type TestContext,
+} from './helpers/test-app';
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import { TenantContextService } from '../src/common/tenancy/tenant-context.service';
 
@@ -105,7 +109,15 @@ describe('Platform owner', () => {
       });
 
       const user = await prisma().user.create({
-        data: { email, fullName: 'Platform Owner', passwordHash, status: 'ACTIVE' },
+        data: {
+          email,
+          fullName: 'Platform Owner',
+          passwordHash,
+          status: 'ACTIVE',
+          // Stands for an account that predates verification, which the
+          // migration back-fills. Signing in is the point of the fixture.
+          emailVerifiedAt: new Date(),
+        },
         select: { id: true },
       });
 
@@ -498,19 +510,15 @@ describe('Platform owner', () => {
     const registerCustomer = async (): Promise<string> => {
       const stamp = `${Date.now()}.${Math.floor(Math.random() * 100_000)}`;
 
-      const response = await ctx
-        .http()
-        .post('/api/v1/auth/register')
-        .send({
-          organizationName: `Entitlement Customer ${stamp}`,
-          firstName: 'Entitled',
-          lastName: 'Customer',
-          email: `entitled.${stamp}@example.test`,
-          password: 'Str0ng-Passphrase!2026',
-        })
-        .expect(201);
+      const response = await registerVerifiedOrganization(ctx.app, {
+        organizationName: `Entitlement Customer ${stamp}`,
+        firstName: 'Entitled',
+        lastName: 'Customer',
+        email: `entitled.${stamp}@example.test`,
+        password: 'Str0ng-Passphrase!2026',
+      });
 
-      return response.body.data.tokens.accessToken as string;
+      return response.tokens.accessToken;
     };
 
     it('leaves a customer entitled by their subscription, and billable', async () => {

@@ -4,6 +4,7 @@ import type { AuditRepository } from '../../common/audit/audit.repository';
 import { AppException } from '../../common/errors/app.exception';
 import { AuthService, type RequestMetadata } from './auth.service';
 import type { AuthRepository } from './auth.repository';
+import type { EmailVerificationRepository } from './email-verification.repository';
 import type { GoogleAuthService } from './google-auth.service';
 import type { MembershipCacheService } from './membership-cache.service';
 import type { PasswordService } from './password.service';
@@ -50,6 +51,22 @@ describe('AuthService.refresh — rotation reuse interval', () => {
     const audit = { record: jest.fn().mockResolvedValue(undefined) };
     const config = { get: jest.fn().mockReturnValue(intervalMs) };
 
+    /*
+     * Refresh re-checks that the mailbox is still proven, from the DATABASE
+     * rather than from the claim baked into the token. These cases are about
+     * the reuse interval and refuse before reaching that check, so a verified
+     * account is the neutral stand-in.
+     */
+    const verification = {
+      findUserById: jest.fn().mockResolvedValue({
+        id: 'user-1',
+        email: 'rotator@example.test',
+        fullName: 'Rita Rotate',
+        status: 'ACTIVE',
+        emailVerifiedAt: new Date('2026-01-01T00:00:00.000Z'),
+      }),
+    };
+
     const service = new AuthService(
       repository as unknown as AuthRepository,
       {} as unknown as PasswordService,
@@ -59,6 +76,7 @@ describe('AuthService.refresh — rotation reuse interval', () => {
       {} as unknown as SessionService,
       {} as unknown as GoogleAuthService,
       config as unknown as AppConfig,
+      verification as unknown as EmailVerificationRepository,
     );
 
     return { service, repository, audit };

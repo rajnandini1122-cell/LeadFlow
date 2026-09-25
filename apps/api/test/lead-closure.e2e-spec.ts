@@ -1,4 +1,9 @@
-import { createTestContext, PASSWORD, type TestContext } from './helpers/test-app';
+import {
+  createTestContext,
+  PASSWORD,
+  registerVerifiedOrganization,
+  type TestContext,
+} from './helpers/test-app';
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import { TenantContextService } from '../src/common/tenancy/tenant-context.service';
 import { fixtureMobile } from './helpers/phone-fixtures';
@@ -88,22 +93,18 @@ describe('Closing a lead reconciles its follow-ups', () => {
   beforeAll(async () => {
     ctx = await createTestContext();
 
-    const registered = await ctx
-      .http()
-      .post('/api/v1/auth/register')
-      .send({
-        organizationName: `Closure ${unique('org')}`,
-        email: `${unique('owner')}@example.test`,
-        password: PASSWORD,
-        firstName: 'Cleo',
-        lastName: 'Close',
-      })
-      .expect(201);
+    const registered = await registerVerifiedOrganization(ctx.app, {
+      organizationName: `Closure ${unique('org')}`,
+      email: `${unique('owner')}@example.test`,
+      password: PASSWORD,
+      firstName: 'Cleo',
+      lastName: 'Close',
+    });
 
-    token = registered.body.data.tokens.accessToken as string;
+    token = registered.tokens.accessToken;
     await asSystem((prisma) =>
       prisma.organization.update({
-        where: { id: registered.body.data.user.organization.id as string },
+        where: { id: registered.registration.body.data.user.organization.id as string },
         data: { timezone: 'UTC' },
       }),
     );

@@ -60,6 +60,18 @@ export class AppException extends HttpException {
     return new AppException(ERROR_CODES.FORBIDDEN, message, HttpStatus.FORBIDDEN);
   }
 
+  /**
+   * A 403 that carries its own code.
+   *
+   * `forbidden()` always says FORBIDDEN, which is right for "you may not do
+   * that" and wrong for a refusal the client has to act on differently —
+   * email verification sends somebody to a specific screen, and a UI cannot
+   * tell that from a generic permission failure.
+   */
+  static forbiddenWithCode(code: ErrorCode, message: string): AppException {
+    return new AppException(code, message, HttpStatus.FORBIDDEN);
+  }
+
   static accountSuspended(): AppException {
     return new AppException(
       ERROR_CODES.ACCOUNT_SUSPENDED,

@@ -1,5 +1,10 @@
 import { ERROR_CODES } from '@leadflow/api-types';
-import { createTestContext, PASSWORD, type TestContext } from './helpers/test-app';
+import {
+  createTestContext,
+  PASSWORD,
+  registerVerifiedOrganization,
+  type TestContext,
+} from './helpers/test-app';
 import { fixtureMobile } from './helpers/phone-fixtures';
 
 /**
@@ -42,22 +47,18 @@ describe('Organization administration and employee exit', () => {
 
   /** A brand-new organization with exactly one owner. */
   const freshOrg = async (): Promise<Org> => {
-    const response = await ctx
-      .http()
-      .post('/api/v1/auth/register')
-      .send({
-        organizationName: `Exit ${unique('org')}`,
-        email: `${unique('founder')}@example.test`,
-        password: PASSWORD,
-        firstName: 'Olive',
-        lastName: 'Owner',
-      })
-      .expect(201);
+    const created = await registerVerifiedOrganization(ctx.app, {
+      organizationName: `Exit ${unique('org')}`,
+      email: `${unique('founder')}@example.test`,
+      password: PASSWORD,
+      firstName: 'Olive',
+      lastName: 'Owner',
+    });
 
     return {
-      organizationId: response.body.data.user.organization.id as string,
-      ownerId: response.body.data.user.id as string,
-      token: response.body.data.tokens.accessToken as string,
+      organizationId: created.registration.body.data.user.organization.id as string,
+      ownerId: created.registration.body.data.user.id as string,
+      token: created.tokens.accessToken as string,
     };
   };
 

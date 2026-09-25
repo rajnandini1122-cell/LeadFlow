@@ -6,6 +6,7 @@ import { ScrollToTop } from './components/scroll-to-top';
 import { LoginPage } from './features/auth/login-page';
 import { RegisterPage } from './features/auth/register-page';
 import { AcceptInvitationPage } from './features/auth/accept-invitation-page';
+import { VerifyEmailPage } from './features/auth/verify-email-page';
 import { ForgotPasswordPage } from './features/auth/forgot-password-page';
 import { ResetPasswordPage } from './features/auth/reset-password-page';
 import { HomePage } from './features/marketing/home-page';
@@ -161,6 +162,17 @@ export function App(): React.JSX.Element {
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
             <Route path="/invite/:token" element={<AcceptInvitationPage />} />
+            {/*
+              Both shapes. The emailed link carries a token; the bare path is
+              where somebody lands when a link expired or they need another —
+              so it shows the resend form rather than a dead end.
+
+              Eager, like the rest of the auth shell: this is reached by
+              somebody who cannot sign in yet, and a lazy chunk would put a
+              spinner in front of the one screen that unblocks them.
+            */}
+            <Route path="/verify-email" element={<VerifyEmailPage />} />
+            <Route path="/verify-email/:token" element={<VerifyEmailPage />} />
             <Route path="/forgot-password" element={<ForgotPasswordPage />} />
             <Route path="/reset-password/:token" element={<ResetPasswordPage />} />
 

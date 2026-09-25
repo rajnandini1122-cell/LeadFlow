@@ -9,9 +9,22 @@ import { RegistrationRepository } from './registration.repository';
 import { PasswordService } from './password.service';
 import { randomBytes } from 'node:crypto';
 import { SessionService, type RequestMetadata } from './session.service';
+import { EmailVerificationService } from './email-verification.service';
 import { GoogleAuthService } from './google-auth.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import type { RegisterDto } from './dto/register.dto';
+
+/**
+ * What registration produced.
+ *
+ * A UNION rather than optional fields, so a caller cannot read `tokens` without
+ * first establishing that a session exists. The compiler enforces the branch
+ * that decides whether somebody is signed in — which is exactly the decision
+ * that used to be made implicitly, and wrongly.
+ */
+export type RegistrationResult =
+  | { verified: false; verificationEmailSent: boolean; user: AuthenticatedUser }
+  | { verified: true; tokens: TokenPair; refreshToken: string; user: AuthenticatedUser };
 
 @Injectable()
 export class RegistrationService {
@@ -25,6 +38,7 @@ export class RegistrationService {
     private readonly config: AppConfig,
     private readonly subscriptions: SubscriptionsService,
     private readonly google: GoogleAuthService,
+    private readonly verification: EmailVerificationService,
   ) {}
 
   /**
@@ -56,7 +70,7 @@ export class RegistrationService {
       country?: string | undefined;
     },
     meta: RequestMetadata,
-  ): Promise<{ tokens: TokenPair; user: AuthenticatedUser; refreshToken: string }> {
+  ): Promise<RegistrationResult> {
     const identity = await this.google.verify(input.idToken);
 
     // Google gives one display name, not two fields. Split on the first space
@@ -85,6 +99,18 @@ export class RegistrationService {
         googleSubject: identity.subject,
       } as RegisterDto & { googleSubject: string },
       meta,
+      /*
+       * Google already proved the mailbox.
+       *
+       * `GoogleAuthService.verify` refuses an identity whose `email_verified`
+       * claim is absent or false, so reaching this line means the provider
+       * delivered a challenge to that address and had it returned. Sending our
+       * own link would ask the same question a second time.
+       *
+       * This is the ONLY caller that passes the flag, and it is an argument on
+       * an internal method — no request body can set it.
+       */
+      { mailboxProvenByProvider: true },
     );
   }
 
@@ -98,7 +124,20 @@ export class RegistrationService {
      */
     dto: RegisterDto & { googleSubject?: string },
     meta: RequestMetadata,
-  ): Promise<{ tokens: TokenPair; user: AuthenticatedUser; refreshToken: string }> {
+    /**
+     * Set ONLY by registerWithGoogle, from a token Google itself signed.
+     *
+     * An identity provider that asserts `email_verified` has already done what
+     * our verification link does — it delivered a challenge to that mailbox
+     * and got it back. Repeating the exercise would mean emailing a link to an
+     * address Google just confirmed, which is friction with no security value.
+     *
+     * Never reachable from a request body: it is an argument on an internal
+     * method, and the public DTO has no such field. A client that could set it
+     * could mint a verified account for any address.
+     */
+    options: { mailboxProvenByProvider?: boolean } = {},
+  ): Promise<RegistrationResult> {
     if (await this.repository.emailExists(dto.email)) {
       // Deliberately explicit. Registration is not a login form, so there is no
       // enumeration advantage in hiding it, and "email already registered" is
@@ -170,13 +209,44 @@ export class RegistrationService {
     // catalogue was not seeded turns a would-be customer away entirely.
     await this.subscriptions.startTrial(created.organization.id);
 
-    const session = await this.sessions.issue({
-      organizationId: created.organization.id,
-      userId: created.user.id,
-      role: 'OWNER',
-      platform: dto.platform ?? 'WEB',
-      meta,
-    });
+    /*
+     * NO SESSION. This is the security change.
+     *
+     * Registration used to issue access and refresh tokens here and sign the
+     * person straight into the dashboard, which meant a typo'd address
+     * produced a working account whose owner could never recover it — password
+     * reset goes to an address they do not control — and nothing stopped
+     * anybody registering under somebody else's address.
+     *
+     * The account exists and the organization exists; what does not exist yet
+     * is a session. It is created on the first successful sign-in, which
+     * requires a verified mailbox.
+     */
+    /*
+     * Two outcomes, and which one applies is decided here rather than by the
+     * caller, so there is exactly one place that can grant a session.
+     */
+    let session: Awaited<ReturnType<SessionService['issue']>> | undefined;
+    let verificationEmailSent = false;
+
+    if (options.mailboxProvenByProvider) {
+      await this.verification.markVerified(created.user.id, 'oidc');
+
+      session = await this.sessions.issue({
+        organizationId: created.organization.id,
+        userId: created.user.id,
+        role: 'OWNER',
+        platform: dto.platform ?? 'WEB',
+        meta,
+      });
+    } else {
+      const verification = await this.verification.sendVerification(
+        { id: created.user.id, email: created.user.email, fullName: created.user.fullName },
+        meta,
+      );
+
+      verificationEmailSent = verification.accepted;
+    }
 
     await this.audit.record({
       action: 'organization.registered',
@@ -189,10 +259,7 @@ export class RegistrationService {
       userAgent: meta.userAgent,
     });
 
-    return {
-      tokens: session.tokens,
-      refreshToken: session.refreshToken,
-      user: {
+    const user = {
         id: created.user.id,
         email: created.user.email,
         fullName: created.user.fullName,
@@ -208,10 +275,25 @@ export class RegistrationService {
           country: created.organization.country,
           status: created.organization.status,
         },
-        role: 'OWNER',
-        permissions: session.permissions,
-      },
+      role: 'OWNER' as const,
+      /*
+       * An unverified account holds no session, so there are no permissions to
+       * report. Empty rather than absent: the shape stays stable, and a client
+       * that forgot to branch renders a user who can do nothing rather than
+       * one who appears to be an owner.
+       */
+      permissions: session?.permissions ?? [],
     };
+
+    if (session) {
+      return { verified: true, tokens: session.tokens, refreshToken: session.refreshToken, user };
+    }
+
+    /*
+     * No tokens. The account exists, the organization exists, and neither is
+     * reachable until somebody proves they own the mailbox.
+     */
+    return { verified: false, verificationEmailSent, user };
   }
 
   /**
