@@ -211,12 +211,25 @@ Two consequences for operating this:
   and the screen tells the person their account exists but the email could not
   be sent, pointing them at "send a new link". Nobody is left with an
   unreachable account, but nobody gets in either until mail works.
-* Existing users are unaffected by design. The migration back-fills
-  `users.email_verified_at` from `created_at` for every row that already
-  exists, so shipping verification does not sign the customer base out. If that
-  back-fill is ever skipped on a restore, **every** account is locked out at
-  once, including the platform owner — check the column is populated after any
-  manual schema work.
+* Existing users are unaffected by design. The migration sets
+  `users.email_verified_at` to the migration's own execution timestamp
+  (`now()`) for every row that already exists, so shipping verification does
+  not sign the customer base out. If that step is ever skipped on a restore,
+  **every** account is locked out at once, including the platform owner — check
+  the column is populated after any manual schema work.
+
+  > **Existing accounts are grandfathered as verified at rollout time to prevent
+  > lockout. This does not assert that historical email verification occurred.**
+
+  Read `email_verified_at` accordingly: for accounts created before this
+  migration it records when the grandfathering happened, not when anybody proved
+  a mailbox — no such event exists for those rows. They are recognisable as a
+  block, because they all share one timestamp. From this migration onwards the
+  column means what it says: the moment that person redeemed a verification
+  link, accepted an emailed invitation, or signed in through an identity
+  provider that asserted the address. Anything reasoning about verification
+  history — an audit, a support answer, a security review — must not read a
+  pre-rollout value as evidence about the mailbox.
 
 Verification links last 24 hours, are single-use, and are stored only as a
 SHA-256 hash. A resend spends the previous link, so there is never more than

@@ -17,7 +17,7 @@
 ALTER TABLE "users" ADD COLUMN "email_verified_at" TIMESTAMPTZ(6);
 
 -- -----------------------------------------------------------------------------
--- BACK-FILL: everybody who already exists is verified.
+-- GRANDFATHER: every account that already exists is treated as verified.
 --
 -- This is the line that decides whether applying this migration is safe or
 -- catastrophic, so it is worth being explicit about.
@@ -29,16 +29,29 @@ ALTER TABLE "users" ADD COLUMN "email_verified_at" TIMESTAMPTZ(6);
 -- security feature that logs out the entire customer base on release is an
 -- outage, whatever it prevents.
 --
--- The claim being made is narrow and defensible: these accounts were created
--- under a policy that did not require verification, they are in use, and
--- retroactively doubting them proves nothing about the mailboxes. Verification
--- starts applying to registrations from here on, which is the requirement.
+-- WHAT THIS TIMESTAMP MEANS, and what it deliberately does not.
 --
--- `created_at` is used as the verification moment rather than now(), so the
--- timestamp stays truthful as "verified no later than account creation" rather
--- than asserting that thousands of people all confirmed at deploy time.
+-- now() — the moment this migration runs — because that is the only thing
+-- actually being asserted: these accounts are grandfathered as verified at
+-- rollout. It does NOT claim anybody confirmed an address, because nobody did;
+-- no verification event exists for any of these rows, and none is being
+-- invented.
+--
+-- An earlier draft wrote `created_at` here, reasoning that it read as "verified
+-- no later than account creation". That was wrong, and wrong in the direction
+-- that matters: it fabricates a per-user verification moment that no event in
+-- this system ever produced, and it backdates a decision taken today to a date
+-- before the policy existed. Anybody later auditing "when was this mailbox
+-- proven?" would read a specific, plausible, false answer. A single rollout
+-- timestamp shared by every grandfathered row is self-evidently a policy
+-- decision rather than evidence, which is exactly what it is.
+--
+-- The claim is narrow and defensible on its own terms: these accounts were
+-- created under a policy that did not require verification, they are in use,
+-- and retroactively doubting them proves nothing about the mailboxes.
+-- Verification applies to registrations from here on, which is the requirement.
 -- -----------------------------------------------------------------------------
-UPDATE "users" SET "email_verified_at" = "created_at" WHERE "email_verified_at" IS NULL;
+UPDATE "users" SET "email_verified_at" = now() WHERE "email_verified_at" IS NULL;
 
 -- -----------------------------------------------------------------------------
 -- The verification tokens.

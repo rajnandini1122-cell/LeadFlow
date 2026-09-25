@@ -361,7 +361,16 @@ model User {
   /// Proof of mailbox ownership can arrive three ways, and all three set this:
   /// clicking a verification link, accepting an emailed invitation (the token
   /// only reaches the mailbox it was sent to), or a trusted verified-email
-  /// claim from an identity provider. Nothing else sets it.
+  /// claim from an identity provider. Nothing in the application sets it
+  /// otherwise.
+  ///
+  /// ONE EXCEPTION, and it is not a proof: migration
+  /// 20260925090000_email_verification grandfathered every account that existed
+  /// when verification became mandatory, stamping them all with the moment that
+  /// migration ran. Those rows record a policy decision at rollout, NOT that
+  /// anybody confirmed an address — no verification event exists for them. They
+  /// are recognisable because they share a single timestamp. Never read a value
+  /// from before that migration as evidence about the mailbox.
   emailVerifiedAt DateTime? @map("email_verified_at") @db.Timestamptz(6)
 
   lastLoginAt DateTime? @map("last_login_at") @db.Timestamptz(6)

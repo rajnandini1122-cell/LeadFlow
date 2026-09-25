@@ -238,11 +238,15 @@ async function seedOrganization(
          * Verified, because these fixtures stand for users who ALREADY EXIST.
          *
          * They are the suite's equivalent of the production accounts the
-         * migration back-fills: created under the previous policy, in use, and
-         * not retroactively doubted. Leaving this null would make every
-         * existing-user test assert the behaviour of a brand-new unverified
-         * registration instead, which is a different scenario with its own
-         * dedicated spec.
+         * migration grandfathers: created under the previous policy, in use,
+         * and not retroactively doubted. Stamped with the current time for the
+         * same reason the migration uses now() — it records when the
+         * grandfathering happened and claims nothing about a mailbox anybody
+         * ever proved.
+         *
+         * Leaving this null would make every existing-user test assert the
+         * behaviour of a brand-new unverified registration instead, which is a
+         * different scenario with its own dedicated spec.
          */
         emailVerifiedAt: new Date(),
       },
