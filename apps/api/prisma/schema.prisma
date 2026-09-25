@@ -283,6 +283,25 @@ model OrganizationSettings {
   /// not one whose clock was quietly restarted.
   websiteIntakeFirstFollowUpMinutes Int @default(60) @map("website_intake_first_follow_up_minutes")
 
+  /// Whether an inbound WhatsApp BUYING ENQUIRY becomes a lead by itself.
+  ///
+  /// Off by default, and deliberately narrow. It never fires on every message:
+  /// the message must carry a buying signal (see lead-signals.ts), which is what
+  /// keeps "hi" and "thanks" out of the pipeline. Everything else continues to
+  /// land in the Inbox and the review queue exactly as before.
+  ///
+  /// SEPARATE from INTAKE_AUTO_PROCESSING_ENABLED, which is a deployment-wide
+  /// variable for the website backlog. One switch arming two pipelines would
+  /// mean a tenant enabling WhatsApp automation also converted every stored
+  /// website enquiry at once.
+  ///
+  /// WhatsApp only, and that is a data constraint rather than a preference: a
+  /// wa_id is a real phone number, so a WhatsApp enquiry can be de-duplicated
+  /// against existing leads by the same partial unique index every other lead
+  /// uses. Instagram and Messenger supply no phone number, so the same
+  /// automation there would have nothing to de-duplicate on.
+  whatsappAutoLeadEnabled Boolean @default(false) @map("whatsapp_auto_lead_enabled")
+
   /// Omnichannel capture, opt-in per tenant.
   ///
   /// Default false so that applying this migration changes nothing for any

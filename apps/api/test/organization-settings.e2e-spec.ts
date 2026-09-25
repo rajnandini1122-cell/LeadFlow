@@ -124,6 +124,55 @@ describe('Organization settings', () => {
       ]);
     });
 
+    /*
+     * Automatic lead creation from WhatsApp, turned on per tenant.
+     *
+     * Deliberately NOT governed by INTAKE_AUTO_PROCESSING_ENABLED, which is a
+     * deployment-wide variable for the website backlog — one switch arming two
+     * unrelated pipelines would mean enabling WhatsApp automation also converted
+     * every stored website enquiry at once.
+     */
+    it('turns WhatsApp automatic lead creation ON', async () => {
+      const org = await freshOrg();
+
+      const response = await patch(org.token, {
+        settings: { whatsappAutoLeadEnabled: true },
+      }).expect(200);
+
+      expect(response.body.data.settings.whatsappAutoLeadEnabled).toBe(true);
+    });
+
+    it('turns WhatsApp automatic lead creation OFF again', async () => {
+      const org = await freshOrg();
+
+      await patch(org.token, { settings: { whatsappAutoLeadEnabled: true } }).expect(200);
+      const response = await patch(org.token, {
+        settings: { whatsappAutoLeadEnabled: false },
+      }).expect(200);
+
+      /*
+       * Explicit false must persist. This is the one that matters most for this
+       * setting: somebody switching it off is usually reacting to leads they
+       * did not want, and a falsy value dropped in transit would leave the
+       * automation running.
+       */
+      expect(response.body.data.settings.whatsappAutoLeadEnabled).toBe(false);
+    });
+
+    it('defaults WhatsApp automatic lead creation to off', async () => {
+      const org = await freshOrg();
+
+      const response = await ctx
+        .http()
+        .get('/api/v1/organizations/current')
+        .set(auth(org.token))
+        .expect(200);
+
+      // Nobody gets automatic lead creation by deploying; they get it by
+      // choosing it.
+      expect(response.body.data.settings.whatsappAutoLeadEnabled).toBe(false);
+    });
+
     it('saves the follow-up rules', async () => {
       const org = await freshOrg();
 
@@ -226,6 +275,10 @@ describe('Organization settings', () => {
       ['an empty name', { name: '' }],
       ['a negative reminder', { settings: { followupReminderMinutes: -5 } }],
       ['a malformed working hour', { settings: { workingHoursStart: '25:00' } }],
+      // Boolean means boolean: a coerced "yes" would make the automation's
+      // state depend on which client sent it.
+      ['a non-boolean WhatsApp auto-lead flag', { settings: { whatsappAutoLeadEnabled: 'yes' } }],
+      ['a numeric WhatsApp auto-lead flag', { settings: { whatsappAutoLeadEnabled: 1 } }],
     ])('rejects %s', async (_label, body) => {
       const org = await freshOrg();
       await patch(org.token, body).expect(400);
@@ -292,6 +345,28 @@ describe('Organization settings', () => {
         .set(auth(ctx.orgA.rep.accessToken))
         .send({ name: 'Rep Was Here' })
         .expect(403);
+    });
+
+    it('refuses a sales rep turning WhatsApp auto-lead on', async () => {
+      /*
+       * Asserted on this field specifically, not inferred from a name change
+       * being refused. Switching this on assigns real leads to real people and
+       * creates follow-ups for them, so who may do it is worth pinning.
+       */
+      await ctx
+        .http()
+        .patch('/api/v1/organizations/current')
+        .set(auth(ctx.orgA.rep.accessToken))
+        .send({ settings: { whatsappAutoLeadEnabled: true } })
+        .expect(403);
+    });
+
+    it('refuses an unauthenticated caller turning WhatsApp auto-lead on', async () => {
+      await ctx
+        .http()
+        .patch('/api/v1/organizations/current')
+        .send({ settings: { whatsappAutoLeadEnabled: true } })
+        .expect(401);
     });
 
     it('refuses an unauthenticated caller', async () => {

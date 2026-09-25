@@ -931,4 +931,89 @@ export class OmnichannelRepository {
     });
     return settings?.sharedUnassignedQueue ?? false;
   }
+
+  /**
+   * Whether this tenant has asked for WhatsApp buying enquiries to become leads.
+   *
+   * Defaults to false when a tenant has no settings row, which is the closed
+   * answer: a missing row must never start creating and assigning leads.
+   */
+  async whatsappAutoLeadEnabled(): Promise<boolean> {
+    const settings = await this.prisma.client.organizationSettings.findFirst({
+      select: { whatsappAutoLeadEnabled: true },
+    });
+    return settings?.whatsappAutoLeadEnabled ?? false;
+  }
+
+  /**
+   * Records an inbound enquiry in the SHARED intake table.
+   *
+   * This is the whole of omnichannel's involvement in automatic lead creation:
+   * it writes a row and stops. Converting that row into a lead — territory,
+   * routing rules, round robin, contact reuse, duplicate refusal, the first
+   * follow-up, and the one transaction holding all of it — belongs to
+   * IntakeProcessingService, which already does it for website enquiries. There
+   * is deliberately no second lead-creation path.
+   *
+   * `skipDuplicates` rather than catch-on-conflict, matching
+   * WebsiteIntakeRepository for the same reason it does: a raised unique
+   * violation aborts the statement, and on the in-process PGlite the
+   * development suite runs against that takes the whole connection down.
+   * Returning null for "already there" keeps a redelivered webhook a quiet
+   * no-op.
+   *
+   * Written here rather than by importing WebsiteIntakeRepository: its name
+   * would be a lie about what it is doing, and this file already states the
+   * convention — a small local write is lighter coupling than a cross-module
+   * repository dependency.
+   */
+  async createLeadIntake(input: {
+    source: string;
+    externalEventId: string;
+    eventType: string;
+    payloadHash: string;
+    name?: string | undefined;
+    phone?: string | undefined;
+    message?: string | undefined;
+    matchedContactId?: string | undefined;
+  }): Promise<{ id: string } | null> {
+    const [created] = await this.prisma.client.integrationIntake.createManyAndReturn({
+      skipDuplicates: true,
+      data: [
+        {
+          organizationId: this.organizationId,
+          source: input.source,
+          externalEventId: input.externalEventId,
+          eventType: input.eventType,
+          payloadHash: input.payloadHash,
+          // RECEIVED, so the existing sweep picks it up exactly as it picks up
+          // a website enquiry. Nothing here converts anything.
+          status: 'RECEIVED',
+          name: input.name ?? null,
+          phone: input.phone ?? null,
+          message: input.message ?? null,
+          /*
+           * Deliberately null: country, company, productInterest, sourcePage.
+           *
+           * A WhatsApp message carries none of them. Country is NOT guessed
+           * from the number's prefix — no helper in this repository derives one
+           * safely, and conversion does not need it: the phone is already
+           * E.164, so `canonicalMobile` parses it regardless, and territory
+           * resolution answers NO_TERRITORY and lets the tenant's fallback rule
+           * decide. Product is never inferred from free text, for the same
+           * reason the website path refuses to.
+           */
+          country: null,
+          company: null,
+          productInterest: null,
+          sourcePage: null,
+          matchedContactId: input.matchedContactId ?? null,
+          matchedLeadId: null,
+        },
+      ],
+      select: { id: true },
+    });
+
+    return created ?? null;
+  }
 }

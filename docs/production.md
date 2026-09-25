@@ -150,6 +150,52 @@ the backlog, and only then set it to `true` and redeploy. It also requires
 `WORKER_ENABLED=true` to do anything — conversion runs in the worker and never
 in an API replica.
 
+### 2.2 Automatic leads from WhatsApp
+
+A tenant setting, **not** an environment variable: `whatsappAutoLeadEnabled` on
+`organization_settings`, off by default, edited from Settings → Channels.
+
+It is separate from `INTAKE_AUTO_PROCESSING_ENABLED` on purpose. That one is
+deployment-wide and governs the website backlog; sharing it would mean a tenant
+enabling WhatsApp automation also converted every stored website enquiry at
+once. This one is per organization because it is a decision about one
+company's sales process.
+
+**Two switches sit in series, and both are required for a lead to appear:**
+
+| Switch | Scope | Controls |
+|---|---|---|
+| `whatsappAutoLeadEnabled` | per tenant | whether an inbound WhatsApp **buying enquiry** is recorded as an `integration_intakes` row |
+| `INTAKE_AUTO_PROCESSING_ENABLED` + `WORKER_ENABLED` | deployment | whether the sweep **converts** any intake — website or WhatsApp — into a lead |
+
+So with only the tenant setting on, WhatsApp enquiries accumulate at status
+`RECEIVED`, visible under Website enquiries and convertible one at a time with
+`POST /api/v1/integration-intakes/:id/retry`. That is a legitimate way to run
+it: a person still decides, but the enquiry arrives already parsed. Automatic
+end-to-end conversion additionally needs the worker.
+
+What it does NOT do, so nobody has to infer it:
+
+* It never fires on every message. The text must contain a buying signal
+  (`lead-signals.ts` — a readable word list, not a model), so greetings and
+  thanks stay in the Inbox.
+* It never creates a second active lead for a number that already has one. The
+  existing duplicate rule refuses it and the message goes to review.
+* It never drops anything. An enquiry the routing rules cannot place is
+  recorded as blocked and stays in the review queue.
+* WhatsApp only. A wa_id is a real phone number, so the enquiry can be
+  de-duplicated against existing leads by the same partial unique index every
+  other lead uses. Instagram and Messenger supply no number, so the same
+  automation there would have nothing to de-duplicate on — leads from those
+  channels are still created by a person.
+
+Because conversion goes through the existing pipeline, routing must already be
+configured for it to succeed. A WhatsApp intake carries **no country** — nothing
+in this repository derives one from a phone prefix safely — so territory
+resolution answers `NO_TERRITORY` and the enquiry needs a **fallback assignment
+rule** to land anywhere. Without one, every WhatsApp enquiry blocks as
+`NO_MATCH` and waits in review.
+
 ### The Central Admin control plane
 
 `ADMIN_CONTROL_ENABLED=true` opens one signed server-to-server surface for the

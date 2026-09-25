@@ -1,6 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 import { AuditRepository } from '../../common/audit/audit.repository';
 import { TenantContextService } from '../../common/tenancy/tenant-context.service';
+import { normalizeProviderPhone } from '../../common/utils/phone';
 import { IdentityResolutionService } from './identity-resolution.service';
 import { OmnichannelRepository } from './omnichannel.repository';
 import { selectLead } from './lead-selection';
@@ -17,7 +19,13 @@ import type { IngestionResult, NormalizedChannelEvent } from './channel-event';
  * never an unconditional insert.
  *
  * What this deliberately does NOT do:
- *   * create leads — that is the existing lead flow's job, and Phase C's queue
+ *   * create leads — it never calls LeadsRepository. A WhatsApp buying enquiry
+ *     is handed to the EXISTING intake pipeline as an `integration_intakes`
+ *     row, and IntakeProcessingService converts it with the same routing,
+ *     dedupe, assignment, follow-up and transaction logic a website enquiry
+ *     gets. See offerToAutoLead. Every other message still stops at the review
+ *     queue, and that remains the default: the hand-off is opt-in per tenant
+ *     and fires only on a buying signal
  *   * assign anybody — ownership follows the lead, and only the lead
  *   * merge contacts — see IdentityResolutionService for why
  */
@@ -46,6 +54,116 @@ export class IngestionService {
       `omnichannel: ingest ${event.channel} message ${event.externalMessageId}`,
       () => this.process(event),
     );
+  }
+
+  /**
+   * Hands a WhatsApp buying enquiry to the EXISTING intake pipeline.
+   *
+   * Writes one `integration_intakes` row and stops. Everything that turns that
+   * row into a lead — territory resolution, the routing rules, the team's round
+   * robin, contact reuse, duplicate refusal, the first follow-up, and the single
+   * transaction holding all of it — is IntakeProcessingService, unchanged, the
+   * same path a website enquiry takes. This deliberately builds no second
+   * lead-creation engine, and this service still never touches LeadsRepository.
+   *
+   * WHATSAPP ONLY, and the reason is data rather than preference. A wa_id is a
+   * real phone number, so a WhatsApp enquiry can be de-duplicated against
+   * existing leads by `leads_org_mobile_uniq` — the same index protecting every
+   * other lead in the product. Instagram and Messenger give a scoped user id
+   * and no number, so the identical automation there would have nothing to
+   * de-duplicate on and two DMs from one person would become two leads.
+   *
+   * Failure here is deliberately SWALLOWED. The conversation, the message and
+   * the buying-signal flag are already committed, so the enquiry is visible in
+   * the Inbox and the review queue whatever happens next; throwing would turn a
+   * non-2xx into an indefinite Meta redelivery of a message already stored.
+   * Automation is an accelerator on top of the review queue, never a
+   * replacement for it.
+   */
+  private async offerToAutoLead(
+    event: NormalizedChannelEvent,
+    conversationId: string,
+    messageId: string,
+    contactId: string | null,
+    signals: string[],
+  ): Promise<void> {
+    if (event.channel !== 'WHATSAPP') return;
+
+    /*
+     * Read per message rather than cached.
+     *
+     * Turning this off has to take effect on the next message, not whenever a
+     * cache expires — somebody switching it off is usually reacting to leads
+     * they did not want.
+     */
+    if (!(await this.repository.whatsappAutoLeadEnabled())) return;
+
+    // The sender's own number, canonicalised the same way identity resolution
+    // does it. Not the phone-number-id, which is an opaque account identifier.
+    const phone = normalizeProviderPhone(event.senderPhone);
+
+    try {
+      const intake = await this.repository.createLeadIntake({
+        source: WHATSAPP_INTAKE_SOURCE,
+        // The provider's message id IS the idempotency key, and it is the same
+        // value the replay guard above uses. Together with the unique index on
+        // (organization_id, source, external_event_id), a redelivered webhook
+        // can only ever produce one intake.
+        externalEventId: event.externalMessageId,
+        eventType: WHATSAPP_INTAKE_EVENT_TYPE,
+        payloadHash: intakePayloadHash(event),
+        ...(event.senderName ? { name: event.senderName } : {}),
+        ...(phone ? { phone } : {}),
+        ...(event.content ? { message: event.content } : {}),
+        ...(contactId ? { matchedContactId: contactId } : {}),
+      });
+
+      if (!intake) {
+        // The row was already there: this message has been seen. Not an error,
+        // and nothing to audit twice.
+        this.logger.debug(
+          `WhatsApp auto-lead intake already exists for message ${event.externalMessageId}.`,
+        );
+        return;
+      }
+
+      /*
+       * Recorded as an intake CREATED, not as a lead created.
+       *
+       * No lead exists yet and this code cannot know whether one ever will —
+       * conversion may legitimately refuse it as a duplicate, or block on
+       * routing. The lead's own creation is audited by the conversion pipeline,
+       * where the lead id actually exists. Claiming one here would be an audit
+       * row asserting something that had not happened.
+       */
+      await this.audit.record({
+        action: 'omnichannel.auto_lead_intake_created',
+        entityType: 'conversation',
+        entityId: conversationId,
+        after: {
+          channel: event.channel,
+          intakeId: intake.id,
+          messageId,
+          externalMessageId: event.externalMessageId,
+          contactId,
+          // The matched words, so somebody reading the trail can see WHY this
+          // message was treated as an enquiry and argue with it. Passed in
+          // rather than recomputed, so the audit row can never disagree with
+          // the decision that produced it.
+          signals,
+        },
+      });
+
+      this.logger.log(
+        `WhatsApp buying enquiry queued for conversion (intake ${intake.id}, conversation ${conversationId}).`,
+      );
+    } catch (error) {
+      // Never let automation cost us a stored message. See the note above.
+      this.logger.error(
+        { err: error, conversationId, channel: event.channel },
+        'Could not queue a WhatsApp buying enquiry for automatic conversion; it remains in the review queue.',
+      );
+    }
   }
 
   private async process(event: NormalizedChannelEvent): Promise<IngestionResult> {
@@ -125,6 +243,7 @@ export class IngestionService {
     const signals = detectBuyingSignals(event.content);
     if (signals.isPotentialLead) {
       await this.repository.markPotentialLead(conversation.id, signals.signals);
+      await this.offerToAutoLead(event, conversation.id, message.id, contactId, signals.signals);
     }
 
     await this.repository.touchConversation({
@@ -248,6 +367,51 @@ export class IngestionService {
       candidateLeadIds: [],
     };
   }
+}
+
+/**
+ * The intake `source` for a WhatsApp enquiry.
+ *
+ * Free text, exactly like WEBSITE, because `integration_intakes.source` is a
+ * VARCHAR chosen so a second source needs no migration. The unique key is
+ * (organization_id, source, external_event_id), so a WEBSITE submission and a
+ * WHATSAPP message may carry the same external id without colliding.
+ */
+export const WHATSAPP_INTAKE_SOURCE = 'WHATSAPP';
+
+/** Matches the website path's vocabulary: this is an enquiry, not a status ping. */
+export const WHATSAPP_INTAKE_EVENT_TYPE = 'ENQUIRY';
+
+/**
+ * A deterministic fingerprint of the normalised event.
+ *
+ * The column exists so a retry can be told from a collision: the same event id
+ * with the same hash is the same message, while the same id with a DIFFERENT
+ * hash means two different payloads are claiming one identity — which for a
+ * provider id would be a bug worth seeing rather than silently overwriting.
+ *
+ * Built from the normalised fields rather than the raw webhook body on purpose.
+ * Meta may re-serialise a redelivery — key order and whitespace are not
+ * guaranteed stable — so hashing raw bytes would make the same message look
+ * like a different one. The fields below are what we actually stored.
+ *
+ * Nothing secret goes in: ids, the sender's number, the message text and a
+ * timestamp. No access token, no app secret, and the digest is one-way anyway.
+ */
+function intakePayloadHash(event: NormalizedChannelEvent): string {
+  return createHash('sha256')
+    .update(
+      JSON.stringify([
+        event.channel,
+        event.externalMessageId,
+        event.externalConversationId,
+        event.externalUserId,
+        event.senderPhone ?? null,
+        event.content ?? null,
+        event.timestamp.toISOString(),
+      ]),
+    )
+    .digest('hex');
 }
 
 function titleCase(channel: string): string {

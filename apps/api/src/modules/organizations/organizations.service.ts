@@ -19,6 +19,7 @@ const DEFAULT_SETTINGS: OrganizationSettings = {
   leadSources: [],
   omnichannelEnabled: false,
   sharedUnassignedQueue: false,
+  whatsappAutoLeadEnabled: false,
 };
 
 @Injectable()
@@ -87,6 +88,7 @@ type OrganizationRow = {
     leadSources: string[];
     omnichannelEnabled: boolean;
     sharedUnassignedQueue: boolean;
+    whatsappAutoLeadEnabled: boolean;
   } | null;
 };
 
@@ -111,6 +113,7 @@ function toDetail(organization: OrganizationRow): OrganizationDetail {
           leadSources: organization.settings.leadSources,
           omnichannelEnabled: organization.settings.omnichannelEnabled,
           sharedUnassignedQueue: organization.settings.sharedUnassignedQueue,
+          whatsappAutoLeadEnabled: organization.settings.whatsappAutoLeadEnabled,
         }
       : DEFAULT_SETTINGS,
   };

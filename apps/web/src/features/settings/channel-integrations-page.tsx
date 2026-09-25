@@ -91,6 +91,7 @@ export function ChannelIntegrationsPage(): React.JSX.Element {
         </p>
       </div>
 
+      <WhatsAppAutoLeadCard canManage={canManage} />
       <SharedQueueCard canManage={canManage} />
 
       {integrations.isPending ? (
@@ -117,6 +118,100 @@ export function ChannelIntegrationsPage(): React.JSX.Element {
         </div>
       )}
     </>
+  );
+}
+
+/**
+ * Whether a WhatsApp buying enquiry becomes a lead on its own.
+ *
+ * Lives on this page rather than in general settings because it is a decision
+ * about WhatsApp, and it means nothing until WhatsApp is connected below.
+ *
+ * OFF by default, and the copy is careful about what switching it on does. This
+ * is not a display preference like the two cards around it: it assigns real
+ * leads to real salespeople and creates a follow-up for each, which is easy to
+ * turn on and very hard to undo. So the supporting text says exactly when it
+ * fires and what happens to everything else, rather than leaving somebody to
+ * discover that every "hi" became a lead.
+ *
+ * WhatsApp only. A wa_id is a real phone number, so a WhatsApp enquiry can be
+ * de-duplicated against existing leads; Instagram and Messenger supply no
+ * number, so the same automation there would have nothing to de-duplicate on.
+ * The card says so, because the obvious next question is "why not the others?".
+ */
+function WhatsAppAutoLeadCard({ canManage }: { canManage: boolean }): React.JSX.Element {
+  const queryClient = useQueryClient();
+
+  const organization = useQuery({
+    queryKey: ['organization'],
+    queryFn: () => apiGet<OrganizationDetail>('/organizations/current'),
+  });
+
+  const update = useMutation({
+    // The same settings endpoint every other organization setting uses, so this
+    // is validated, permission-checked and audited identically.
+    mutationFn: (whatsappAutoLeadEnabled: boolean) =>
+      apiPatch('/organizations/current', { settings: { whatsappAutoLeadEnabled } }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['organization'] });
+    },
+  });
+
+  const enabled = organization.data?.settings.whatsappAutoLeadEnabled ?? false;
+
+  return (
+    <Card>
+      <CardHeader
+        title="Automatic leads from WhatsApp"
+        subtitle="Turn buying enquiries into assigned work without waiting for review"
+      />
+
+      <div className="space-y-4 p-5">
+        <label className="flex items-start gap-3">
+          <input
+            type="checkbox"
+            checked={enabled}
+            disabled={!canManage || update.isPending || organization.isPending}
+            onChange={(event) => update.mutate(event.target.checked)}
+            className="mt-1"
+          />
+          <span className="text-sm">
+            <span className="font-medium text-slate-900">
+              Automatically create leads from WhatsApp buying enquiries
+            </span>
+            <span className="mt-1 block text-pretty text-slate-600">
+              LeadFlow creates a lead only when an inbound WhatsApp message contains a buying
+              signal. Other messages remain in the Inbox and review queue.
+            </span>
+          </span>
+        </label>
+
+        {/*
+          What actually happens, said before somebody switches it on rather
+          than discovered afterwards. Each clause is a real behaviour of the
+          conversion pipeline, not reassurance.
+        */}
+        <ul className="ml-1 space-y-1.5 text-xs text-slate-500">
+          <li>
+            A new lead is routed by your assignment rules and given a first follow-up, exactly
+            like a website enquiry.
+          </li>
+          <li>
+            If the sender already has an active lead, no second one is created — their message
+            goes to review instead.
+          </li>
+          <li>
+            Anything the rules cannot route stays in the review queue. Nothing is dropped.
+          </li>
+          <li>
+            WhatsApp only. Instagram and Messenger do not provide a phone number, so leads from
+            those channels are still created by a person.
+          </li>
+        </ul>
+
+        {update.isError && <ErrorNotice message="Could not change this setting." />}
+      </div>
+    </Card>
   );
 }
 

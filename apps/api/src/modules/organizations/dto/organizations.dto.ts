@@ -45,6 +45,22 @@ export class UpdateOrganizationSettingsDto {
   @IsBoolean()
   sharedUnassignedQueue?: boolean;
 
+  /**
+   * Whether an inbound WhatsApp buying enquiry becomes a lead automatically.
+   *
+   * Off by default. Turning it on means real leads get assigned to real
+   * salespeople with a follow-up each, without anybody reviewing them first —
+   * easy to switch on, hard to undo — so it is a deliberate per-tenant choice
+   * rather than anything that arrives with a deploy.
+   *
+   * Deliberately NOT governed by INTAKE_AUTO_PROCESSING_ENABLED. That is a
+   * deployment-wide variable for the website backlog; sharing it would let one
+   * switch arm two unrelated pipelines.
+   */
+  @IsOptional()
+  @IsBoolean()
+  whatsappAutoLeadEnabled?: boolean;
+
   @IsOptional()
   @Matches(/^([01]\d|2[0-3]):[0-5]\d$/, { message: 'must be HH:MM in 24-hour form' })
   workingHoursStart?: string;
