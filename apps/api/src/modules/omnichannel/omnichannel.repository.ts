@@ -912,12 +912,22 @@ export class OmnichannelRepository {
     return organization?.country ?? 'US';
   }
 
-  async omnichannelEnabled(): Promise<boolean> {
-    const settings = await this.prisma.client.organizationSettings.findFirst({
-      select: { omnichannelEnabled: true },
-    });
-    return settings?.omnichannelEnabled ?? false;
-  }
+  /*
+   * There is deliberately NO omnichannelEnabled() here.
+   *
+   * One used to be, unused by anything, and an unused query that reads a flag
+   * called "enabled" reads as an enforcement point — so the next person either
+   * trusts a boundary that was never applied, or wires it in believing they are
+   * closing a gap.
+   *
+   * Wiring it would have been the worse of the two. `omnichannelEnabled` is a
+   * navigation preference; gating ingestion on it would silently discard real
+   * customer messages for a tenant whose integration is CONNECTED but whose
+   * flag happens to be off, and Meta does not redeliver a 200. The actual
+   * boundary is per integration — `status` and `enabled`, checked on every
+   * webhook before a tenant is resolved — which is finer grained and fails
+   * closed. See the note on UpdateOrganizationSettingsDto.omnichannelEnabled.
+   */
 
   /**
    * Whether ordinary sales users may browse unowned conversations.

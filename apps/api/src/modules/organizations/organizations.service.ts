@@ -57,7 +57,18 @@ export class OrganizationsService {
   }
 }
 
-/** The tenant-visible configuration, for the audit trail. */
+/**
+ * The tenant-visible configuration, for the audit trail.
+ *
+ * Includes SETTINGS as well as the organization's own columns. It previously
+ * recorded only the columns, so a settings change produced an audit row whose
+ * before and after were identical — the event was logged and the actual change
+ * was not, which is the one thing an audit row exists to answer.
+ *
+ * That matters most for the two settings that change who can see what:
+ * `omnichannelEnabled` and `sharedUnassignedQueue`. "Who opened the unassigned
+ * queue to the whole team, and when" has to be answerable.
+ */
 function snapshot(organization: OrganizationRow): Record<string, unknown> {
   return {
     name: organization.name,
@@ -65,6 +76,18 @@ function snapshot(organization: OrganizationRow): Record<string, unknown> {
     currency: organization.currency,
     locale: organization.locale,
     country: organization.country,
+    settings: organization.settings
+      ? {
+          followupReminderMinutes: organization.settings.followupReminderMinutes,
+          followupOverdueMinutes: organization.settings.followupOverdueMinutes,
+          escalateToManager: organization.settings.escalateToManager,
+          workingHoursStart: organization.settings.workingHoursStart,
+          workingHoursEnd: organization.settings.workingHoursEnd,
+          leadSources: organization.settings.leadSources,
+          omnichannelEnabled: organization.settings.omnichannelEnabled,
+          sharedUnassignedQueue: organization.settings.sharedUnassignedQueue,
+        }
+      : null,
   };
 }
 

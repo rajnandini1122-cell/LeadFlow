@@ -35,6 +35,7 @@ export class OrganizationsRepository {
           workingHoursEnd?: string | undefined;
           leadSources?: string[] | undefined;
           sharedUnassignedQueue?: boolean | undefined;
+          omnichannelEnabled?: boolean | undefined;
         }
       | undefined;
   }) {
