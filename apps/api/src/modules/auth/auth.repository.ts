@@ -45,6 +45,7 @@ export class AuthRepository {
         id: true,
         email: true,
         passwordHash: true,
+        emailVerifiedAt: true,
         fullName: true,
         mobile: true,
         avatarUrl: true,

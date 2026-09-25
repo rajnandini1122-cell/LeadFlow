@@ -266,7 +266,15 @@ describe('Multi-organization login', () => {
         });
 
         const user = await prisma().user.create({
-          data: { email, fullName: 'Dual Platform Owner', passwordHash, status: 'ACTIVE' },
+          data: {
+            email,
+            fullName: 'Dual Platform Owner',
+            passwordHash,
+            status: 'ACTIVE',
+            // Stands for an account that predates verification, which the
+            // migration back-fills. Signing in is the point of the fixture.
+            emailVerifiedAt: new Date(),
+          },
           select: { id: true },
         });
 
@@ -352,7 +360,15 @@ describe('Multi-organization login', () => {
         });
 
         const user = await prisma().user.create({
-          data: { email, fullName: 'Scope Platform Owner', passwordHash, status: 'ACTIVE' },
+          data: {
+            email,
+            fullName: 'Scope Platform Owner',
+            passwordHash,
+            status: 'ACTIVE',
+            // Stands for an account that predates verification, which the
+            // migration back-fills. Signing in is the point of the fixture.
+            emailVerifiedAt: new Date(),
+          },
           select: { id: true },
         });
 

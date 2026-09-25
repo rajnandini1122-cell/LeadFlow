@@ -3,6 +3,7 @@ import { AppConfig } from '../config/config.module';
 import { EMAIL_PROVIDER, type EmailDeliveryResult, type EmailProvider } from './email.types';
 import {
   contactEnquiryEmail,
+  emailVerificationEmail,
   invitationEmail,
   passwordResetEmail,
 } from './email.templates';
@@ -49,6 +50,32 @@ export class EmailService {
         name: input.name,
         link,
         expiresInMinutes: input.expiresInMinutes,
+        to: input.to,
+      }),
+    );
+  }
+
+  /**
+   * The link that proves a new registration owns its address.
+   *
+   * Built from WEB_BASE_URL like every other emailed link, so it points at the
+   * web app rather than the API — and so a deployment that forgot to configure
+   * it fails at boot rather than mailing customers a link to localhost.
+   */
+  async sendEmailVerification(input: {
+    to: string;
+    name: string;
+    token: string;
+    expiresInHours: number;
+  }): Promise<EmailDeliveryResult> {
+    const link = this.url(`/verify-email/${input.token}`);
+
+    return this.deliver(
+      emailVerificationEmail({
+        productName: this.config.get('PRODUCT_NAME'),
+        name: input.name,
+        link,
+        expiresInHours: input.expiresInHours,
         to: input.to,
       }),
     );

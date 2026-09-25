@@ -5,6 +5,7 @@ import { AppConfig } from '../../common/config/config.module';
 import { AppException } from '../../common/errors/app.exception';
 import { AuditRepository } from '../../common/audit/audit.repository';
 import { EmailService } from '../../common/email/email.service';
+import { EmailVerificationService } from '../auth/email-verification.service';
 import { PasswordService } from '../auth/password.service';
 import { InvitationsRepository } from './invitations.repository';
 import type { AcceptInvitationDto } from './dto/invitations.dto';
@@ -40,6 +41,7 @@ export class InvitationsService {
     private readonly audit: AuditRepository,
     private readonly config: AppConfig,
     private readonly email: EmailService,
+    private readonly verification: EmailVerificationService,
   ) {}
 
   /**
@@ -204,6 +206,22 @@ export class InvitationsService {
     // Lost the race, or consumed between the read and the write. Either way the
     // token is spent — reporting success would be a lie.
     if (!accepted) throw invitationGone();
+
+    /*
+     * Accepting an invitation IS proof of mailbox ownership.
+     *
+     * The invitation token was generated here, hashed here, and sent to one
+     * address. Redeeming it means whoever did so read that mailbox — the same
+     * thing a verification link proves, by the same mechanism. Emailing them a
+     * second link to confirm an address they just demonstrably received mail
+     * at would be ceremony, and ceremony that blocks a new colleague from
+     * getting to work.
+     *
+     * So invited users are verified on acceptance rather than being sent
+     * through a redundant round trip. Only ever set forward from null, so
+     * somebody who verified earlier keeps their original timestamp.
+     */
+    await this.verification.markVerified(invitation.user.id, 'invitation');
 
     await this.audit.record({
       action: 'user.invitation.accepted',

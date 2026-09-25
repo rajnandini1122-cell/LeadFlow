@@ -1,4 +1,9 @@
-import { createTestContext, PASSWORD, type TestContext } from './helpers/test-app';
+import {
+  createTestContext,
+  PASSWORD,
+  registerVerifiedOrganization,
+  type TestContext,
+} from './helpers/test-app';
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import { TenantContextService } from '../src/common/tenancy/tenant-context.service';
 
@@ -63,21 +68,17 @@ describe('Last administrator invariant under concurrency', () => {
     }> => {
       const founderEmail = `${unique('founder')}@example.test`;
 
-      const registered = await ctx
-        .http()
-        .post('/api/v1/auth/register')
-        .send({
-          organizationName: `Admins ${unique('org')}`,
-          email: founderEmail,
-          password: PASSWORD,
-          firstName: 'Ada',
-          lastName: 'Admin',
-        })
-        .expect(201);
+      const registered = await registerVerifiedOrganization(ctx.app, {
+        organizationName: `Admins ${unique('org')}`,
+        email: founderEmail,
+        password: PASSWORD,
+        firstName: 'Ada',
+        lastName: 'Admin',
+      });
 
       const first: Admin = {
-        userId: registered.body.data.user.id as string,
-        token: registered.body.data.tokens.accessToken as string,
+        userId: registered.registration.body.data.user.id as string,
+        token: registered.tokens.accessToken,
       };
 
       const secondEmail = `${unique('coadmin')}@example.test`;
@@ -101,7 +102,7 @@ describe('Last administrator invariant under concurrency', () => {
         .expect(200);
 
       return {
-        organizationId: registered.body.data.user.organization.id as string,
+        organizationId: registered.registration.body.data.user.organization.id as string,
         first,
         second: {
           userId: invite.body.data.userId as string,

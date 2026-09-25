@@ -78,7 +78,7 @@ interface AuthState {
      * than defaulted silently on the server.
      */
     country?: string;
-  }) => Promise<void>;
+  }) => Promise<RegistrationOutcome>;
   /** Switches tenant without re-entering credentials. Server validates membership. */
   switchOrganization: (organizationId: string) => Promise<void>;
   /**
@@ -122,6 +122,16 @@ interface AuthState {
 }
 
 const AuthContext = createContext<AuthState | undefined>(undefined);
+
+/**
+ * What registration produced.
+ *
+ * Mirrors the server's union so the client must branch before it can read
+ * tokens — the same decision, enforced by the same shape on both sides.
+ */
+export type RegistrationOutcome =
+  | { verified: false; verificationEmailSent: boolean; user: AuthenticatedUser }
+  | { verified: true; tokens: TokenPair; user: AuthenticatedUser };
 
 export function AuthProvider({ children }: { children: ReactNode }): React.JSX.Element {
   const [user, setUser] = useState<AuthenticatedUser | null>(null);
@@ -238,12 +248,26 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
       email: string;
       password: string;
       country?: string;
-    }): Promise<void> => {
-      const result = await apiPost<RefreshResult>('/auth/register', {
+    }): Promise<RegistrationOutcome> => {
+      const result = await apiPost<RegistrationOutcome>('/auth/register', {
         ...input,
         platform: clientPlatform(),
       });
 
+      /*
+       * A local registration is NOT signed in, and this is the security change.
+       *
+       * The server issues no access token and no refresh token until the
+       * mailbox is proven, so there is nothing to store and nothing to set
+       * `authenticated` from. Doing either would put the app into a signed-in
+       * state it has no credentials for, and every request would then 401.
+       *
+       * The caller routes to "check your email" instead.
+       */
+      if (!result.verified) return result;
+
+      // Reached only for a provider-verified identity (Google), where the
+      // server did issue a session.
       setSignedOut(false);
       keepRefreshToken(result.tokens);
       enablePush();
@@ -251,6 +275,8 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
       applyOrganizationFormatting(result.user);
       setUser(result.user);
       setStatus('authenticated');
+
+      return result;
     },
     [],
   );

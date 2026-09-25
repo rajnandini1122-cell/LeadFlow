@@ -128,6 +128,7 @@ describe('Central Admin control plane', () => {
             fullName: `Agent ${index}`,
             passwordHash: 'not-a-real-hash',
             status: 'ACTIVE',
+            emailVerifiedAt: new Date(),
           },
           select: { id: true },
         });

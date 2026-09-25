@@ -9,7 +9,9 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import { type AnyRoleKey, type RoleKey } from '@leadflow/api-types';
 import { AppModule } from '../../src/app.module';
 import { AppConfig } from '../../src/common/config/config.module';
+import { PrismaService } from '../../src/common/prisma/prisma.service';
 import { RedisService } from '../../src/common/redis/redis.service';
+import { TenantContextService } from '../../src/common/tenancy/tenant-context.service';
 import { PrismaClient } from '../../src/generated/prisma/client';
 import { InMemoryRedis, asRedisService } from './in-memory-redis';
 import { serveWebApp } from '../../src/common/web/spa';
@@ -41,6 +43,97 @@ export interface SeededOrg {
   owner: SeededUser;
   rep: SeededUser;
   leadId: string;
+}
+
+/**
+ * Registers an organization and comes back holding a session.
+ *
+ * `POST /auth/register` deliberately no longer returns tokens: a local
+ * registration is not signed in until the mailbox is proven. Most suites here
+ * are not about verification at all — they need "an organization exists and its
+ * owner is signed in" as a precondition, and used to get it in one call.
+ *
+ * So this does what the person does: registers, proves the mailbox, signs in.
+ * The middle step is applied directly rather than by redeeming a link, because
+ * only the token's HASH is stored and the raw token exists solely in the email
+ * — the suites that must prove the real link works capture the token from the
+ * mail seam instead, and would not be served by a shortcut here.
+ *
+ * Returns the registration response as well, so callers can still assert on it.
+ */
+export async function registerVerifiedOrganization(
+  app: INestApplication,
+  payload: Record<string, unknown>,
+): Promise<{
+  registration: request.Response;
+  tokens: { accessToken: string; refreshToken: string };
+  user: Record<string, unknown>;
+}> {
+  const registration = await request(app.getHttpServer())
+    .post('/api/v1/auth/register')
+    .send(payload);
+
+  if (registration.status >= 400) {
+    throw new Error(
+      `Registration failed with ${registration.status}: ${JSON.stringify(registration.body)}`,
+    );
+  }
+
+  const data = registration.body.data as Record<string, unknown>;
+
+  // An identity provider already proved this mailbox, so the server issued a
+  // session and there is nothing left to do.
+  if (data['verified'] === true) {
+    return {
+      registration,
+      tokens: data['tokens'] as { accessToken: string; refreshToken: string },
+      user: data['user'] as Record<string, unknown>,
+    };
+  }
+
+  const email = String(payload['email']);
+  await markMailboxProven(app, email);
+
+  const login = await request(app.getHttpServer())
+    .post('/api/v1/auth/login')
+    .send({ email, password: payload['password'], platform: payload['platform'] ?? 'ANDROID' });
+
+  if (login.status >= 400) {
+    throw new Error(`Login after registration failed with ${login.status}`);
+  }
+
+  return {
+    registration,
+    tokens: login.body.data.tokens as { accessToken: string; refreshToken: string },
+    user: login.body.data.user as Record<string, unknown>,
+  };
+}
+
+/**
+ * Marks an address proven, as redeeming a verification link would.
+ *
+ * Goes through the RUNNING APPLICATION'S client, not a fresh one. PGlite —
+ * what this harness runs where there is no Postgres — serves exactly one
+ * connection, so opening a second client mid-spec evicts the app's and every
+ * subsequent query in the suite fails with "server has closed the connection".
+ * That is not a hypothetical: an earlier version of this helper did open its
+ * own, and took 73 tests down with it.
+ *
+ * `User` is global rather than tenant-scoped, so no tenant context is needed;
+ * the system scope is declared anyway so the reason appears in the audit trail
+ * the same way every other privileged test write does.
+ */
+export async function markMailboxProven(app: INestApplication, email: string): Promise<void> {
+  const prisma = app.get(PrismaService).client;
+
+  await app
+    .get(TenantContextService)
+    .runAsSystem('e2e: prove a mailbox as a verification link would', async () => {
+      await prisma.user.updateMany({
+        where: { email: email.toLowerCase(), emailVerifiedAt: null },
+        data: { emailVerifiedAt: new Date() },
+      });
+    });
 }
 
 export interface TestContext {
@@ -136,7 +229,27 @@ async function seedOrganization(
 
   const makeMember = async (email: string, role: RoleKey): Promise<string> => {
     const user = await prisma.user.create({
-      data: { email, fullName: `${spec.name} ${role}`, passwordHash, status: 'ACTIVE' },
+      data: {
+        email,
+        fullName: `${spec.name} ${role}`,
+        passwordHash,
+        status: 'ACTIVE',
+        /*
+         * Verified, because these fixtures stand for users who ALREADY EXIST.
+         *
+         * They are the suite's equivalent of the production accounts the
+         * migration grandfathers: created under the previous policy, in use,
+         * and not retroactively doubted. Stamped with the current time for the
+         * same reason the migration uses now() — it records when the
+         * grandfathering happened and claims nothing about a mailbox anybody
+         * ever proved.
+         *
+         * Leaving this null would make every existing-user test assert the
+         * behaviour of a brand-new unverified registration instead, which is a
+         * different scenario with its own dedicated spec.
+         */
+        emailVerifiedAt: new Date(),
+      },
     });
     await prisma.organizationUser.create({
       data: {

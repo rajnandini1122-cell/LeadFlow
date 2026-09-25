@@ -81,6 +81,55 @@ export function passwordResetEmail(input: {
   };
 }
 
+/**
+ * Confirms that somebody controls the address they registered with.
+ *
+ * Deliberately NOT a password-reset lookalike. This link proves an address; it
+ * grants no power over an existing account, and the copy says so — somebody
+ * who did not register should be told they can safely ignore it, not made to
+ * worry that their account is under attack.
+ */
+export function emailVerificationEmail(input: {
+  productName: string;
+  name: string;
+  link: string;
+  expiresInHours: number;
+  to: string;
+}): EmailMessage {
+  const { productName, name, link, expiresInHours, to } = input;
+  const firstName = name.split(' ')[0] ?? 'there';
+
+  return {
+    to: { email: to, name },
+    subject: `Confirm your email address for ${productName}`,
+    tag: 'email-verification',
+    text: [
+      `Hi ${firstName},`,
+      '',
+      `Thanks for creating a ${productName} account. Confirm this email address`,
+      'to finish setting it up and sign in.',
+      '',
+      `Confirm your email: ${link}`,
+      '',
+      `This link expires in ${expiresInHours} hours and can be used once.`,
+      '',
+      'If you did not create this account, you can ignore this email. Nothing',
+      'will be activated and no further messages will be sent.',
+    ].join('\n'),
+    html: layout({
+      productName,
+      heading: 'Confirm your email address',
+      body: `
+        <p style="margin:0 0 12px;">Hi ${escapeHtml(firstName)},</p>
+        <p style="margin:0 0 12px;">Thanks for creating a ${escapeHtml(productName)} account. Confirm this email address to finish setting it up and sign in.</p>
+        <p style="margin:0;">This link expires in <strong>${expiresInHours} hours</strong> and can be used once. If you did not create this account, you can ignore this email — nothing will be activated.</p>
+      `,
+      link,
+      cta: 'Confirm my email',
+    }),
+  };
+}
+
 export function invitationEmail(input: {
   productName: string;
   organizationName: string;

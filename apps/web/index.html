@@ -8,7 +8,117 @@
     <meta name="description" content="Sales CRM for small teams. Capture leads, assign ownership, schedule follow-ups, and see what is overdue." />
   </head>
   <body>
-    <div id="root"></div>
+    <!--
+      The startup shell.
+
+      #root used to be empty, and that empty div WAS the blank white screen on
+      Android: the native splash hands over to the WebView, which paints
+      nothing until the JavaScript bundle has downloaded, parsed and mounted
+      React. Only then could the app render its own "Restoring session" state —
+      which is inside React, and so can never cover the gap before React
+      exists.
+
+      This markup is part of index.html, so it paints on the WebView's first
+      frame with no JavaScript, no network request and no font to fetch. Its
+      styles are inline for the same reason: a stylesheet is another round trip
+      before anything is visible.
+
+      React replaces it when it mounts, because createRoot() takes over the
+      container's contents. There is nothing to remove and no flag to clear —
+      see main.tsx, which only marks the document as booted so the timeout
+      below can tell "slow" from "broken".
+    -->
+    <div id="root">
+      <div class="boot" role="status" aria-live="polite">
+        <div class="boot__mark" aria-hidden="true">LF</div>
+        <p class="boot__name">LeadFlow</p>
+        <p class="boot__hint" id="boot-hint">Starting…</p>
+        <noscript>
+          <p class="boot__hint">LeadFlow needs JavaScript enabled to run.</p>
+        </noscript>
+      </div>
+    </div>
+
+    <style>
+      /* Matches the application's own slate palette, so the handover to the
+         real UI is not a colour change. */
+      .boot {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 0.5rem;
+        background: #f8fafc;
+        font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+        /* System fonts only: a webfont here would be a network request in front
+           of the first paint, which is the problem rather than the solution. */
+      }
+      .boot__mark {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 3rem;
+        height: 3rem;
+        border-radius: 0.75rem;
+        background: #0f172a;
+        color: #ffffff;
+        font-size: 1.125rem;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+      }
+      .boot__name {
+        margin: 0.75rem 0 0;
+        color: #0f172a;
+        font-size: 1rem;
+        font-weight: 600;
+      }
+      .boot__hint {
+        margin: 0;
+        color: #64748b;
+        font-size: 0.875rem;
+      }
+      /* No spinner and no animation. A static mark costs nothing to composite
+         on a slow device, where an animating one competes for the main thread
+         with the very work it is waiting for. */
+    </style>
+
+    <script>
+      /*
+       * Turns an indefinite wait into an actionable one.
+       *
+       * If the bundle has not booted after ten seconds the cause is almost
+       * always a dead network or a failed asset, and the honest thing is to say
+       * so and offer a retry — rather than leaving somebody looking at
+       * "Starting…" forever, which is the blank screen wearing a label.
+       */
+      (function () {
+        var TIMEOUT_MS = 10000;
+
+        setTimeout(function () {
+          if (document.documentElement.hasAttribute('data-booted')) return;
+
+          var hint = document.getElementById('boot-hint');
+          if (!hint) return;
+
+          hint.textContent = 'Still loading. Check your connection.';
+
+          var retry = document.createElement('button');
+          retry.type = 'button';
+          retry.textContent = 'Retry';
+          retry.style.cssText =
+            'margin-top:.75rem;padding:.5rem 1rem;border-radius:.5rem;border:0;' +
+            'background:#0f172a;color:#fff;font-size:.875rem;font-weight:500;cursor:pointer';
+          retry.onclick = function () {
+            window.location.reload();
+          };
+
+          hint.parentNode.appendChild(retry);
+        }, TIMEOUT_MS);
+      })();
+    </script>
+
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

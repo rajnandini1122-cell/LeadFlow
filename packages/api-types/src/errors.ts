@@ -18,6 +18,23 @@ export const ERROR_CODES = {
   ACCOUNT_SUSPENDED: 'ACCOUNT_SUSPENDED',
   ORGANIZATION_SELECTION_REQUIRED: 'ORGANIZATION_SELECTION_REQUIRED',
 
+  /*
+   * --- email verification ----------------------------------------------------
+   *
+   * Stable codes, because a client must branch on the CODE and never on the
+   * prose. "Verify your email" and "that link has expired" send somebody to
+   * two different screens, and a UI that matched on message text would break
+   * the first time anybody improved the wording.
+   */
+  /** Credentials were correct, but the mailbox is unproven. NO tokens issued. */
+  EMAIL_VERIFICATION_REQUIRED: 'EMAIL_VERIFICATION_REQUIRED',
+  /** No such token, or it never existed. Indistinguishable on purpose. */
+  EMAIL_VERIFICATION_INVALID: 'EMAIL_VERIFICATION_INVALID',
+  EMAIL_VERIFICATION_EXPIRED: 'EMAIL_VERIFICATION_EXPIRED',
+  /** Already spent, or the account is already verified. Not an error to fear. */
+  EMAIL_VERIFICATION_ALREADY_COMPLETED: 'EMAIL_VERIFICATION_ALREADY_COMPLETED',
+  EMAIL_VERIFICATION_RATE_LIMITED: 'EMAIL_VERIFICATION_RATE_LIMITED',
+
   // --- tenancy ---------------------------------------------------------------
   ORGANIZATION_NOT_FOUND: 'ORGANIZATION_NOT_FOUND',
   ORGANIZATION_SUSPENDED: 'ORGANIZATION_SUSPENDED',

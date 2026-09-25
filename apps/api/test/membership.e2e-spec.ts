@@ -1,5 +1,10 @@
 import { ERROR_CODES } from '@leadflow/api-types';
-import { createTestContext, PASSWORD, type TestContext } from './helpers/test-app';
+import {
+  createTestContext,
+  PASSWORD,
+  registerVerifiedOrganization,
+  type TestContext,
+} from './helpers/test-app';
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import { TenantContextService } from '../src/common/tenancy/tenant-context.service';
 import { fixtureMobile } from './helpers/phone-fixtures';
@@ -50,7 +55,18 @@ describe('Organization membership and invitations', () => {
       expect(data.user.fullName).toBe('Ada Lovelace');
       expect(data.user.role).toBe('OWNER');
       expect(data.user.organization.id).toBeTruthy();
-      expect(data.tokens.accessToken).toBeTruthy();
+
+      /*
+       * Created, and NOT signed in.
+       *
+       * The whole record exists — organization, user, membership, OWNER role —
+       * but no session comes with it. That is the registration security change:
+       * until the mailbox is proven there is nothing to hold an account with,
+       * so a typo cannot produce a working account somebody else's address is
+       * attached to.
+       */
+      expect(data.verified).toBe(false);
+      expect(data.tokens).toBeUndefined();
     });
 
     it('generates a lowercase, URL-safe slug from the organization name', async () => {
@@ -441,23 +457,19 @@ describe('Organization membership and invitations', () => {
     /** Registers a throwaway organization so destructive tests are isolated. */
     const freshOrg = async () => {
       const email = `${unique('solo')}@example.test`;
-      const response = await ctx
-        .http()
-        .post('/api/v1/auth/register')
-        .send({
-          organizationName: `Solo ${unique('org')}`,
-          email,
-          password: 'CorrectHorse!2026',
-          firstName: 'Only',
-          lastName: 'Owner',
-        })
-        .expect(201);
+      const response = await registerVerifiedOrganization(ctx.app, {
+        organizationName: `Solo ${unique('org')}`,
+        email,
+        password: 'CorrectHorse!2026',
+        firstName: 'Only',
+        lastName: 'Owner',
+      });
 
       return {
         email,
-        token: response.body.data.tokens.accessToken as string,
-        userId: response.body.data.user.id as string,
-        organizationId: response.body.data.user.organization.id as string,
+        token: response.tokens.accessToken,
+        userId: response.registration.body.data.user.id as string,
+        organizationId: response.registration.body.data.user.organization.id as string,
       };
     };
 

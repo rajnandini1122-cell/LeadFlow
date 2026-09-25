@@ -1,4 +1,9 @@
-import { createTestContext, PASSWORD, type TestContext } from './helpers/test-app';
+import {
+  createTestContext,
+  PASSWORD,
+  registerVerifiedOrganization,
+  type TestContext,
+} from './helpers/test-app';
 import { fixtureMobile, toFixtureE164 } from './helpers/phone-fixtures';
 
 /**
@@ -24,21 +29,29 @@ describe('Country, locale and phone', () => {
     `${prefix}.${Date.now()}.${Math.floor(Math.random() * 1_000_000)}`;
   const tomorrow = (): string => new Date(Date.now() + 86_400_000).toISOString();
 
-  /** Registers a brand-new organization and returns what it was created with. */
-  const register = async (overrides: Record<string, unknown> = {}) => {
-    const response = await ctx
-      .http()
-      .post('/api/v1/auth/register')
-      .send({
-        organizationName: `Locale ${unique('org')}`,
-        email: `${unique('founder')}@example.test`,
-        password: PASSWORD,
-        firstName: 'Priya',
-        lastName: 'Sharma',
-        ...overrides,
-      });
+  const registrationPayload = (overrides: Record<string, unknown> = {}) => ({
+    organizationName: `Locale ${unique('org')}`,
+    email: `${unique('founder')}@example.test`,
+    password: PASSWORD,
+    firstName: 'Priya',
+    lastName: 'Sharma',
+    ...overrides,
+  });
 
-    return response;
+  /** Registers a brand-new organization and returns what it was created with. */
+  const register = async (overrides: Record<string, unknown> = {}) =>
+    ctx.http().post('/api/v1/auth/register').send(registrationPayload(overrides));
+
+  /**
+   * Registers and signs in.
+   *
+   * Registration alone no longer yields a token — the mailbox has to be proven
+   * first — and every test below this line is about phone and currency
+   * formatting, not about verification.
+   */
+  const registerSignedIn = async (overrides: Record<string, unknown> = {}): Promise<string> => {
+    const result = await registerVerifiedOrganization(ctx.app, registrationPayload(overrides));
+    return result.tokens.accessToken;
   };
 
   beforeAll(async () => {
@@ -134,10 +147,7 @@ describe('Country, locale and phone', () => {
 
   describe('phone numbers are stored one way', () => {
     /** An organization in India, so local numbers resolve to +91. */
-    const indianOrg = async () => {
-      const response = await register({ country: 'IN' });
-      return response.body.data.tokens.accessToken as string;
-    };
+    const indianOrg = async () => registerSignedIn({ country: 'IN' });
 
     it('canonicalises a local number on a LEAD, using the tenant country', async () => {
       const token = await indianOrg();
@@ -297,8 +307,7 @@ describe('Country, locale and phone', () => {
     it('applies the tenant country, not a hardcoded one', async () => {
       // The same digits in a US tenant are a US number. If a default leaked
       // into the parser, this would come back as +91.
-      const response = await register({ country: 'US' });
-      const token = response.body.data.tokens.accessToken as string;
+      const token = await registerSignedIn({ country: 'US' });
       const national = fixtureMobile();
 
       const lead = await ctx

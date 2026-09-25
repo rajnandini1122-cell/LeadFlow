@@ -1,4 +1,9 @@
-import { createTestContext, PASSWORD, type TestContext } from './helpers/test-app';
+import {
+  createTestContext,
+  PASSWORD,
+  registerVerifiedOrganization,
+  type TestContext,
+} from './helpers/test-app';
 import { AUDIT_ACTIONS } from '../src/common/audit/audit.repository';
 import { AuthRepository } from '../src/modules/auth/auth.repository';
 import { PrismaService } from '../src/common/prisma/prisma.service';
@@ -52,32 +57,29 @@ describe('Refresh token rotation under concurrency', () => {
 
   describe('refresh token rotation', () => {
     /** Signs in fresh so the returned refresh token has been used by nobody. */
-    const freshSession = async (): Promise<{ refreshToken: string; userId: string }> => {
+    const freshSession = async (): Promise<{
+      refreshToken: string;
+      userId: string;
+      email: string;
+    }> => {
       const email = `${unique('rotator')}@example.test`;
 
-      const registered = await ctx
-        .http()
-        .post('/api/v1/auth/register')
-        .send({
-          organizationName: `Rotate ${unique('org')}`,
-          email,
-          password: PASSWORD,
-          firstName: 'Rita',
-          lastName: 'Rotate',
-        })
-        .expect(201);
-
-      // Registration returns the refresh token as an httpOnly cookie. Signing
-      // in as a non-cookie client is how a body-carried token is obtained.
-      const login = await ctx
-        .http()
-        .post('/api/v1/auth/login')
-        .send({ email, password: PASSWORD, platform: 'ANDROID' })
-        .expect(200);
+      // Registration issues no session at all now — the mailbox has to be
+      // proven first — so the helper registers, verifies and signs in as a
+      // non-cookie client, which is how a body-carried refresh token is got.
+      const registered = await registerVerifiedOrganization(ctx.app, {
+        organizationName: `Rotate ${unique('org')}`,
+        email,
+        password: PASSWORD,
+        firstName: 'Rita',
+        lastName: 'Rotate',
+        platform: 'ANDROID',
+      });
 
       return {
-        refreshToken: login.body.data.tokens.refreshToken as string,
-        userId: registered.body.data.user.id as string,
+        email,
+        refreshToken: registered.tokens.refreshToken,
+        userId: registered.registration.body.data.user.id as string,
       };
     };
 
@@ -150,15 +152,20 @@ describe('Refresh token rotation under concurrency', () => {
 
       const sessions = await sessionsFor(userId);
 
-      // Registration and the sign-in each made one, and the single winning
-      // rotation makes a third. More than three means one token was rotated
-      // into several live sessions — the bug.
-      expect(sessions).toHaveLength(3);
+      /*
+       * Two: the sign-in made one, and the single winning rotation made its
+       * replacement. More than two means one token was rotated into several
+       * live sessions — the bug this test exists for.
+       *
+       * It was three before mandatory email verification, because registration
+       * used to issue a session of its own. It no longer does, so the count
+       * dropped by exactly one and nothing else about the rotation changed.
+       */
+      expect(sessions).toHaveLength(2);
 
-      // The registration session is still live and untouched; of the rotated
-      // pair exactly one survives.
+      // Of the rotated pair, exactly one survives.
       const live = sessions.filter((session) => session.revokedAt === null);
-      expect(live).toHaveLength(2);
+      expect(live).toHaveLength(1);
     });
 
     it('marks the consumed session as replaced by the winner', async () => {
@@ -171,9 +178,11 @@ describe('Refresh token rotation under concurrency', () => {
       );
 
       const sessions = await sessionsFor(userId);
-      // [0] is the registration session; [1] is the one that was rotated.
-      const original = sessions[1];
-      const replacement = sessions[2];
+      // [0] is the sign-in session, which was rotated; [1] is its replacement.
+      // Registration issues no session of its own, so there is nothing before
+      // these two.
+      const original = sessions[0];
+      const replacement = sessions[1];
 
       expect(original?.revokedAt).not.toBeNull();
       expect(original?.revokedReason).toBe('ROTATED');
@@ -193,16 +202,15 @@ describe('Refresh token rotation under concurrency', () => {
       // Age the rotation past the reuse interval. Beyond it, presenting the
       // spent token is a leak rather than a straggler, and the whole family
       // dies — tolerance for stragglers must not soften that.
-      const rotated = (await sessionsFor(userId))[1];
+      const rotated = (await sessionsFor(userId))[0];
       await ageRevocation(rotated?.id as string, BEYOND_INTERVAL_SECONDS);
 
       const replay = await ctx.http().post('/api/v1/auth/refresh').send({ refreshToken });
       expect(replay.status).toBe(401);
 
-      // Reuse kills the whole FAMILY, which is the rotated chain — the
-      // separate registration session belongs to a different family.
+      // Reuse kills the whole FAMILY, which is the rotated chain.
       const sessions = await sessionsFor(userId);
-      const familyId = sessions[1]?.familyId;
+      const familyId = sessions[0]?.familyId;
       const family = sessions.filter((session) => session.familyId === familyId);
 
       expect(family.length).toBeGreaterThan(1);
@@ -247,7 +255,8 @@ describe('Refresh token rotation under concurrency', () => {
         .expect(200);
 
       const before = await sessionsFor(userId);
-      const parent = before[1];
+      // [0] is the sign-in session, the one the winning rotation consumed.
+      const parent = before[0];
       expect(parent?.revokedReason).toBe('ROTATED');
 
       const straggler = await ctx.http().post('/api/v1/auth/refresh').send({ refreshToken });
@@ -286,7 +295,7 @@ describe('Refresh token rotation under concurrency', () => {
 
       await ctx.http().post('/api/v1/auth/refresh').send({ refreshToken }).expect(200);
 
-      const parent = (await sessionsFor(userId))[1];
+      const parent = (await sessionsFor(userId))[0];
       // An hour into the future, in the database's own clock domain.
       await restampRevocation(parent?.id as string, 60 * 60);
 
@@ -319,7 +328,7 @@ describe('Refresh token rotation under concurrency', () => {
        */
       const { refreshToken, userId } = await freshSession();
 
-      const parent = (await sessionsFor(userId))[1];
+      const parent = (await sessionsFor(userId))[0];
       await asSystem((prisma) =>
         prisma.session.update({
           where: { id: parent?.id },
@@ -339,22 +348,37 @@ describe('Refresh token rotation under concurrency', () => {
     });
 
     it('leaves an unrelated family live when reuse is detected', async () => {
-      const { refreshToken, userId } = await freshSession();
+      const { refreshToken, userId, email } = await freshSession();
+
+      /*
+       * A second device, signed in separately, so there is genuinely another
+       * family to protect.
+       *
+       * This used to lean on the session registration issued — which no longer
+       * exists, now that a mailbox has to be proven first. Opening the second
+       * family explicitly says what the test is actually about: one family's
+       * compromise must not sign the person out of a device that never held
+       * the leaked token.
+       */
+      await ctx
+        .http()
+        .post('/api/v1/auth/login')
+        .send({ email, password: PASSWORD, platform: 'ANDROID' })
+        .expect(200);
 
       await ctx.http().post('/api/v1/auth/refresh').send({ refreshToken }).expect(200);
 
-      const rotated = (await sessionsFor(userId))[1];
+      const rotated = (await sessionsFor(userId))[0];
       await ageRevocation(rotated?.id as string, BEYOND_INTERVAL_SECONDS);
 
       const replay = await ctx.http().post('/api/v1/auth/refresh').send({ refreshToken });
       expect(replay.status).toBe(401);
 
       const sessions = await sessionsFor(userId);
-      const rotatedFamily = sessions[1]?.familyId;
+      const rotatedFamily = rotated?.familyId;
       const unrelated = sessions.filter((session) => session.familyId !== rotatedFamily);
 
-      // The registration login is its own family; one family's compromise must
-      // not sign the person out of a device that never held the leaked token.
+      // The other device's family is untouched.
       expect(unrelated.length).toBeGreaterThan(0);
       expect(unrelated.every((session) => session.revokedAt === null)).toBe(true);
     });
@@ -364,7 +388,7 @@ describe('Refresh token rotation under concurrency', () => {
 
       await ctx.http().post('/api/v1/auth/refresh').send({ refreshToken }).expect(200);
       const before = await sessionsFor(userId);
-      await ageRevocation(before[1]?.id as string, BEYOND_INTERVAL_SECONDS);
+      await ageRevocation(before[0]?.id as string, BEYOND_INTERVAL_SECONDS);
 
       const replay = await ctx.http().post('/api/v1/auth/refresh').send({ refreshToken });
       expect(replay.status).toBe(401);
@@ -394,7 +418,7 @@ describe('Refresh token rotation under concurrency', () => {
       expect(await reuseAudits(userId)).toBe(0);
 
       // Past the interval, the same token presented again IS the real thing.
-      const rotated = (await sessionsFor(userId))[1];
+      const rotated = (await sessionsFor(userId))[0];
       await ageRevocation(rotated?.id as string, BEYOND_INTERVAL_SECONDS);
 
       const replay = await ctx.http().post('/api/v1/auth/refresh').send({ refreshToken });

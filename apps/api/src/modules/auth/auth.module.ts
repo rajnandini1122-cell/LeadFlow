@@ -10,6 +10,8 @@ import { MembershipCacheService } from './membership-cache.service';
 import { SessionService } from './session.service';
 import { RegistrationService } from './registration.service';
 import { RegistrationRepository } from './registration.repository';
+import { EmailVerificationService } from './email-verification.service';
+import { EmailVerificationRepository } from './email-verification.repository';
 import { PasswordResetService } from './password-reset.service';
 import { GoogleAuthService } from './google-auth.service';
 import { PasswordResetRepository } from './password-reset.repository';
@@ -36,10 +38,13 @@ import { PermissionsGuard } from './guards/permissions.guard';
     RegistrationRepository,
     PasswordResetService,
     PasswordResetRepository,
+    EmailVerificationService,
+    EmailVerificationRepository,
     JwtAuthGuard,
     PermissionsGuard,
   ],
   exports: [
+    EmailVerificationService,
     AuthService,
     TokenService,
     PasswordService,

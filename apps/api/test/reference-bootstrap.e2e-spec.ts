@@ -1,7 +1,11 @@
 import { spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { ALL_ROLE_KEYS, PERMISSIONS, ROLE_PERMISSION_MATRIX } from '@leadflow/api-types';
-import { createTestContext, type TestContext } from './helpers/test-app';
+import {
+  createTestContext,
+  registerVerifiedOrganization,
+  type TestContext,
+} from './helpers/test-app';
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import { TenantContextService } from '../src/common/tenancy/tenant-context.service';
 import { syncReferenceData } from '../prisma/reference-data';
@@ -343,16 +347,13 @@ describe('Production reference bootstrap', () => {
     it('registers a real organization end to end', async () => {
       const stamp = `${Date.now()}.${Math.floor(Math.random() * 100_000)}`;
 
-      const response = await ctx
-        .http()
-        .post('/api/v1/auth/register')
-        .send({
-          organizationName: `Bootstrap Check ${stamp}`,
-          firstName: 'Bootstrap',
-          lastName: 'Owner',
-          email: `owner.${stamp}@example.test`,
-          password: 'Str0ng-Passphrase!2026',
-        });
+      const created = await registerVerifiedOrganization(ctx.app, {
+        organizationName: `Bootstrap Check ${stamp}`,
+        firstName: 'Bootstrap',
+        lastName: 'Owner',
+        email: `owner.${stamp}@example.test`,
+        password: 'Str0ng-Passphrase!2026',
+      });
 
       /*
        * The whole point, proven through the supported endpoint rather than by
@@ -360,13 +361,20 @@ describe('Production reference bootstrap', () => {
        * organization can be created with an owner who chose their own password.
        * This is how CRAVION will be created — not by a script.
        */
-      expect(response.status).toBe(201);
-      expect(response.body.data.user.organization.name).toBe(`Bootstrap Check ${stamp}`);
-      expect(response.body.data.user.role).toBe('OWNER');
+      expect(created.registration.status).toBe(201);
+      expect(created.registration.body.data.user.organization.name).toBe(
+        `Bootstrap Check ${stamp}`,
+      );
+      expect(created.registration.body.data.user.role).toBe('OWNER');
 
-      // The trial subscription the plan catalogue exists for. Without plans
-      // this is silently skipped and every new tenant is subscription-less.
-      expect(response.body.data.user.permissions.length).toBeGreaterThan(0);
+      /*
+       * Permissions are read once the owner is SIGNED IN, not off the
+       * registration response — registration issues no session now, so it has
+       * no permissions to report. Signing in proves more of the bootstrap
+       * anyway: the OWNER role has to exist AND resolve to its permission
+       * rows, which is exactly what a half-applied reference bootstrap breaks.
+       */
+      expect(created.user['permissions'] as string[]).not.toHaveLength(0);
     });
 
     it('still registers after bootstrap runs again', async () => {

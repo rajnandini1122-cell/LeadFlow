@@ -1,3 +1,4 @@
+import { Suspense, lazy } from 'react';
 import { BrowserRouter, Navigate, Outlet, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AuthProvider, useAuth } from './features/auth/auth-context';
@@ -5,43 +6,10 @@ import { ScrollToTop } from './components/scroll-to-top';
 import { LoginPage } from './features/auth/login-page';
 import { RegisterPage } from './features/auth/register-page';
 import { AcceptInvitationPage } from './features/auth/accept-invitation-page';
+import { VerifyEmailPage } from './features/auth/verify-email-page';
 import { ForgotPasswordPage } from './features/auth/forgot-password-page';
 import { ResetPasswordPage } from './features/auth/reset-password-page';
-import { SecurityPage } from './features/settings/security-page';
-import { MarketingLayout } from './features/marketing/marketing-layout';
 import { HomePage } from './features/marketing/home-page';
-import { FeaturesPage } from './features/marketing/features-page';
-import { PricingPage } from './features/marketing/pricing-page';
-import { AboutPage } from './features/marketing/about-page';
-import { ContactPage } from './features/marketing/contact-page';
-import { DashboardPage } from './features/dashboard/dashboard-page';
-import { LeadsPage } from './features/leads/leads-page';
-import { ChannelReviewPage } from './features/omnichannel/channel-review-page';
-import { InboxPage } from './features/omnichannel/inbox-page';
-import { ChannelIntegrationsPage } from './features/settings/channel-integrations-page';
-import { LeadDetailPage } from './features/leads/lead-detail-page';
-import { ImportLeadsPage } from './features/leads/import-leads-page';
-import { ContactsPage } from './features/contacts/contacts-page';
-import { ProductsPage } from './features/products/products-page';
-import { ProductIntelligencePage } from './features/products/product-intelligence-page';
-import { ProductMappingPage } from './features/products/product-mapping-page';
-import { CustomersPage } from './features/accounts/customers-page';
-import { Customer360Page } from './features/accounts/customer-360-page';
-import { CustomerKpiPage } from './features/accounts/customer-kpi-page';
-import { CustomerMappingPage } from './features/accounts/customer-mapping-page';
-import { RetentionPage } from './features/accounts/retention-page';
-import { ContactDetailPage } from './features/contacts/contact-detail-page';
-import { FollowUpsPage } from './features/followups/follow-ups-page';
-import { TeamPage } from './features/team/team-page';
-import { SalesTeamsPage } from './features/sales-teams/sales-teams-page';
-import { TeamDetailPage } from './features/sales-teams/team-detail-page';
-import { TerritoriesPage } from './features/territories/territories-page';
-import { IntakesPage } from './features/intakes/intakes-page';
-import { AssignmentRulesPage } from './features/assignment-rules/assignment-rules-page';
-import { ReportsPage } from './features/reports/reports-page';
-import { DailyReportPage } from './features/reports/daily-report-page';
-import { SettingsPage } from './features/settings/settings-page';
-import { BillingPage } from './features/settings/billing-page';
 import { AppShell } from './components/app-shell';
 import { ApiError } from './lib/api-client';
 
@@ -60,6 +28,57 @@ const queryClient = new QueryClient({
 });
 
 /** Shown while the session is being restored, before either tree is chosen. */
+/*
+ * ROUTE-LEVEL CODE SPLITTING.
+ *
+ * The production bundle was a single 769 kB chunk, which on Android meant the
+ * WebView downloaded and parsed the entire application — every chart, every
+ * report, the whole omnichannel inbox — before it could paint a login box.
+ *
+ * What stays eager is the first screen somebody can actually see: the landing
+ * page and the auth shell. Everything behind a password is fetched when it is
+ * first visited, by which point the app is interactive and the fetch is
+ * invisible.
+ *
+ * Split per ROUTE rather than per component on purpose. Finer granularity
+ * trades one large download for dozens of small round trips, which on a slow
+ * mobile connection is the worse deal.
+ */
+const SecurityPage = lazy(() => import('./features/settings/security-page').then((m) => ({ default: m.SecurityPage })));
+const MarketingLayout = lazy(() => import('./features/marketing/marketing-layout').then((m) => ({ default: m.MarketingLayout })));
+const FeaturesPage = lazy(() => import('./features/marketing/features-page').then((m) => ({ default: m.FeaturesPage })));
+const PricingPage = lazy(() => import('./features/marketing/pricing-page').then((m) => ({ default: m.PricingPage })));
+const AboutPage = lazy(() => import('./features/marketing/about-page').then((m) => ({ default: m.AboutPage })));
+const ContactPage = lazy(() => import('./features/marketing/contact-page').then((m) => ({ default: m.ContactPage })));
+const DashboardPage = lazy(() => import('./features/dashboard/dashboard-page').then((m) => ({ default: m.DashboardPage })));
+const LeadsPage = lazy(() => import('./features/leads/leads-page').then((m) => ({ default: m.LeadsPage })));
+const ChannelReviewPage = lazy(() => import('./features/omnichannel/channel-review-page').then((m) => ({ default: m.ChannelReviewPage })));
+const InboxPage = lazy(() => import('./features/omnichannel/inbox-page').then((m) => ({ default: m.InboxPage })));
+const ChannelIntegrationsPage = lazy(() => import('./features/settings/channel-integrations-page').then((m) => ({ default: m.ChannelIntegrationsPage })));
+const LeadDetailPage = lazy(() => import('./features/leads/lead-detail-page').then((m) => ({ default: m.LeadDetailPage })));
+const ImportLeadsPage = lazy(() => import('./features/leads/import-leads-page').then((m) => ({ default: m.ImportLeadsPage })));
+const ContactsPage = lazy(() => import('./features/contacts/contacts-page').then((m) => ({ default: m.ContactsPage })));
+const ProductsPage = lazy(() => import('./features/products/products-page').then((m) => ({ default: m.ProductsPage })));
+const ProductIntelligencePage = lazy(() => import('./features/products/product-intelligence-page').then((m) => ({ default: m.ProductIntelligencePage })));
+const ProductMappingPage = lazy(() => import('./features/products/product-mapping-page').then((m) => ({ default: m.ProductMappingPage })));
+const CustomersPage = lazy(() => import('./features/accounts/customers-page').then((m) => ({ default: m.CustomersPage })));
+const Customer360Page = lazy(() => import('./features/accounts/customer-360-page').then((m) => ({ default: m.Customer360Page })));
+const CustomerKpiPage = lazy(() => import('./features/accounts/customer-kpi-page').then((m) => ({ default: m.CustomerKpiPage })));
+const CustomerMappingPage = lazy(() => import('./features/accounts/customer-mapping-page').then((m) => ({ default: m.CustomerMappingPage })));
+const RetentionPage = lazy(() => import('./features/accounts/retention-page').then((m) => ({ default: m.RetentionPage })));
+const ContactDetailPage = lazy(() => import('./features/contacts/contact-detail-page').then((m) => ({ default: m.ContactDetailPage })));
+const FollowUpsPage = lazy(() => import('./features/followups/follow-ups-page').then((m) => ({ default: m.FollowUpsPage })));
+const TeamPage = lazy(() => import('./features/team/team-page').then((m) => ({ default: m.TeamPage })));
+const SalesTeamsPage = lazy(() => import('./features/sales-teams/sales-teams-page').then((m) => ({ default: m.SalesTeamsPage })));
+const TeamDetailPage = lazy(() => import('./features/sales-teams/team-detail-page').then((m) => ({ default: m.TeamDetailPage })));
+const TerritoriesPage = lazy(() => import('./features/territories/territories-page').then((m) => ({ default: m.TerritoriesPage })));
+const IntakesPage = lazy(() => import('./features/intakes/intakes-page').then((m) => ({ default: m.IntakesPage })));
+const AssignmentRulesPage = lazy(() => import('./features/assignment-rules/assignment-rules-page').then((m) => ({ default: m.AssignmentRulesPage })));
+const ReportsPage = lazy(() => import('./features/reports/reports-page').then((m) => ({ default: m.ReportsPage })));
+const DailyReportPage = lazy(() => import('./features/reports/daily-report-page').then((m) => ({ default: m.DailyReportPage })));
+const SettingsPage = lazy(() => import('./features/settings/settings-page').then((m) => ({ default: m.SettingsPage })));
+const BillingPage = lazy(() => import('./features/settings/billing-page').then((m) => ({ default: m.BillingPage })));
+
 function Restoring(): React.JSX.Element {
   return (
     <div className="flex min-h-screen items-center justify-center text-sm text-slate-500">
@@ -118,7 +137,14 @@ export function App(): React.JSX.Element {
         <AuthProvider>
           {/* Every route change starts at the top, as a real page load would. */}
           <ScrollToTop />
-          <Routes>
+          {/*
+            One boundary around the whole route tree.
+            `Restoring` is the same fallback session restoration already uses,
+            so a lazy chunk arriving and a session being checked look identical
+            rather than flashing two different loading states at somebody.
+          */}
+          <Suspense fallback={<Restoring />}>
+            <Routes>
             {/*
               Public marketing site. No session required, and deliberately
               wrapped in its own layout — a visitor deciding whether to sign up
@@ -136,6 +162,17 @@ export function App(): React.JSX.Element {
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
             <Route path="/invite/:token" element={<AcceptInvitationPage />} />
+            {/*
+              Both shapes. The emailed link carries a token; the bare path is
+              where somebody lands when a link expired or they need another —
+              so it shows the resend form rather than a dead end.
+
+              Eager, like the rest of the auth shell: this is reached by
+              somebody who cannot sign in yet, and a lazy chunk would put a
+              spinner in front of the one screen that unblocks them.
+            */}
+            <Route path="/verify-email" element={<VerifyEmailPage />} />
+            <Route path="/verify-email/:token" element={<VerifyEmailPage />} />
             <Route path="/forgot-password" element={<ForgotPasswordPage />} />
             <Route path="/reset-password/:token" element={<ResetPasswordPage />} />
 
@@ -182,7 +219,8 @@ export function App(): React.JSX.Element {
 
             {/* Home decides where an unknown path lands, per session state. */}
             <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
+            </Routes>
+          </Suspense>
         </AuthProvider>
       </BrowserRouter>
     </QueryClientProvider>

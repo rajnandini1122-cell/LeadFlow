@@ -1,5 +1,9 @@
 import { ERROR_CODES } from '@leadflow/api-types';
-import { createTestContext, type TestContext } from './helpers/test-app';
+import {
+  createTestContext,
+  registerVerifiedOrganization,
+  type TestContext,
+} from './helpers/test-app';
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import { TenantContextService } from '../src/common/tenancy/tenant-context.service';
 
@@ -25,25 +29,21 @@ describe('Password security and sessions', () => {
     const email = `${unique('reset')}@example.test`;
     const password = 'OriginalPassword1';
 
-    const response = await ctx
-      .http()
-      .post('/api/v1/auth/register')
-      .send({
-        organizationName: `Reset ${unique('org')}`,
-        email,
-        password,
-        firstName: 'Reset',
-        lastName: 'Tester',
-        platform: 'ANDROID',
-      })
-      .expect(201);
+    const response = await registerVerifiedOrganization(ctx.app, {
+      organizationName: `Reset ${unique('org')}`,
+      email,
+      password,
+      firstName: 'Reset',
+      lastName: 'Tester',
+      platform: 'ANDROID',
+    });
 
     return {
       email,
       password,
-      userId: response.body.data.user.id as string,
-      accessToken: response.body.data.tokens.accessToken as string,
-      refreshToken: response.body.data.tokens.refreshToken as string,
+      userId: response.registration.body.data.user.id as string,
+      accessToken: response.tokens.accessToken,
+      refreshToken: response.tokens.refreshToken,
     };
   };
 
