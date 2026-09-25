@@ -124,6 +124,68 @@ describe('Organization settings', () => {
       ]);
     });
 
+    /*
+     * Omnichannel capture, turned on through the product.
+     *
+     * This field was missing from UpdateOrganizationSettingsDto, and with
+     * `forbidNonWhitelisted` on the global pipe that made it un-settable: the
+     * API answered 400 and the only way to enable omnichannel for a tenant was
+     * a direct database write. The screen that connects channels was itself
+     * hidden until the flag was on, so the feature was unreachable through the
+     * product entirely.
+     */
+    it('turns omnichannel capture ON', async () => {
+      const org = await freshOrg();
+
+      const response = await patch(org.token, {
+        settings: { omnichannelEnabled: true },
+      }).expect(200);
+
+      expect(response.body.data.settings.omnichannelEnabled).toBe(true);
+    });
+
+    it('turns omnichannel capture OFF again', async () => {
+      const org = await freshOrg();
+
+      await patch(org.token, { settings: { omnichannelEnabled: true } }).expect(200);
+      const response = await patch(org.token, {
+        settings: { omnichannelEnabled: false },
+      }).expect(200);
+
+      // Explicit false must persist rather than being dropped as falsy — a
+      // stripUndefined that also stripped false would make this un-disableable.
+      expect(response.body.data.settings.omnichannelEnabled).toBe(false);
+    });
+
+    it('defaults omnichannel capture to off for a new organization', async () => {
+      const org = await freshOrg();
+
+      const response = await ctx
+        .http()
+        .get('/api/v1/organizations/current')
+        .set(auth(org.token))
+        .expect(200);
+
+      // Nothing changed for any existing tenant when omnichannel shipped.
+      expect(response.body.data.settings.omnichannelEnabled).toBe(false);
+    });
+
+    it('leaves other settings alone when only omnichannel changes', async () => {
+      const org = await freshOrg();
+
+      await patch(org.token, {
+        settings: { followupReminderMinutes: 45, sharedUnassignedQueue: true },
+      }).expect(200);
+
+      const response = await patch(org.token, {
+        settings: { omnichannelEnabled: true },
+      }).expect(200);
+
+      expect(response.body.data.settings.followupReminderMinutes).toBe(45);
+      expect(response.body.data.settings.sharedUnassignedQueue).toBe(true);
+      expect(response.body.data.settings.omnichannelEnabled).toBe(true);
+    });
+
     it('saves the follow-up rules', async () => {
       const org = await freshOrg();
 
@@ -226,6 +288,14 @@ describe('Organization settings', () => {
       ['an empty name', { name: '' }],
       ['a negative reminder', { settings: { followupReminderMinutes: -5 } }],
       ['a malformed working hour', { settings: { workingHoursStart: '25:00' } }],
+      // Boolean means boolean. A string "true" silently coerced would make the
+      // flag's state depend on which client sent it.
+      ['a non-boolean omnichannel flag', { settings: { omnichannelEnabled: 'yes' } }],
+      ['a numeric omnichannel flag', { settings: { omnichannelEnabled: 1 } }],
+      // Still whitelisted strictly: an unknown settings key is refused, which
+      // is the behaviour that made omnichannelEnabled un-settable until it was
+      // added to the DTO.
+      ['an unknown settings key', { settings: { omnichannelEnabledd: true } }],
     ])('rejects %s', async (_label, body) => {
       const org = await freshOrg();
       await patch(org.token, body).expect(400);
@@ -292,6 +362,29 @@ describe('Organization settings', () => {
         .set(auth(ctx.orgA.rep.accessToken))
         .send({ name: 'Rep Was Here' })
         .expect(403);
+    });
+
+    it('refuses a sales rep turning omnichannel on', async () => {
+      /*
+       * Named separately from the generic rep case above. This setting decides
+       * what appears in every colleague's navigation, so "can a rep change it"
+       * is worth asserting on the field itself rather than inferring it from a
+       * name change being refused.
+       */
+      await ctx
+        .http()
+        .patch('/api/v1/organizations/current')
+        .set(auth(ctx.orgA.rep.accessToken))
+        .send({ settings: { omnichannelEnabled: true } })
+        .expect(403);
+    });
+
+    it('refuses an unauthenticated caller turning omnichannel on', async () => {
+      await ctx
+        .http()
+        .patch('/api/v1/organizations/current')
+        .send({ settings: { omnichannelEnabled: true } })
+        .expect(401);
     });
 
     it('refuses an unauthenticated caller', async () => {

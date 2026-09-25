@@ -79,18 +79,33 @@ export function ChannelIntegrationsPage(): React.JSX.Element {
         subtitle="Connect the accounts your customers already message you on"
       />
 
+      {/*
+        Corrected copy.
+
+        This previously said Instagram and Facebook Messenger were
+        "capture-only for now — answer those in the Meta apps". That stopped
+        being true: outbound is implemented for all three channels, dispatched
+        in OutboundMessagingService. Telling people to go and answer in the Meta
+        apps sent them away from a feature they already had.
+
+        What genuinely differs per channel is the reply window and how it
+        reopens, so that is what this now says.
+      */}
       <div
         role="note"
         className="mb-6 rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700"
       >
-        <p className="font-medium">Incoming messages only.</p>
+        <p className="font-medium">Capture and reply.</p>
         <p className="mt-1 text-pretty">
-          Connected channels capture what customers send you and match it to your leads.
-          WhatsApp also supports replying, within the 24-hour window WhatsApp allows. Instagram
-          and Facebook Messenger are capture-only for now — answer those in the Meta apps.
+          Connected channels capture what customers send you and match it to your leads, and you
+          can reply from the Inbox on all three. Each has a 24-hour reply window that reopens
+          when the customer messages again. WhatsApp additionally lets you reopen a closed
+          conversation with an approved template; Instagram and Messenger do not offer that, so
+          outside the window you wait for the customer.
         </p>
       </div>
 
+      <OmnichannelCard canManage={canManage} />
       <SharedQueueCard canManage={canManage} />
 
       {integrations.isPending ? (
@@ -117,6 +132,79 @@ export function ChannelIntegrationsPage(): React.JSX.Element {
         </div>
       )}
     </>
+  );
+}
+
+/**
+ * Turns omnichannel on for this organization.
+ *
+ * Lives on this page deliberately: this is where somebody goes when they want
+ * to start using channels, so enabling and connecting belong in one place and
+ * in that order.
+ *
+ * It controls NAVIGATION, and the copy says so rather than implying a security
+ * boundary. Turning it off hides the Inbox and Channel review screens; it does
+ * not disconnect an account, does not stop messages arriving, and does not hide
+ * this page. Stopping capture is per account, with Disconnect below — which is
+ * the honest place for it, because that is the thing that actually talks to
+ * Meta.
+ *
+ * Off by default, so nothing changed for any organization when omnichannel
+ * shipped. Before this card existed there was no way to turn it on at all
+ * except a direct database write.
+ */
+function OmnichannelCard({ canManage }: { canManage: boolean }): React.JSX.Element {
+  const queryClient = useQueryClient();
+
+  const organization = useQuery({
+    queryKey: ['organization'],
+    queryFn: () => apiGet<OrganizationDetail>('/organizations/current'),
+  });
+
+  const update = useMutation({
+    // The SAME settings endpoint every other organization setting uses, so this
+    // change is validated, permission-checked and audited identically.
+    mutationFn: (omnichannelEnabled: boolean) =>
+      apiPatch('/organizations/current', { settings: { omnichannelEnabled } }),
+    onSuccess: () => {
+      // Refreshes the nav gate as well as this card — both read this query.
+      void queryClient.invalidateQueries({ queryKey: ['organization'] });
+    },
+  });
+
+  const enabled = organization.data?.settings.omnichannelEnabled ?? false;
+
+  return (
+    <Card>
+      <CardHeader
+        title="Omnichannel capture"
+        subtitle="Show the Inbox and channel review screens"
+      />
+
+      <div className="space-y-4 p-5">
+        <label className="flex items-start gap-3">
+          <input
+            type="checkbox"
+            checked={enabled}
+            disabled={!canManage || update.isPending || organization.isPending}
+            onChange={(event) => update.mutate(event.target.checked)}
+            className="mt-1"
+          />
+          <span className="text-sm">
+            <span className="font-medium text-slate-900">
+              Use omnichannel capture in this organization
+            </span>
+            <span className="mt-1 block text-pretty text-slate-600">
+              Adds Inbox and Channel review to the main navigation. Leave it off and those
+              screens stay hidden — they are only useful once a channel below is connected. This
+              page remains available either way.
+            </span>
+          </span>
+        </label>
+
+        {update.isError && <ErrorNotice message="Could not change this setting." />}
+      </div>
+    </Card>
   );
 }
 

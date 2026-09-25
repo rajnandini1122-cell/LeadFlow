@@ -45,6 +45,27 @@ export class UpdateOrganizationSettingsDto {
   @IsBoolean()
   sharedUnassignedQueue?: boolean;
 
+  /**
+   * Whether this organization uses omnichannel capture.
+   *
+   * A DISPLAY PREFERENCE, and it is worth being exact about that because the
+   * name sounds like a security control. It decides whether the Inbox and
+   * Channel review screens appear in the navigation — nothing more. It does not
+   * gate ingestion, and it does not gate the API.
+   *
+   * What actually governs whether a message is accepted is the integration's
+   * own `status` and `enabled` columns, checked per webhook. That is the real
+   * boundary, it is per connected account rather than per tenant, and it fails
+   * closed.
+   *
+   * Previously absent from this DTO, which — with `forbidNonWhitelisted` — meant
+   * the API rejected any attempt to set it and the only way to turn omnichannel
+   * on was a direct database write.
+   */
+  @IsOptional()
+  @IsBoolean()
+  omnichannelEnabled?: boolean;
+
   @IsOptional()
   @Matches(/^([01]\d|2[0-3]):[0-5]\d$/, { message: 'must be HH:MM in 24-hour form' })
   workingHoursStart?: string;

@@ -116,12 +116,23 @@ export const NAV_ITEMS: NavItem[] = [
   { to: '/reports', label: 'Reports', icon: '▤', permission: PERMISSIONS.REPORT_VIEW, exact: true },
   { to: '/reports/daily', label: 'Daily report', icon: '☀', permission: PERMISSIONS.REPORT_VIEW },
   { to: '/settings', label: 'Settings', icon: '⚙', permission: PERMISSIONS.ORG_VIEW, exact: true },
+  /*
+   * NOT gated on omnichannel, unlike Inbox and Channel review above.
+   *
+   * This is the screen where omnichannel is turned on and accounts are
+   * connected. Hiding it until omnichannel is already enabled made the feature
+   * unreachable through the product entirely: the only way in was a direct
+   * database write, because the page that configures channels was gated behind
+   * channels already being configured.
+   *
+   * The operational screens stay gated — they are legitimately empty until a
+   * channel is connected. A configuration screen is never in that position.
+   */
   {
     to: '/settings/channels',
     label: 'Channels',
     icon: '⇄',
     permission: PERMISSIONS.ORG_VIEW,
-    requiresOmnichannel: true,
   },
   {
     to: '/settings/billing',
