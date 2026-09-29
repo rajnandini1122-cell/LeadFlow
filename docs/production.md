@@ -192,9 +192,34 @@ What it does NOT do, so nobody has to infer it:
 Because conversion goes through the existing pipeline, routing must already be
 configured for it to succeed. A WhatsApp intake carries **no country** — nothing
 in this repository derives one from a phone prefix safely — so territory
-resolution answers `NO_TERRITORY` and the enquiry needs a **fallback assignment
-rule** to land anywhere. Without one, every WhatsApp enquiry blocks as
-`NO_MATCH` and waits in review.
+resolution answers `NO_TERRITORY`.
+
+What that requires is **an active assignment rule that does not constrain
+territory**. A fallback rule is one way, but it is not the only way and usually
+not the best one.
+
+`criteriaMatch` treats a dimension the rule leaves unset as matching anything,
+while a rule that *states* a criterion the work does not carry does not match at
+all — an enquiry with no territory is a fact we do not have, not "any
+territory". So:
+
+| Rule | Matches a WhatsApp intake? |
+|---|---|
+| `source = WHATSAPP`, territory unset | **yes** — recommended |
+| all dimensions unset (a fallback) | yes, and it also catches everything else |
+| any rule with a territory set | no |
+
+Prefer a rule scoped to `source = WHATSAPP` with territory left unset: it routes
+WhatsApp enquiries to a team you chose, rather than sending them wherever the
+catch-all points. Reach for a fallback only when that breadth is what you
+actually want.
+
+Source matching is spelling-insensitive — `normalizeSourceKey` lower-cases and
+collapses whitespace — so the `WHATSAPP` an intake records matches a rule a
+tenant spelled `WhatsApp` in their own lead-source list.
+
+If no such rule exists, every WhatsApp enquiry blocks as `NO_MATCH` and waits in
+review. Nothing is lost, and nothing converts.
 
 ### The Central Admin control plane
 
