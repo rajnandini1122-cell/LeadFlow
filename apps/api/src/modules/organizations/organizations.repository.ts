@@ -36,6 +36,7 @@ export class OrganizationsRepository {
           leadSources?: string[] | undefined;
           sharedUnassignedQueue?: boolean | undefined;
           omnichannelEnabled?: boolean | undefined;
+          whatsappAutoLeadEnabled?: boolean | undefined;
         }
       | undefined;
   }) {

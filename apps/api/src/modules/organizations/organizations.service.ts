@@ -19,6 +19,7 @@ const DEFAULT_SETTINGS: OrganizationSettings = {
   leadSources: [],
   omnichannelEnabled: false,
   sharedUnassignedQueue: false,
+  whatsappAutoLeadEnabled: false,
 };
 
 @Injectable()
@@ -65,9 +66,17 @@ export class OrganizationsService {
  * before and after were identical — the event was logged and the actual change
  * was not, which is the one thing an audit row exists to answer.
  *
- * That matters most for the two settings that change who can see what:
- * `omnichannelEnabled` and `sharedUnassignedQueue`. "Who opened the unassigned
- * queue to the whole team, and when" has to be answerable.
+ * That matters most for the settings that change what the product does on
+ * somebody's behalf: `sharedUnassignedQueue` decides who sees a customer's
+ * unclaimed message, and `whatsappAutoLeadEnabled` decides whether enquiries
+ * are turned into assigned leads with no human in the loop. "Who opened the
+ * unassigned queue to the whole team" and "who switched automatic lead creation
+ * on, and when" both have to be answerable.
+ *
+ * Every settings field is listed explicitly rather than spread, so adding one
+ * to the schema does not silently start appearing in audit rows — but the cost
+ * is that a new field must be added here too. `whatsappAutoLeadEnabled` was
+ * missed exactly that way when two branches merged, and compiled fine.
  */
 function snapshot(organization: OrganizationRow): Record<string, unknown> {
   return {
@@ -86,6 +95,7 @@ function snapshot(organization: OrganizationRow): Record<string, unknown> {
           leadSources: organization.settings.leadSources,
           omnichannelEnabled: organization.settings.omnichannelEnabled,
           sharedUnassignedQueue: organization.settings.sharedUnassignedQueue,
+          whatsappAutoLeadEnabled: organization.settings.whatsappAutoLeadEnabled,
         }
       : null,
   };
@@ -110,6 +120,7 @@ type OrganizationRow = {
     leadSources: string[];
     omnichannelEnabled: boolean;
     sharedUnassignedQueue: boolean;
+    whatsappAutoLeadEnabled: boolean;
   } | null;
 };
 
@@ -134,6 +145,7 @@ function toDetail(organization: OrganizationRow): OrganizationDetail {
           leadSources: organization.settings.leadSources,
           omnichannelEnabled: organization.settings.omnichannelEnabled,
           sharedUnassignedQueue: organization.settings.sharedUnassignedQueue,
+          whatsappAutoLeadEnabled: organization.settings.whatsappAutoLeadEnabled,
         }
       : DEFAULT_SETTINGS,
   };

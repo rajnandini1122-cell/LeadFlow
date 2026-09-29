@@ -1,0 +1,27 @@
+-- Automatic lead creation from WhatsApp buying enquiries, opt-in per tenant.
+--
+-- SAFETY: additive and non-destructive. One column, with a default. Nothing is
+-- dropped, renamed, rewritten or back-filled, and no existing row changes
+-- meaning — every organization reads `false` immediately, which is exactly the
+-- behaviour they have today.
+--
+-- WHY A SEPARATE FLAG, and not INTAKE_AUTO_PROCESSING_ENABLED.
+--
+-- That one is a deployment-wide environment variable governing the WEBSITE
+-- backlog: `integration_intakes` is durable, may hold enquiries that arrived
+-- before any automation existed, and switching it on converts all of them at
+-- once. Reusing it here would mean one switch silently arming two unrelated
+-- pipelines, and a tenant wanting WhatsApp automation would be forced to accept
+-- the website backlog converting with it.
+--
+-- This is per TENANT rather than per deployment because it is a business
+-- decision about one organization's sales process, and because on a
+-- multi-tenant deployment one organization enabling it must not enable it for
+-- everybody else.
+--
+-- DEFAULT FALSE is the whole safety property. Automatic conversion assigns real
+-- leads to real salespeople and creates a follow-up for each, which is easy to
+-- do and very hard to undo. Nobody gets that by deploying; they get it by
+-- choosing it.
+ALTER TABLE "organization_settings"
+    ADD COLUMN "whatsapp_auto_lead_enabled" BOOLEAN NOT NULL DEFAULT false;

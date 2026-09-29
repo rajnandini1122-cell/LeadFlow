@@ -199,6 +199,16 @@ export interface OrganizationSettings {
    * settings.
    */
   sharedUnassignedQueue: boolean;
+  /**
+   * Whether an inbound WhatsApp buying enquiry becomes a lead automatically.
+   *
+   * Editable. Off by default, and narrow on purpose: it fires only when a
+   * message carries a buying signal, so ordinary conversation stays in the
+   * Inbox. WhatsApp only, because a wa_id is a real phone number and can be
+   * de-duplicated against existing leads; Instagram and Messenger supply no
+   * number to de-duplicate on.
+   */
+  whatsappAutoLeadEnabled: boolean;
 }
 
 export interface UpdateOrganizationRequest {
