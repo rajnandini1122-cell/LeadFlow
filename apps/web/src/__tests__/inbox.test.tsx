@@ -201,19 +201,33 @@ describe('Channel integrations', () => {
   it('says plainly which channels can be replied to', async () => {
     renderWith(<ChannelIntegrationsPage />);
 
+    await screen.findByRole('heading', { name: /channel integrations/i });
+    const text = document.body.textContent ?? '';
+
     /*
-     * UPDATED IN PHASE F.
+     * The INVARIANT here has never changed: the screen must never imply a
+     * channel can do something it cannot. What changed is the truth it is
+     * measured against.
      *
-     * This used to assert that no provider connection was available at all,
-     * which was true before WhatsApp existed. What must stay true is narrower
-     * and more important: the screen never implies a channel can do something
-     * it cannot. Instagram is capture-only, and it says so.
+     * This previously asserted "capture-only" and "answer those in the Meta
+     * apps", which described Instagram and Messenger before outbound existed
+     * for them. It does now — OutboundMessagingService dispatches WHATSAPP,
+     * INSTAGRAM and FACEBOOK alike — so that copy had become the very thing
+     * this test exists to prevent, understating the product and sending people
+     * to another app to do something they could do here.
+     *
+     * The one real asymmetry is reopening a closed conversation: WhatsApp can,
+     * with an approved template; the other two cannot. That is what must stay
+     * stated.
      */
-    // UPDATED IN PHASE G: Messenger is now connectable, and capture-only like
-    // Instagram. What must stay true is that the screen never implies a
-    // channel can do something it cannot.
-    expect(await screen.findByText(/capture-only/i)).toBeInTheDocument();
-    expect(screen.getByText(/answer those in the meta apps/i)).toBeInTheDocument();
+    expect(text).not.toMatch(/capture-only/i);
+    expect(text).not.toMatch(/answer those in the meta apps/i);
+
+    expect(text).toMatch(/reply/i);
+    expect(text).toMatch(/24-hour/i);
+    // The asymmetry, named rather than glossed over.
+    expect(text).toMatch(/template/i);
+    expect(text).toMatch(/Instagram and Messenger do not/i);
   });
 
   it('offers Instagram setup once the server reports it connectable', async () => {

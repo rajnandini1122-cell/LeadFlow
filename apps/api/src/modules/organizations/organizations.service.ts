@@ -58,7 +58,26 @@ export class OrganizationsService {
   }
 }
 
-/** The tenant-visible configuration, for the audit trail. */
+/**
+ * The tenant-visible configuration, for the audit trail.
+ *
+ * Includes SETTINGS as well as the organization's own columns. It previously
+ * recorded only the columns, so a settings change produced an audit row whose
+ * before and after were identical — the event was logged and the actual change
+ * was not, which is the one thing an audit row exists to answer.
+ *
+ * That matters most for the settings that change what the product does on
+ * somebody's behalf: `sharedUnassignedQueue` decides who sees a customer's
+ * unclaimed message, and `whatsappAutoLeadEnabled` decides whether enquiries
+ * are turned into assigned leads with no human in the loop. "Who opened the
+ * unassigned queue to the whole team" and "who switched automatic lead creation
+ * on, and when" both have to be answerable.
+ *
+ * Every settings field is listed explicitly rather than spread, so adding one
+ * to the schema does not silently start appearing in audit rows — but the cost
+ * is that a new field must be added here too. `whatsappAutoLeadEnabled` was
+ * missed exactly that way when two branches merged, and compiled fine.
+ */
 function snapshot(organization: OrganizationRow): Record<string, unknown> {
   return {
     name: organization.name,
@@ -66,6 +85,19 @@ function snapshot(organization: OrganizationRow): Record<string, unknown> {
     currency: organization.currency,
     locale: organization.locale,
     country: organization.country,
+    settings: organization.settings
+      ? {
+          followupReminderMinutes: organization.settings.followupReminderMinutes,
+          followupOverdueMinutes: organization.settings.followupOverdueMinutes,
+          escalateToManager: organization.settings.escalateToManager,
+          workingHoursStart: organization.settings.workingHoursStart,
+          workingHoursEnd: organization.settings.workingHoursEnd,
+          leadSources: organization.settings.leadSources,
+          omnichannelEnabled: organization.settings.omnichannelEnabled,
+          sharedUnassignedQueue: organization.settings.sharedUnassignedQueue,
+          whatsappAutoLeadEnabled: organization.settings.whatsappAutoLeadEnabled,
+        }
+      : null,
   };
 }
 
