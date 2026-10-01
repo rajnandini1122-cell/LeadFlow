@@ -73,6 +73,19 @@ const detailFor = (item: IntegrationIntakeListItem): IntegrationIntakeDetail => 
   message: 'We lose enquiries every week. Can we see a demo?',
   matchedContactId: null,
   matchedLeadId: item.status === 'DUPLICATE' ? 'lead-9' : null,
+  /*
+   * The structured classification fields, all null.
+   *
+   * Null rather than omitted: the API always returns them, and null is what an
+   * enquiry submitted before the website asked these questions looks like —
+   * which is every enquiry in production today.
+   */
+  enquiryType: null,
+  state: null,
+  city: null,
+  quantity: null,
+  destinationCountry: null,
+  sampleRequired: null,
 });
 
 function signedInAs(permissions: string[]): void {

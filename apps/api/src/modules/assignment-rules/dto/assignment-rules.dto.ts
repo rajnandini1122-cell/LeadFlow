@@ -12,7 +12,7 @@ import {
   MinLength,
   ValidateIf,
 } from 'class-validator';
-import { ASSIGNMENT_RULE_STATUSES } from '@leadflow/api-types';
+import { ASSIGNMENT_RULE_STATUSES, ENQUIRY_TYPES, type EnquiryType } from '@leadflow/api-types';
 import { IsCountryCode } from '../../../common/validation/locale.validators';
 
 const trim = ({ value }: { value: unknown }): unknown =>
@@ -74,6 +74,22 @@ export class CreateAssignmentRuleDto {
   @IsUUID('7', { message: 'must be a valid territory id' })
   territoryId?: string;
 
+  /**
+   * Optional fourth dimension: what the customer asked for.
+   *
+   * Unset means "any enquiry type". Set means the work must carry exactly that
+   * type — so an enquiry nobody classified, and a WhatsApp message which
+   * carries no type at all, do NOT match a rule that states one.
+   *
+   * Distinct from `source`, which says how the enquiry arrived. A rule for
+   * website sample requests sets `source: 'WEBSITE'` AND
+   * `enquiryType: 'SAMPLE'`.
+   */
+  @IsOptional()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim().toUpperCase() : value))
+  @IsIn(ENQUIRY_TYPES, { message: `must be one of: ${ENQUIRY_TYPES.join(', ')}` })
+  enquiryType?: EnquiryType;
+
   /** The catch-all. A fallback carries no criteria — see the service. */
   @IsOptional()
   @IsBoolean()
@@ -123,6 +139,13 @@ export class UpdateAssignmentRuleDto {
   @IsUUID('7', { message: 'must be a valid territory id' })
   territoryId?: string | null;
 
+  /** Null clears the criterion, making the rule match any enquiry type again. */
+  @IsOptional()
+  @ValidateIf((_object, value) => value !== null)
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim().toUpperCase() : value))
+  @IsIn(ENQUIRY_TYPES, { message: `must be one of: ${ENQUIRY_TYPES.join(', ')}` })
+  enquiryType?: EnquiryType | null;
+
   @IsOptional()
   @IsUUID('7', { message: 'must be a valid team id' })
   targetTeamId?: string;
@@ -147,6 +170,12 @@ export class PreviewAssignmentDto {
   @MaxLength(60)
   @Transform(trim)
   source?: string;
+
+  /** So an administrator can test an enquiry-type rule before saving it. */
+  @IsOptional()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim().toUpperCase() : value))
+  @IsIn(ENQUIRY_TYPES, { message: `must be one of: ${ENQUIRY_TYPES.join(', ')}` })
+  enquiryType?: EnquiryType;
 
   @IsOptional()
   @IsUUID('7', { message: 'must be a valid product id' })

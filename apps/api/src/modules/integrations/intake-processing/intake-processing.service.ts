@@ -276,7 +276,20 @@ export class IntakeProcessingService {
     // Resolved INSIDE the transaction: the map an enquiry is routed by should
     // be the map as it stands when the assignment is written, and a read that
     // reached for its own connection would deadlock against this one.
-    const territory = await this.territories.resolve({ country: intake.country }, tx);
+    /*
+     * Every geographic fact the enquiry actually carries, and nothing more.
+     *
+     * The resolver already understands STATE and CITY coverage; it was only
+     * ever being handed a country, so a tenant with city-level territories got
+     * country-level routing. Passing what the website submitted is not
+     * inference — nothing here derives a state from a phone number or a city
+     * from an address. An absent field stays absent, and the resolver answers
+     * NO_TERRITORY exactly as before.
+     */
+    const territory = await this.territories.resolve(
+      { country: intake.country, state: intake.state, city: intake.city },
+      tx,
+    );
 
     const decision = await this.rules.evaluate(
       {
@@ -291,6 +304,15 @@ export class IntakeProcessingService {
          */
         productId: undefined,
         territoryId: territory.territory?.id ?? null,
+        /*
+         * What the customer said they want, when anything said so.
+         *
+         * A rule that states an enquiry type matches only work carrying that
+         * type — so an enquiry nobody classified, and a WhatsApp message which
+         * carries none at all, fall through to the broader rules exactly as
+         * they did before this dimension existed.
+         */
+        enquiryType: intake.enquiryType,
       },
       territory.territory,
       tx,

@@ -130,24 +130,45 @@ describe('criteriaKey', () => {
   });
 
   it('names every dimension, so adding one cannot collide with old keys', () => {
-    expect(criteriaKey({})).toBe('source=*|product=*|territory=*');
+    expect(criteriaKey({})).toBe('source=*|product=*|territory=*|enquiry_type=*');
   });
 
   /**
-   * The exact guarantee the territories migration relies on.
+   * The exact guarantee BOTH dimension migrations rely on.
    *
-   * Every key written before territories existed was the first two segments;
-   * the migration turns each into itself plus one constant suffix. That is only
-   * safe if the generator agrees — if territory were inserted in the MIDDLE of
-   * the dimensions, or written differently when unset, the migrated rows would
-   * no longer match what the application produces, and the active-criteria
-   * unique index would read one rule as two.
+   * Every key written before a dimension existed was the segments up to that
+   * point; the migration turns each into itself plus one constant suffix. That
+   * is only safe if the generator agrees — if a dimension were inserted in the
+   * MIDDLE, or written differently when unset, the migrated rows would no
+   * longer match what the application produces, and the active-criteria unique
+   * index would read one rule as two.
+   *
+   * Asserted once per migration that made the promise, so a future dimension
+   * inserted anywhere but the end fails here rather than in production.
    */
   it('appends territory, so an old key plus one suffix is still the right key', () => {
     expect(criteriaKey({ sourceKey: 'website', productId: 'p-1' })).toBe(
-      'source=website|product=p-1' + '|territory=*',
+      'source=website|product=p-1' + '|territory=*' + '|enquiry_type=*',
     );
-    expect(criteriaKey({})).toBe('source=*|product=*' + '|territory=*');
+    expect(criteriaKey({})).toBe('source=*|product=*' + '|territory=*' + '|enquiry_type=*');
+  });
+
+  it('appends enquiry type, so 20260930090000 could migrate with one suffix', () => {
+    // The three-segment keys that existed before this dimension, each becoming
+    // itself plus exactly `|enquiry_type=*` — which is what the migration does.
+    expect(criteriaKey({ sourceKey: 'website' })).toBe(
+      'source=website|product=*|territory=*' + '|enquiry_type=*',
+    );
+    expect(criteriaKey({ sourceKey: 'website', territoryId: 't-1' })).toBe(
+      'source=website|product=*|territory=t-1' + '|enquiry_type=*',
+    );
+  });
+
+  it('distinguishes two enquiry types, and one from none', () => {
+    expect(criteriaKey({ enquiryType: 'SAMPLE' })).not.toBe(
+      criteriaKey({ enquiryType: 'BULK' }),
+    );
+    expect(criteriaKey({ enquiryType: 'SAMPLE' })).not.toBe(criteriaKey({}));
   });
 
   it('distinguishes two territories, and a territory from none', () => {

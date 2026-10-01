@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import type { EnquiryType } from '@leadflow/api-types';
 import { PrismaService } from '../../../common/prisma/prisma.service';
 import { TenantContextService } from '../../../common/tenancy/tenant-context.service';
 import type { IntakeStatus } from '../../../generated/prisma/enums';
@@ -63,6 +64,12 @@ export class WebsiteIntakeRepository {
     message?: string | undefined;
     productInterest?: string | undefined;
     sourcePage?: string | undefined;
+    enquiryType?: EnquiryType | undefined;
+    state?: string | undefined;
+    city?: string | undefined;
+    quantity?: string | undefined;
+    destinationCountry?: string | undefined;
+    sampleRequired?: boolean | undefined;
     matchedContactId?: string | undefined;
     matchedLeadId?: string | undefined;
   }): Promise<IntakeRecord | null> {
@@ -84,6 +91,20 @@ export class WebsiteIntakeRepository {
           message: input.message ?? null,
           productInterest: input.productInterest ?? null,
           sourcePage: input.sourcePage ?? null,
+          /*
+           * Structured classification, stored in its own columns.
+           *
+           * Deliberately NOT folded into productInterest: that field holds what
+           * the customer typed, and appending "SAMPLE" to it would corrupt the
+           * one place their own words are kept.
+           */
+          enquiryType: input.enquiryType ?? null,
+          state: input.state ?? null,
+          city: input.city ?? null,
+          quantity: input.quantity ?? null,
+          destinationCountry: input.destinationCountry ?? null,
+          // `?? null` rather than `?? false`: absent means never asked.
+          sampleRequired: input.sampleRequired ?? null,
           matchedContactId: input.matchedContactId ?? null,
           matchedLeadId: input.matchedLeadId ?? null,
         },

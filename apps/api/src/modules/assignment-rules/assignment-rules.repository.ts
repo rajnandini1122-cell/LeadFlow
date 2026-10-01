@@ -1,3 +1,4 @@
+import type { EnquiryType } from '@leadflow/api-types';
 import { Injectable } from '@nestjs/common';
 import { PrismaService, type PrismaTransaction } from '../../common/prisma/prisma.service';
 import { TenantContextService } from '../../common/tenancy/tenant-context.service';
@@ -121,6 +122,7 @@ export class AssignmentRulesRepository {
     sourceKey?: string | undefined;
     productId?: string | undefined;
     territoryId?: string | undefined;
+    enquiryType?: EnquiryType | undefined;
     isFallback: boolean;
     criteriaKey: string;
     targetTeamId: string;
@@ -149,6 +151,7 @@ export class AssignmentRulesRepository {
             sourceKey: input.sourceKey ?? null,
             productId: input.productId ?? null,
             territoryId: input.territoryId ?? null,
+            enquiryType: input.enquiryType ?? null,
             isFallback: input.isFallback,
             criteriaKey: input.criteriaKey,
             targetTeamId: input.targetTeamId,
@@ -209,6 +212,7 @@ export class AssignmentRulesRepository {
       sourceKey?: string | null;
       productId?: string | null;
       territoryId?: string | null;
+      enquiryType?: EnquiryType | null;
       criteriaKey?: string;
       targetTeamId?: string;
       status?: AssignmentRuleStatus;
@@ -409,6 +413,7 @@ const EVALUATION_SELECT = {
   sourceKey: true,
   productId: true,
   territoryId: true,
+  enquiryType: true,
   targetTeamId: true,
   targetTeam: { select: { id: true, name: true, status: true } },
 } as const;

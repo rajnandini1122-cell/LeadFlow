@@ -86,11 +86,18 @@ export class AssignmentRulesService {
      * where an administrator can see it, and if it is the catch-all it must
      * not quietly decline to catch things.
      */
-    const criteria = { sourceKey, productId: dto.productId, territoryId: dto.territoryId };
+    const criteria = {
+      sourceKey,
+      productId: dto.productId,
+      territoryId: dto.territoryId,
+      enquiryType: dto.enquiryType,
+    };
 
     if (isFallback && !hasNoCriteria(criteria)) {
       throw AppException.validation('A fallback rule cannot have criteria.', {
-        isFallback: ['remove the source, product and territory, or make this a specific rule'],
+        isFallback: [
+          'remove the source, product, territory and enquiry type, or make this a specific rule',
+        ],
       });
     }
 
@@ -99,7 +106,9 @@ export class AssignmentRulesService {
       // real one, which is how a routing table starts sending everything to
       // one team for reasons nobody can find.
       throw AppException.validation('A rule needs at least one criterion.', {
-        source: ['set a source, a product or a territory, or mark this rule as the fallback'],
+        source: [
+          'set a source, a product, a territory or an enquiry type, or mark this rule as the fallback',
+        ],
       });
     }
 
@@ -118,6 +127,7 @@ export class AssignmentRulesService {
       sourceKey,
       productId: dto.productId,
       territoryId: dto.territoryId,
+      enquiryType: dto.enquiryType,
       isFallback,
       criteriaKey: criteriaKey(criteria),
       targetTeamId: team.id,
@@ -137,6 +147,7 @@ export class AssignmentRulesService {
         source: sourceKey ?? null,
         productId: dto.productId ?? null,
         territoryId: dto.territoryId ?? null,
+        enquiryType: dto.enquiryType ?? null,
         targetTeamId: team.id,
       },
       tx,
@@ -190,7 +201,10 @@ export class AssignmentRulesService {
     // Criteria move together: either is enough to change what the rule
     // matches, so the key is recomputed from both whenever one is touched.
     const criteriaTouched =
-      dto.source !== undefined || dto.productId !== undefined || dto.territoryId !== undefined;
+      dto.source !== undefined ||
+      dto.productId !== undefined ||
+      dto.territoryId !== undefined ||
+      dto.enquiryType !== undefined;
 
     /*
      * Whichever territory this rule will route to once the change lands.
@@ -206,16 +220,20 @@ export class AssignmentRulesService {
       const sourceKey =
         dto.source === undefined ? rule.sourceKey : normalizeSourceKey(dto.source) ?? null;
       const productId = dto.productId === undefined ? rule.productId : dto.productId;
-      const criteria = { sourceKey, productId, territoryId: nextTerritoryId };
+      const enquiryType =
+        dto.enquiryType === undefined ? rule.enquiryType : dto.enquiryType ?? null;
+      const criteria = { sourceKey, productId, territoryId: nextTerritoryId, enquiryType };
 
       if (rule.isFallback && !hasNoCriteria(criteria)) {
         throw AppException.validation('A fallback rule cannot have criteria.', {
-          isFallback: ['remove the source, product and territory, or create a specific rule'],
+          isFallback: [
+            'remove the source, product, territory and enquiry type, or create a specific rule',
+          ],
         });
       }
       if (!rule.isFallback && hasNoCriteria(criteria)) {
         throw AppException.validation('A rule needs at least one criterion.', {
-          source: ['set a source, a product or a territory'],
+          source: ['set a source, a product, a territory or an enquiry type'],
         });
       }
 
@@ -239,6 +257,11 @@ export class AssignmentRulesService {
         changes.territoryId = nextTerritoryId;
         before['territoryId'] = rule.territoryId;
         after['territoryId'] = nextTerritoryId;
+      }
+      if (dto.enquiryType !== undefined) {
+        changes.enquiryType = enquiryType;
+        before['enquiryType'] = rule.enquiryType;
+        after['enquiryType'] = enquiryType;
       }
 
       changes.criteriaKey = criteriaKey(criteria);
@@ -368,7 +391,16 @@ export class AssignmentRulesService {
     const rules = await this.repository.activeRules(tx);
     const matched = rules.find((rule) =>
       criteriaMatch(
-        { sourceKey: rule.sourceKey, productId: rule.productId, territoryId: rule.territoryId },
+        {
+          sourceKey: rule.sourceKey,
+          productId: rule.productId,
+          territoryId: rule.territoryId,
+          // Listed explicitly, like the three above, so a column added to the
+          // table is never silently honoured as a criterion. The cost is that
+          // a new dimension must be added HERE too — omitting it made every
+          // rule look unconstrained, and a SAMPLE rule matched a BULK enquiry.
+          enquiryType: rule.enquiryType,
+        },
         context,
       ),
     );

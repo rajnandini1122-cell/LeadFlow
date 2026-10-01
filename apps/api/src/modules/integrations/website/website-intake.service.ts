@@ -162,6 +162,20 @@ export class WebsiteIntakeService {
         message: input.dto.message,
         productInterest: input.dto.productInterest,
         sourcePage: input.dto.sourcePage,
+        /*
+         * Classification travels in its own field and changes NOTHING else.
+         *
+         * `source` above stays WEBSITE — that is how the enquiry reached us,
+         * and attribution counts on it. `productInterest` stays whatever the
+         * customer typed. An enquiry asking for a sample is WEBSITE + SAMPLE,
+         * never source SAMPLE.
+         */
+        enquiryType: input.dto.enquiryType,
+        state: input.dto.state,
+        city: input.dto.city,
+        quantity: input.dto.quantity,
+        destinationCountry: input.dto.destinationCountry,
+        sampleRequired: input.dto.sampleRequired,
         matchedContactId: match.contactId,
         matchedLeadId: match.leadId,
       });
