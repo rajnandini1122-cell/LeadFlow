@@ -173,5 +173,14 @@ function toDetail(row: DetailRow): IntegrationIntakeDetail {
     message: row.message,
     matchedContactId: row.matchedContactId,
     matchedLeadId: row.matchedLeadId,
+    // Structured classification, surfaced so an operator can see WHY a
+    // rule matched — capturing it and hiding it would be worse than not
+    // capturing it.
+    enquiryType: row.enquiryType,
+    state: row.state,
+    city: row.city,
+    quantity: row.quantity,
+    destinationCountry: row.destinationCountry,
+    sampleRequired: row.sampleRequired,
   };
 }

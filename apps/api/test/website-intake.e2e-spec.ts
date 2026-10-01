@@ -95,8 +95,15 @@ describe('Website intake', () => {
      * a row that does not exist yet.
      */
     await asSystem('e2e intake tenant', async () => {
-      await prisma().organization.create({
-        data: {
+      /*
+       * UPSERT since a second suite (website-intake-classification) shares this
+       * FIXED id — it must, because configuration names the tenant before the
+       * application boots. Whichever suite runs first creates the row.
+       */
+      await prisma().organization.upsert({
+        where: { id: INTAKE_ORGANIZATION_ID },
+        update: {},
+        create: {
           id: INTAKE_ORGANIZATION_ID,
           name: 'CRAVION Website Tenant',
           slug: `intake-${Date.now()}`,
@@ -104,8 +111,10 @@ describe('Website intake', () => {
           country: 'IN',
         },
       });
-      await prisma().organizationSettings.create({
-        data: { organizationId: INTAKE_ORGANIZATION_ID },
+      await prisma().organizationSettings.upsert({
+        where: { organizationId: INTAKE_ORGANIZATION_ID },
+        update: {},
+        create: { organizationId: INTAKE_ORGANIZATION_ID },
       });
     });
   });

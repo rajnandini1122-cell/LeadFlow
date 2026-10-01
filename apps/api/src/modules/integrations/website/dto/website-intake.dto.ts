@@ -1,5 +1,14 @@
 import { Transform } from 'class-transformer';
-import { IsEmail, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import {
+  IsBoolean,
+  IsEmail,
+  IsIn,
+  IsOptional,
+  IsString,
+  MaxLength,
+  MinLength,
+} from 'class-validator';
+import { ENQUIRY_TYPES, type EnquiryType } from '@leadflow/api-types';
 import { IsCountryCode } from '../../../../common/validation/locale.validators';
 
 const trim = ({ value }: { value: unknown }): unknown =>
@@ -87,4 +96,79 @@ export class WebsiteIntakeDto {
   @MaxLength(200)
   @Transform(trim)
   sourcePage?: string;
+
+  // --- what the customer wants -----------------------------------------------
+
+  /**
+   * How the visitor classified their own enquiry.
+   *
+   * A closed set, uppercased before validation so a form posting `sample` is
+   * accepted and stored as `SAMPLE` — the website should not have to know our
+   * casing. An unrecognised value is REFUSED rather than coerced to GENERAL:
+   * silently reclassifying somebody's enquiry is worse than telling the website
+   * its value is wrong.
+   *
+   * Never written to `source`, which stays `WEBSITE`, and never written to
+   * `productInterest`, which is what the customer typed.
+   */
+  @IsOptional()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim().toUpperCase() : value))
+  @IsIn(ENQUIRY_TYPES, {
+    message: `must be one of: ${ENQUIRY_TYPES.join(', ')}`,
+  })
+  enquiryType?: EnquiryType;
+
+  /**
+   * Sub-national region, as the visitor supplied it.
+   *
+   * Reaches territory resolution, which already understands STATE coverage.
+   * Nothing infers it — an absent state stays absent.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  @Transform(trim)
+  state?: string;
+
+  /** City or town, as supplied. Also reaches territory resolution. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  @Transform(trim)
+  city?: string;
+
+  /**
+   * How much they want, in their own words — "500 kg", "2 tonnes", "a pallet".
+   *
+   * Free text deliberately. A number would need a unit beside it and a parser
+   * between them, and a parser guessing that "2" means tonnes is how a quote
+   * comes out a thousand times wrong.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  @Transform(trim)
+  quantity?: string;
+
+  /**
+   * Where an export enquiry wants goods delivered. ISO 3166-1 alpha-2.
+   *
+   * Distinct from `country`, which is where the ENQUIRER is. An Indian buying
+   * office shipping to Oman is `country=IN`, `destinationCountry=OM`.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(2)
+  @IsCountryCode()
+  destinationCountry?: string;
+
+  /**
+   * Whether they asked for a sample.
+   *
+   * Optional, and absent is not `false`: a form that never asked has no answer,
+   * and recording a decline nobody made would mislead whoever reads it.
+   */
+  @IsOptional()
+  @IsBoolean()
+  sampleRequired?: boolean;
 }

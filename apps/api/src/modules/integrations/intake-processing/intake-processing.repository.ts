@@ -104,6 +104,12 @@ export class IntakeProcessingRepository {
         country: true,
         company: true,
         productInterest: true,
+        // Structured classification and geography. Read here because routing
+        // uses them: enquiry type is a rule dimension, and state and city are
+        // coverage levels the territory resolver already understands.
+        enquiryType: true,
+        state: true,
+        city: true,
         receivedAt: true,
         createdLeadId: true,
         processingAttempts: true,

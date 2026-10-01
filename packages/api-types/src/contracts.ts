@@ -573,6 +573,29 @@ export interface TerritoryResolution {
 
 // --- website intake operations -----------------------------------------------
 
+/**
+ * How a website visitor classified their own enquiry.
+ *
+ * A closed set, because assignment rules may match on it — a routing dimension
+ * with open values would make two spellings of "sample" into two rules.
+ *
+ * SEPARATE from `source`, deliberately. Source says how the enquiry reached us
+ * and is what attribution counts on; this says what the customer wants. A
+ * website enquiry asking for a sample is `source: 'WEBSITE'` and
+ * `enquiryType: 'SAMPLE'` — never `source: 'SAMPLE'`.
+ */
+export const ENQUIRY_TYPES = [
+  'GENERAL',
+  'QUOTE',
+  'SAMPLE',
+  'BULK',
+  'EXPORT',
+  'HORECA',
+  'DISTRIBUTOR',
+  'PRIVATE_LABEL',
+] as const;
+export type EnquiryType = (typeof ENQUIRY_TYPES)[number];
+
 export const INTAKE_STATUSES = [
   'RECEIVED',
   'DUPLICATE',
@@ -629,6 +652,25 @@ export interface IntegrationIntakeDetail extends IntegrationIntakeListItem {
    */
   matchedContactId: string | null;
   matchedLeadId: string | null;
+
+  // --- what the customer wants, structured ---------------------------------
+
+  /**
+   * How the visitor classified their own enquiry, when the form asked.
+   *
+   * Null means the form did not ask — NOT that they chose GENERAL. A rule that
+   * states an enquiry type does not match a null one.
+   */
+  enquiryType: EnquiryType | null;
+  /** As supplied. Reaches territory resolution; never inferred. */
+  state: string | null;
+  city: string | null;
+  /** In the customer's own words — "500 kg", "2 tonnes". Never parsed. */
+  quantity: string | null;
+  /** Where an export enquiry ships to. Distinct from `country`, the enquirer's. */
+  destinationCountry: string | null;
+  /** Null means never asked, which is not the same as declined. */
+  sampleRequired: boolean | null;
 }
 
 export interface IntegrationIntakeQuery {

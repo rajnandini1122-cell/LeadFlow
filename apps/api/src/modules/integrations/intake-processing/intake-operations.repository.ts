@@ -146,4 +146,13 @@ const DETAIL_SELECT = {
   message: true,
   matchedContactId: true,
   matchedLeadId: true,
+  // Structured classification. On the DETAIL view only: the list is a queue an
+  // operator scans, and six more columns on every row would bury the one thing
+  // the list is for — whether it became work, and if not why.
+  enquiryType: true,
+  state: true,
+  city: true,
+  quantity: true,
+  destinationCountry: true,
+  sampleRequired: true,
 } as const;

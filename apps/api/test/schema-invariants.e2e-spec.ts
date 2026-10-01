@@ -580,11 +580,19 @@ describe('Database invariants', () => {
        * The migration's promise, checked against whatever the suite has
        * written by now. Two formats living side by side is the failure this
        * guards: the active-criteria unique index compares strings, so an old
-       * two-segment key and a new three-segment key for the same criteria
+       * three-segment key and a new four-segment key for the same criteria
        * would read as two different rules and both be allowed active.
+       *
+       * FOUR segments since 20260930090000 added the enquiry-type dimension.
+       * That migration appends `|enquiry_type=*` to every existing row for
+       * precisely the reason above — a rule written before the dimension
+       * existed and one written after must still collide when they say the
+       * same thing.
        */
       for (const key of keys) {
-        expect(key).toMatch(/^source=[^|]*\|product=[^|]*\|territory=[^|]*$/);
+        expect(key).toMatch(
+          /^source=[^|]*\|product=[^|]*\|territory=[^|]*\|enquiry_type=[^|]*$/,
+        );
       }
     });
   });

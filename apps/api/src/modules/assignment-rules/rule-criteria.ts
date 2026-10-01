@@ -1,3 +1,4 @@
+import type { EnquiryType } from '@leadflow/api-types';
 /**
  * What a rule matches on, and how a piece of work is described to it.
  *
@@ -38,6 +39,13 @@ export function normalizeSourceKey(source: string | null | undefined): string | 
 
 /** The facts about one piece of work, as the evaluator understands them. */
 export interface AssignmentContext {
+  /**
+   * What the customer said they want, when anything said so.
+   *
+   * Only website intakes carry one today. A WhatsApp enquiry has none, and
+   * therefore never matches a rule that states an enquiry type.
+   */
+  enquiryType?: EnquiryType | null | undefined;
   /** The lead source, in whatever spelling it arrived. Normalised here. */
   source?: string | null | undefined;
   /** A CANONICAL product id. Never free text a customer typed. */
@@ -57,6 +65,7 @@ export interface RuleCriteria {
   sourceKey?: string | null | undefined;
   productId?: string | null | undefined;
   territoryId?: string | null | undefined;
+  enquiryType?: EnquiryType | null | undefined;
 }
 
 /**
@@ -96,6 +105,29 @@ const DIMENSIONS: readonly Dimension[] = [
     key: 'territory',
     of: (criteria) => criteria.territoryId ?? undefined,
     from: (context) => context.territoryId ?? undefined,
+  },
+  /*
+   * Appended last, for exactly the reason stated above territory.
+   *
+   * Every criteria key written before this dimension existed becomes itself
+   * plus `|enquiry_type=*` — one constant suffix, which migration
+   * 20260930090000 applies to every row. Inserting it anywhere else would
+   * force that migration to rebuild each key from columns, and a rule whose
+   * stored source spelling differed from what the generator produces today
+   * would silently change identity.
+   *
+   * WHAT IT MEANS TO MATCH. Unset on a rule means "any enquiry type", like the
+   * other three. Set on a rule means the work must carry exactly that type —
+   * so an enquiry with NO type does not match a rule that states one. That is
+   * the existing convention and it is the right one here: an enquiry nobody
+   * classified is not "any classification", it is a fact we do not have, and a
+   * WhatsApp message (which carries no enquiry type at all) must not be routed
+   * by a rule written for website sample requests.
+   */
+  {
+    key: 'enquiry_type',
+    of: (criteria) => criteria.enquiryType ?? undefined,
+    from: (context) => context.enquiryType ?? undefined,
   },
 ];
 

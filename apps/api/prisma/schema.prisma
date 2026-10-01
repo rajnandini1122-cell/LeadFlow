@@ -1999,6 +1999,41 @@ model UserDevice {
 /// later phase, so nothing here advances on its own: an operator or that later
 /// phase moves a row on, and until then RECEIVED means exactly "we have it and
 /// nobody has acted".
+/// How a website visitor classified their own enquiry.
+///
+/// A REAL ENUM rather than free text, because routing may match on it: a
+/// dimension a rule can be written against has to have a closed set of values,
+/// or two spellings of "sample" become two different rules.
+///
+/// Deliberately SEPARATE from `source`. Source says how an enquiry reached us
+/// — WEBSITE, WHATSAPP — and stays stable for attribution; this says what the
+/// customer wants. Folding one into the other would make "website enquiries
+/// this month" unanswerable the moment a second classification appeared.
+///
+/// Nullable on the intake: a form that does not ask must not have an answer
+/// invented for it, and GENERAL is a real choice a visitor makes rather than a
+/// stand-in for silence.
+enum EnquiryType {
+  /// No specific ask. The default a simple contact form would send.
+  GENERAL
+  /// Wants a price.
+  QUOTE
+  /// Wants a physical sample.
+  SAMPLE
+  /// Large-volume purchase.
+  BULK
+  /// Shipping outside the seller's country.
+  EXPORT
+  /// Hotels, restaurants, caterers, institutional catering.
+  HORECA
+  /// Wants to resell or distribute.
+  DISTRIBUTOR
+  /// Wants the product under their own brand.
+  PRIVATE_LABEL
+
+  @@map("enquiry_type")
+}
+
 enum IntakeStatus {
   /// Accepted, stored, and waiting for the conversion phase.
   RECEIVED
@@ -2081,6 +2116,41 @@ model IntegrationIntake {
   productInterest String? @map("product_interest") @db.VarChar(120)
   /// The page or campaign it came from, for attribution.
   sourcePage      String? @map("source_page") @db.VarChar(200)
+
+  // --- what the customer actually wants, structured ------------------------
+
+  /// How the visitor classified their own enquiry. May participate in routing.
+  ///
+  /// Nullable, and null is not GENERAL: a form that never asked has no answer,
+  /// while GENERAL is a visitor choosing it. Rules distinguish the two — an
+  /// enquiry with no type does not match a rule that states one.
+  enquiryType EnquiryType? @map("enquiry_type")
+
+  /// Sub-national region, as the visitor supplied it.
+  ///
+  /// Passed to territory resolution, which already understands STATE and CITY
+  /// coverage. NOT inferred from anything: an absent state stays absent.
+  state String? @db.VarChar(120)
+  /// City or town, as the visitor supplied it. Also used for territory resolution.
+  city  String? @db.VarChar(120)
+
+  /// How much they want, in their own words — "500 kg", "2 tonnes", "a pallet".
+  ///
+  /// Free text on purpose. A numeric column would need a unit beside it and a
+  /// parser between them, and a parser guessing that "2" means tonnes is how a
+  /// quote comes out a thousand times wrong. A person reads this.
+  quantity String? @db.VarChar(80)
+
+  /// Where an export enquiry wants goods delivered. ISO 3166-1 alpha-2.
+  ///
+  /// Distinct from `country`, which is where the ENQUIRER is. An Indian buying
+  /// office shipping to Oman is `country=IN`, `destinationCountry=OM`, and
+  /// collapsing them would route the enquiry to the wrong team.
+  destinationCountry String? @map("destination_country") @db.VarChar(2)
+
+  /// Whether they asked for a sample. Nullable for three states, not two:
+  /// asked and said yes, asked and said no, never asked.
+  sampleRequired Boolean? @map("sample_required")
 
   // --- what happened to it --------------------------------------------------
   receivedAt       DateTime  @default(now()) @map("received_at") @db.Timestamptz(6)
@@ -2357,6 +2427,13 @@ model AssignmentRule {
    * NULL means "anywhere".
    */
   territoryId String? @map("territory_id") @db.Uuid
+
+  /// Optional fourth matching dimension: what the customer wants.
+  ///
+  /// Unset means "any", exactly like the three above. Appended last so every
+  /// criteria key written before this existed becomes itself plus one constant
+  /// suffix — see the note on the territory dimension in rule-criteria.ts.
+  enquiryType EnquiryType? @map("enquiry_type")
 
   /**
    * The last resort, evaluated only when no specific rule matched.
