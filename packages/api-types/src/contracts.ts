@@ -616,6 +616,23 @@ export type IntakeStatus = (typeof INTAKE_STATUSES)[number];
 export interface IntegrationIntakeListItem {
   id: string;
   source: string;
+  /**
+   * The SENDER's id for this submission — the website's own reference.
+   *
+   * Exposed so support can trace one submission end to end without database
+   * access. It is the value that travelled in the signed `X-LeadFlow-Event-Id`
+   * header, and it is safe to show: an opaque reference the sender chose, not
+   * HMAC material, not the payload hash, and not derived from either.
+   */
+  submissionId: string;
+  /**
+   * How the visitor classified their own enquiry, when the form asked.
+   *
+   * On the list as well as the detail because the queue can be filtered by it,
+   * and a filter whose effect is invisible in the rows is not reviewable. Null
+   * means the form did not ask — NOT that they chose GENERAL.
+   */
+  enquiryType: EnquiryType | null;
   status: IntakeStatus;
   receivedAt: string;
   name: string | null;
@@ -654,14 +671,9 @@ export interface IntegrationIntakeDetail extends IntegrationIntakeListItem {
   matchedLeadId: string | null;
 
   // --- what the customer wants, structured ---------------------------------
+  // `enquiryType` is on the list item above. A rule that states an enquiry
+  // type does not match an enquiry carrying none.
 
-  /**
-   * How the visitor classified their own enquiry, when the form asked.
-   *
-   * Null means the form did not ask — NOT that they chose GENERAL. A rule that
-   * states an enquiry type does not match a null one.
-   */
-  enquiryType: EnquiryType | null;
   /** As supplied. Reaches territory resolution; never inferred. */
   state: string | null;
   city: string | null;
@@ -676,6 +688,16 @@ export interface IntegrationIntakeDetail extends IntegrationIntakeListItem {
 export interface IntegrationIntakeQuery {
   status?: IntakeStatus;
   source?: string;
+  /**
+   * The sender's own id for one submission, matched exactly.
+   *
+   * What makes "did website submission X reach LeadFlow?" answerable without
+   * database access — which was previously impossible, because the id was
+   * stored and never returned.
+   */
+  submissionId?: string;
+  /** One of the eight classifications. Website enquiries only carry these. */
+  enquiryType?: EnquiryType;
   /** ISO instants. Inclusive lower bound, exclusive upper. */
   receivedFrom?: string;
   receivedTo?: string;

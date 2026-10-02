@@ -47,10 +47,15 @@ export class UpdateLeadDto {
   @MaxLength(32)
   mobile?: string;
 
+  /* Normalised like every other email this product stores — see create-lead.dto. */
   @IsOptional()
   @IsEmail({}, { message: 'must be a valid email address' })
   @MaxLength(320)
-  @Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? undefined : value))
+  @Transform(({ value }) => {
+    if (typeof value !== 'string') return value;
+    const trimmed = value.trim().toLowerCase();
+    return trimmed === '' ? undefined : trimmed;
+  })
   email?: string;
 
   @IsOptional()

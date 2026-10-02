@@ -1,3 +1,4 @@
+import type { EnquiryType } from '@leadflow/api-types';
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../../common/prisma/prisma.service';
 import type { PrismaTransaction } from '../../../common/prisma/transaction';
@@ -26,6 +27,8 @@ export class IntakeOperationsRepository {
   async list(query: {
     status?: IntakeStatus | undefined;
     source?: string | undefined;
+    submissionId?: string | undefined;
+    enquiryType?: EnquiryType | undefined;
     receivedFrom?: Date | undefined;
     receivedTo?: Date | undefined;
     limit: number;
@@ -34,6 +37,9 @@ export class IntakeOperationsRepository {
     const where = {
       ...(query.status ? { status: query.status } : {}),
       ...(query.source ? { source: query.source } : {}),
+      // Exact match: an opaque id pasted from a support ticket, not a search.
+      ...(query.submissionId ? { externalEventId: query.submissionId } : {}),
+      ...(query.enquiryType ? { enquiryType: query.enquiryType } : {}),
       ...(query.receivedFrom || query.receivedTo
         ? {
             receivedAt: {
@@ -128,6 +134,11 @@ const ROUTING_SELECT = {
 const LIST_SELECT = {
   id: true,
   source: true,
+  // Returned as `submissionId`. The sender's own reference, not HMAC material.
+  externalEventId: true,
+  // In the list because the queue can be filtered by it; the remaining
+  // classification fields stay detail-only, where there is room for them.
+  enquiryType: true,
   status: true,
   receivedAt: true,
   name: true,

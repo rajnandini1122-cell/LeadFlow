@@ -95,6 +95,26 @@ describe('Database invariants', () => {
       [organizationId, leadNumber, status, mobile],
     );
 
+  /**
+   * The same insert, with an email address and an optional mobile.
+   *
+   * Separate from `insertLead` rather than another positional parameter: the
+   * email index cases need a lead that has an address and NO number, which is
+   * precisely the shape that used to have no duplicate key at all.
+   */
+  const insertLeadWithEmail = (
+    organizationId: string,
+    leadNumber: string,
+    status: string,
+    email: string | null,
+    mobile: string | null = null,
+  ) =>
+    attempt(
+      `insert into leads (organization_id, lead_number, status, email, mobile, next_follow_up_at, updated_at)
+       values ($1, $2, $3::lead_status, $4, $5, now(), now())`,
+      [organizationId, leadNumber, status, email, mobile],
+    );
+
   // ---------------------------------------------------------------------------
 
   describe('uuidv7()', () => {
@@ -304,6 +324,117 @@ describe('Database invariants', () => {
     });
   });
 
+  /**
+   * Duplicate lead detection by EMAIL (leads_org_email_uniq).
+   *
+   * The gap this closes: an enquiry carrying an address and no phone number
+   * passed every check there was. The mobile pre-check is guarded by
+   * `if (mobile)` and simply skipped, and no constraint covered email — so two
+   * submissions from one person who left the phone field blank became two
+   * active leads.
+   *
+   * Keyed on `lower(email)` rather than `email`, which is the one deliberate
+   * difference from the mobile index. Email is case-insensitive in practice and
+   * this database does not hold it consistently, so a plain index would treat
+   * `Dana@Example.test` and `dana@example.test` as two customers — exactly the
+   * duplicate it is supposed to catch.
+   */
+  describe('duplicate lead detection (leads_org_email_uniq)', () => {
+    it('blocks a second active lead with the same email in the same organization', async () => {
+      const orgId = await createOrg(`inv-mail-${Date.now()}`);
+
+      // No mobile on either, which is the shape that had no key before.
+      expect(await insertLeadWithEmail(orgId, 'MAIL-001', 'NEW', 'dana@example.test')).toBe('OK');
+      expect(await insertLeadWithEmail(orgId, 'MAIL-002', 'NEW', 'dana@example.test')).toBe(
+        'leads_org_email_uniq',
+      );
+    });
+
+    it('treats a different casing as the same address', async () => {
+      const orgId = await createOrg(`inv-mail-case-${Date.now()}`);
+
+      expect(await insertLeadWithEmail(orgId, 'CASE-001', 'NEW', 'Dana@Example.test')).toBe('OK');
+      // The whole reason the index is an expression index. Without lower(),
+      // this row is accepted and the customer has two leads.
+      expect(await insertLeadWithEmail(orgId, 'CASE-002', 'NEW', 'dana@example.TEST')).toBe(
+        'leads_org_email_uniq',
+      );
+    });
+
+    it('allows the same email in a DIFFERENT organization', async () => {
+      const stamp = Date.now();
+      const orgOne = await createOrg(`inv-mail-a-${stamp}`);
+      const orgTwo = await createOrg(`inv-mail-b-${stamp}`);
+
+      expect(await insertLeadWithEmail(orgOne, 'MAIL-101', 'NEW', 'shared@example.test')).toBe(
+        'OK',
+      );
+      // Two tenants may both be talking to the same buyer. Uniqueness is per
+      // tenant, never global — a global key would leak one tenant's customer
+      // list into another's duplicate errors.
+      expect(await insertLeadWithEmail(orgTwo, 'MAIL-101', 'NEW', 'shared@example.test')).toBe(
+        'OK',
+      );
+    });
+
+    it('ignores a lead with no email at all', async () => {
+      const orgId = await createOrg(`inv-mail-null-${Date.now()}`);
+
+      // Most leads have no address. NULL is not a duplicate of NULL, or the
+      // second phone-only lead in any tenant would be refused.
+      expect(await insertLeadWithEmail(orgId, 'NULL-001', 'NEW', null, '9800000011')).toBe('OK');
+      expect(await insertLeadWithEmail(orgId, 'NULL-002', 'NEW', null, '9800000012')).toBe('OK');
+    });
+
+    it('frees the email once a lead is LOST', async () => {
+      const orgId = await createOrg(`inv-mail-lost-${Date.now()}`);
+
+      expect(await insertLeadWithEmail(orgId, 'MLOST-001', 'NEW', 'returning@example.test')).toBe(
+        'OK',
+      );
+      expect(
+        await attempt(
+          `update leads set status='LOST', lost_at=now() where organization_id=$1 and email='returning@example.test'`,
+          [orgId],
+        ),
+      ).toBe('OK');
+
+      // A customer who went quiet may legitimately write in again.
+      expect(await insertLeadWithEmail(orgId, 'MLOST-002', 'NEW', 'returning@example.test')).toBe(
+        'OK',
+      );
+    });
+
+    it('lets a deliberately acknowledged duplicate hold the same email', async () => {
+      const orgId = await createOrg(`inv-mail-ack-${Date.now()}`);
+
+      expect(await insertLeadWithEmail(orgId, 'ACK-001', 'NEW', 'twice@example.test')).toBe('OK');
+      // This is how a person creates a second lead for the same customer on
+      // purpose. Excluding acknowledged rows is what makes allowDuplicate
+      // work, and it is copied from the mobile index rather than invented.
+      expect(
+        await attempt(
+          `insert into leads (organization_id, lead_number, status, email, next_follow_up_at, duplicate_acknowledged_at, updated_at)
+           values ($1, 'ACK-002', 'NEW'::lead_status, 'twice@example.test', now(), now(), now())`,
+          [orgId],
+        ),
+      ).toBe('OK');
+    });
+
+    it('does not interfere with the mobile key', async () => {
+      const orgId = await createOrg(`inv-mail-both-${Date.now()}`);
+
+      expect(
+        await insertLeadWithEmail(orgId, 'BOTH-001', 'NEW', 'one@example.test', '9800000021'),
+      ).toBe('OK');
+      // Same person, different address: still refused, by the mobile index.
+      // The new key must not have weakened the existing one.
+      expect(
+        await insertLeadWithEmail(orgId, 'BOTH-002', 'NEW', 'two@example.test', '9800000021'),
+      ).toBe('leads_org_mobile_uniq');
+    });
+  });
+
   describe('append-only timeline', () => {
     it('refuses UPDATE on lead_activities', async () => {
       const orgId = await createOrg(`inv-append-${Date.now()}`);
@@ -348,6 +479,10 @@ describe('Database invariants', () => {
       expect(indexes).toEqual(
         expect.arrayContaining([
           'leads_org_mobile_uniq',
+          // Raw partial expression indexes, invisible to schema.prisma — which
+          // is exactly why losing one to a generated migration has to fail CI
+          // rather than quietly removing a duplicate guarantee.
+          'leads_org_email_uniq',
           'leads_followup_sweep_idx',
           'leads_organization_id_status_idx',
           'leads_organization_id_assigned_to_status_idx',

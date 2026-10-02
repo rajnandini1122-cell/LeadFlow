@@ -821,6 +821,10 @@ describe('Central Admin control plane', () => {
         activeAssignmentRules: expect.any(Number),
         activeTerritories: expect.any(Number),
         intakeAutoProcessingEnabled: expect.any(Boolean),
+        // Whether the signed boundary is open at all. Without it the Admin
+        // Panel cannot tell "no enquiries because none arrived" from "no
+        // enquiries because the route answers 404".
+        websiteIntakeEnabled: expect.any(Boolean),
       });
       expect(response.body.data.intakes).toMatchObject({
         received: expect.any(Number),
@@ -832,6 +836,40 @@ describe('Central Admin control plane', () => {
       const serialised = JSON.stringify(response.body);
       expect(serialised).not.toContain(ADMIN_SECRET);
       expect(serialised).not.toMatch(/postgres|redis:|SMTP|password/i);
+    });
+
+    it('reports the intake boundary as a boolean and nothing more', async () => {
+      const response = await send('get', `${BASE}/summary`);
+      const serialised = JSON.stringify(response.body);
+
+      expect(typeof response.body.data.websiteIntakeEnabled).toBe('boolean');
+      /*
+       * The flag, never the configuration behind it.
+       *
+       * No signing secret, no secret length or age, and no configured
+       * organization id: a control plane that can read configuration is a
+       * control plane whose compromise reads configuration.
+       */
+      expect(serialised).not.toMatch(/intakeSecret|signingSecret|intakeOrganizationId/i);
+    });
+
+    it('does not report WORKER_ENABLED, which would be wrong here', async () => {
+      const response = await send('get', `${BASE}/summary`);
+
+      /*
+       * Deliberately absent, and this test exists so it stays absent.
+       *
+       * WORKER_ENABLED is a PER-PROCESS flag and this summary is served by an
+       * API replica where it is false by design. Reporting it would answer "is
+       * the worker running?" with the API's own value and read as "conversion
+       * is off" on a perfectly healthy deployment — a monitoring signal wrong
+       * in the reassuring direction.
+       *
+       * `lastIntakeProcessingAt` is the honest substitute: evidence that
+       * something actually converted an enquiry.
+       */
+      expect(response.body.data).not.toHaveProperty('workerEnabled');
+      expect(response.body.data).toHaveProperty('lastIntakeProcessingAt');
     });
 
     it('counts only the administered organization', async () => {

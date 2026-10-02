@@ -1,6 +1,12 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { INTAKE_STATUSES, type IntakeStatus, type IntegrationIntakeListItem } from '@leadflow/api-types';
+import {
+  ENQUIRY_TYPES,
+  INTAKE_STATUSES,
+  type EnquiryType,
+  type IntakeStatus,
+  type IntegrationIntakeListItem,
+} from '@leadflow/api-types';
 import {
   Card,
   CardHeader,
@@ -10,6 +16,7 @@ import {
   SkeletonRows,
 } from '../../components/ui';
 import { useAuth } from '../auth/auth-context';
+import { ENQUIRY_TYPE_LABELS } from './enquiry-types';
 import { IntakeDetail } from './intake-detail';
 import { useIntakes } from './use-intakes';
 
@@ -28,11 +35,25 @@ export function IntakesPage(): React.JSX.Element {
   const canManage = can('integration_intake.manage');
 
   const [status, setStatus] = useState<IntakeStatus | ''>('');
+  const [enquiryType, setEnquiryType] = useState<EnquiryType | ''>('');
+  /*
+   * Two pieces of state for one box, deliberately.
+   *
+   * `submissionIdDraft` is what is being typed; `submissionId` is what is being
+   * searched. The match is exact, so every intermediate keystroke is a
+   * reference that does not exist — searching as somebody types would answer
+   * "no, that submission did not arrive" over and over while they are still
+   * pasting it. Committing on submit asks the question once.
+   */
+  const [submissionIdDraft, setSubmissionIdDraft] = useState('');
+  const [submissionId, setSubmissionId] = useState('');
   const [page, setPage] = useState(0);
   const [expanded, setExpanded] = useState<string | null>(null);
 
   const intakes = useIntakes({
     ...(status ? { status } : {}),
+    ...(enquiryType ? { enquiryType } : {}),
+    ...(submissionId ? { submissionId } : {}),
     limit: PAGE_SIZE,
     offset: page * PAGE_SIZE,
   });
@@ -59,6 +80,7 @@ export function IntakesPage(): React.JSX.Element {
 
   const { items, total } = intakes.data ?? { items: [], total: 0 };
   const lastPage = Math.max(0, Math.ceil(total / PAGE_SIZE) - 1);
+  const filtered = Boolean(status || enquiryType || submissionId);
 
   return (
     <div>
@@ -72,30 +94,95 @@ export function IntakesPage(): React.JSX.Element {
           title={`${total} ${total === 1 ? 'enquiry' : 'enquiries'}`}
           subtitle="Newest first."
           action={
-            <select
-              aria-label="Filter by status"
-              value={status}
-              onChange={(event) => {
-                setStatus(event.target.value as IntakeStatus | '');
-                setPage(0);
-              }}
-              className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
-            >
-              <option value="">All statuses</option>
-              {INTAKE_STATUSES.map((option) => (
-                <option key={option} value={option}>
-                  {STATUS_LABELS[option]}
-                </option>
-              ))}
-            </select>
+            <div className="flex flex-wrap items-center gap-2">
+              {/*
+                Finding one known submission, which is a different job from
+                browsing the queue — hence a form rather than another select.
+                The reference comes from outside LeadFlow, usually pasted out
+                of a support ticket.
+              */}
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  setSubmissionId(submissionIdDraft.trim());
+                  setPage(0);
+                }}
+                className="flex gap-2"
+              >
+                <input
+                  aria-label="Find by submission reference"
+                  placeholder="Submission reference"
+                  value={submissionIdDraft}
+                  onChange={(event) => setSubmissionIdDraft(event.target.value)}
+                  className="w-44 rounded-lg border border-slate-300 bg-white px-3 py-1.5 font-mono text-xs outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
+                />
+                <button
+                  type="submit"
+                  className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50"
+                >
+                  Find
+                </button>
+              </form>
+
+              <select
+                aria-label="Filter by enquiry type"
+                value={enquiryType}
+                onChange={(event) => {
+                  setEnquiryType(event.target.value as EnquiryType | '');
+                  setPage(0);
+                }}
+                className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
+              >
+                <option value="">All enquiry types</option>
+                {ENQUIRY_TYPES.map((option) => (
+                  <option key={option} value={option}>
+                    {ENQUIRY_TYPE_LABELS[option]}
+                  </option>
+                ))}
+              </select>
+
+              <select
+                aria-label="Filter by status"
+                value={status}
+                onChange={(event) => {
+                  setStatus(event.target.value as IntakeStatus | '');
+                  setPage(0);
+                }}
+                className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
+              >
+                <option value="">All statuses</option>
+                {INTAKE_STATUSES.map((option) => (
+                  <option key={option} value={option}>
+                    {STATUS_LABELS[option]}
+                  </option>
+                ))}
+              </select>
+            </div>
           }
         />
 
         {items.length === 0 ? (
-          <EmptyState
-            title="No enquiries yet"
-            description="Submissions from the website appear here as soon as they arrive."
-          />
+          /*
+            A filtered miss is not an empty queue, and for a submission
+            reference that difference is the whole answer: "that submission
+            never reached LeadFlow" is what support needs told, not "no
+            enquiries yet", which reads as the integration never having worked.
+          */
+          filtered ? (
+            <EmptyState
+              title="Nothing matches those filters"
+              description={
+                submissionId
+                  ? 'No enquiry arrived carrying that submission reference. Either the website never sent it, or it was rejected before it was stored.'
+                  : 'No enquiry in this queue matches. Try widening the filters.'
+              }
+            />
+          ) : (
+            <EmptyState
+              title="No enquiries yet"
+              description="Submissions from the website appear here as soon as they arrive."
+            />
+          )
         ) : (
           <table className="w-full text-sm">
             <thead>
@@ -181,8 +268,18 @@ function IntakeRow({
           </button>
           {intake.company && <p className="mt-0.5 text-xs text-slate-500">{intake.company}</p>}
         </td>
-        <td className="max-w-xs truncate px-5 py-3 text-xs text-slate-600">
-          {intake.productInterest || <span className="text-slate-400">—</span>}
+        <td className="max-w-xs px-5 py-3 text-xs text-slate-600">
+          {/* The classification first, then the customer's own words: the
+              classification is what rules route on, the words are what a
+              salesperson reads. */}
+          {intake.enquiryType && (
+            <span className="mb-0.5 inline-block rounded-full bg-slate-100 px-2 py-0.5 font-medium text-slate-600">
+              {ENQUIRY_TYPE_LABELS[intake.enquiryType]}
+            </span>
+          )}
+          <p className="truncate">
+            {intake.productInterest || <span className="text-slate-400">—</span>}
+          </p>
         </td>
         <td className="px-5 py-3">
           <StatusPill status={intake.status} />

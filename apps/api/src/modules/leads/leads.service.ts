@@ -165,21 +165,41 @@ export class LeadsService {
      * the existing one so the client can offer to open it; creating anyway
      * requires the caller to opt in.
      *
-     * Skipped entirely without a mobile, because the mobile IS the duplicate
-     * key. Matching on name or company instead would be far worse than missing
-     * a duplicate: "John Smith at Acme" collides constantly, and wrongly
-     * refusing to create a lead loses a real enquiry.
+     * TWO keys, asked in order of strength. The mobile is the primary one; the
+     * email address is secondary but real, and asking it closes the case the
+     * mobile check cannot see — a customer who left the phone field blank, for
+     * whom there was previously no duplicate key at all.
+     *
+     * The email read is skipped whenever the mobile already answered, so the
+     * common path still costs exactly one query.
+     *
+     * Matching on name or company is still deliberately NOT done, and would be
+     * far worse than missing a duplicate: "John Smith at Acme" collides
+     * constantly, and wrongly refusing to create a lead loses a real enquiry.
+     * An email address identifies a mailbox; a name does not identify a person.
      */
-    if (mobile !== null && !dto.allowDuplicate) {
-      const existing = await this.repository.findActiveByMobile(mobile);
+    if (!dto.allowDuplicate) {
+      const byMobile = mobile === null ? null : await this.repository.findActiveByMobile(mobile);
+      const byEmail =
+        byMobile || !dto.email ? null : await this.repository.findActiveByEmail(dto.email);
+      const existing = byMobile ?? byEmail;
+
       if (existing) {
         const name = [existing.firstName, existing.lastName].filter(Boolean).join(" ").trim();
+        /*
+         * Named by whichever key actually matched.
+         *
+         * Reporting an email collision as a mobile one would send somebody
+         * looking for a phone number that was never the problem — and on a
+         * lead with no phone at all, would put `null` in the message.
+         */
+        const matchedOn = byMobile ? `mobile ${mobile as string}` : `email ${dto.email as string}`;
 
         // Details carry the existing lead so the client can offer
         // "Open existing lead" without a second round trip.
         throw new AppException(
           ERROR_CODES.DUPLICATE_LEAD,
-          `A lead with mobile ${mobile} already exists (${existing.leadNumber}).`,
+          `A lead with ${matchedOn} already exists (${existing.leadNumber}).`,
           HttpStatus.CONFLICT,
           {
             existingLeadId: [existing.id],
@@ -407,26 +427,37 @@ export class LeadsService {
          * only runs on the rare collision path.
          */
         /*
-         * Only a mobile can collide on the duplicate index, and since
-         * numbering moved under the tenant lock it is the only collision
-         * left. Established by re-querying rather than by parsing the error,
-         * which cannot go stale the way a parsed shape can.
+         * TWO keys can collide now, not one: mobile, and — since
+         * `leads_org_email_uniq` — the email address. Established by
+         * re-querying rather than by parsing the error, which cannot go stale
+         * the way a parsed shape can.
+         *
+         * Mobile is asked first because it is the stronger identity and the
+         * message naming it is more useful; either is a genuine duplicate.
          */
-        const collidingLead =
+        const collidingByMobile =
           mobile === null ? null : await this.repository.findActiveByMobile(mobile);
+        const collidingByEmail =
+          collidingByMobile || !dto.email
+            ? null
+            : await this.repository.findActiveByEmail(dto.email);
+
+        const colliding = collidingByMobile ?? collidingByEmail;
 
         /*
-         * An acknowledged duplicate is excluded from the index, so a P2002
-         * here cannot have come from the mobile. Treating it as one would
+         * An acknowledged duplicate is excluded from both indexes, so a P2002
+         * here cannot have come from either key. Treating it as one would
          * report a duplicate to somebody who explicitly allowed one.
          */
-        if (collidingLead && dto.allowDuplicate !== true) {
+        if (colliding && dto.allowDuplicate !== true) {
           // Another request created this customer between our duplicate check
-          // and this insert. That is the race the index exists to catch, and
+          // and this insert. That is the race the indexes exist to catch, and
           // it is not retryable.
           throw AppException.conflict(
             ERROR_CODES.DUPLICATE_LEAD,
-            'A lead with this mobile number was just created.',
+            collidingByMobile
+              ? 'A lead with this mobile number was just created.'
+              : 'A lead with this email address was just created.',
           );
         }
 

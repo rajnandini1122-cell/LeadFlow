@@ -49,6 +49,31 @@ export class WebsiteIntakeController {
    *                  flight, and carried in a header rather than the body so
    *                  there is exactly one place it can live.
    */
+  /*
+   * THROTTLING: deliberately the GENERAL policy, and deliberately not stricter.
+   *
+   * Examined and left alone on purpose, so the next person does not read the
+   * absence of a @Throttle here as an oversight.
+   *
+   * Every legitimate request arrives from the approved backend's egress
+   * addresses — a handful of IPs for the entire website. The throttler keys on
+   * IP, so ANY stricter route-level limit is a shared bucket for every customer
+   * at once: one busy afternoon, or one spam burst, and real enquiries are
+   * refused collectively. That is a denial-of-service condition we would be
+   * building ourselves, and it is worse than the abuse it would prevent.
+   *
+   * The real boundary is the signature, which this route cannot be reached
+   * past: an unsigned or wrongly signed request is rejected before any work is
+   * done, so the open internet cannot reach the pipeline at all. Replay is
+   * bounded by the five-minute timestamp window, duplication by the unique
+   * event id, and payload size by the 3 MB body cap plus per-field limits.
+   *
+   * Spam therefore has to come THROUGH the approved caller, which is where it
+   * can be told apart from a real visitor — App Check, per-session limits and
+   * bot signals all live at that layer, with the context to judge. Rate
+   * limiting here cannot distinguish the two and would only choose how many
+   * genuine customers to turn away.
+   */
   @Post('intake')
   @Public()
   @HttpCode(HttpStatus.OK)

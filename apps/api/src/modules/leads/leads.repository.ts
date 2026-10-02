@@ -168,6 +168,37 @@ export class LeadsRepository {
   }
 
   /**
+   * The same question, asked of the email address.
+   *
+   * Secondary to mobile but a real duplicate key since
+   * `leads_org_email_uniq` — an enquiry carrying an address and no number used
+   * to have no key at all. Case-insensitive, because that index is keyed on
+   * lower(email) and stored addresses are not uniformly normalised: comparing
+   * raw strings would miss the duplicate it exists to catch.
+   *
+   * Acknowledged duplicates are excluded here as well as in the predicate, so
+   * a deliberately created second lead is not reported as an accident.
+   */
+  async findActiveByEmail(email: string) {
+    return this.prisma.client.lead.findFirst({
+      where: {
+        email: { equals: email, mode: 'insensitive' },
+        deletedAt: null,
+        status: { not: 'LOST' },
+        duplicateAcknowledgedAt: null,
+      },
+      select: {
+        id: true,
+        leadNumber: true,
+        firstName: true,
+        lastName: true,
+        companyName: true,
+        status: true,
+      },
+    });
+  }
+
+  /**
    * Next lead number for this organization, e.g. LD-00020.
    *
    * Read-then-write, and therefore only correct while the caller holds the

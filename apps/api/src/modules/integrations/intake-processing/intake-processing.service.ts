@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { AuditRepository } from '../../../common/audit/audit.repository';
+import { METRIC, MetricsService } from '../../../common/observability/metrics.service';
 import { splitPersonName } from '../../../common/utils/person-name';
 import { parsePhone } from '../../../common/utils/phone';
 import type { PrismaTransaction } from '../../../common/prisma/transaction';
@@ -98,6 +99,7 @@ export class IntakeProcessingService {
     private readonly leads: LeadsRepository,
     private readonly followUps: FollowUpsRepository,
     private readonly audit: AuditRepository,
+    private readonly metrics: MetricsService,
   ) {}
 
   /**
@@ -131,7 +133,7 @@ export class IntakeProcessingService {
        * reports what it decided.
        */
       outcome = await this.repository.transaction(async (tx) =>
-        this.recordLateDuplicate(tx, intakeId, error.mobile),
+        this.recordLateDuplicate(tx, intakeId, error.key, error.value),
       );
     }
 
@@ -159,13 +161,19 @@ export class IntakeProcessingService {
   private async recordLateDuplicate(
     tx: PrismaTransaction,
     intakeId: string,
-    mobile: string,
+    key: 'mobile' | 'email',
+    value: string,
   ): Promise<ProcessOutcome> {
     if (!(await this.repository.claim(tx, intakeId))) {
       return { result: 'SKIPPED', reason: 'claimed by another processor' };
     }
 
-    const existing = await this.repository.activeLeadByMobile(tx, mobile);
+    // Looked up by the key the index refused, so the lead named below is the
+    // one this enquiry actually lost to.
+    const existing =
+      key === 'mobile'
+        ? await this.repository.activeLeadByMobile(tx, value)
+        : await this.repository.activeLeadByEmail(tx, value);
 
     if (!existing) {
       this.logger.warn(
@@ -177,7 +185,9 @@ export class IntakeProcessingService {
 
     return this.duplicate(tx, intakeId, {
       code: BLOCK_CODE.DUPLICATE_LEAD,
-      reason: `An active lead (${existing.leadNumber}) was created for this number while this enquiry was being processed.`,
+      reason: `An active lead (${existing.leadNumber}) was created for this ${
+        key === 'mobile' ? 'number' : 'email address'
+      } while this enquiry was being processed.`,
       matchedLeadId: existing.id,
     });
   }
@@ -268,6 +278,32 @@ export class IntakeProcessingService {
           code: BLOCK_CODE.DUPLICATE_LEAD,
           reason: `An active lead (${existingLead.leadNumber}) already exists for this number.`,
           matchedLeadId: existingLead.id,
+        });
+      }
+    }
+
+    /*
+     * The same question, asked of the email address.
+     *
+     * An enquiry carrying an email and no phone used to have no duplicate key
+     * at all — the check above is guarded by `if (mobile)` and was simply
+     * skipped — so two submissions from one person who left the phone field
+     * blank became two active leads. `leads_org_email_uniq` is the authority
+     * and closes the race; this read is what turns the refusal into a reported
+     * DUPLICATE rather than a constraint error.
+     *
+     * Asked whether or not a mobile is present. An enquiry whose number is new
+     * but whose address already belongs to an active lead is the same customer
+     * reaching out again, and a second lead would split their history.
+     */
+    if (email) {
+      const existingByEmail = await this.repository.activeLeadByEmail(tx, email);
+
+      if (existingByEmail) {
+        return this.duplicate(tx, intakeId, {
+          code: BLOCK_CODE.DUPLICATE_LEAD,
+          reason: `An active lead (${existingByEmail.leadNumber}) already exists for this email address.`,
+          matchedLeadId: existingByEmail.id,
         });
       }
     }
@@ -450,7 +486,18 @@ export class IntakeProcessingService {
         tx,
       });
     } catch (error) {
-      if (mobile && isUniqueViolation(error)) throw new LateDuplicate(mobile);
+      /*
+       * Which key the index refused decides what the caller can say about it.
+       *
+       * Both `leads_org_mobile_uniq` and `leads_org_email_uniq` can fire here,
+       * and the recovery path has to look the duplicate up by the same key to
+       * name the lead it lost to. Mobile is checked first only because it is
+       * the stronger identity; either one is a genuine duplicate.
+       */
+      if (isUniqueViolation(error)) {
+        if (mobile) throw new LateDuplicate('mobile', mobile);
+        if (email) throw new LateDuplicate('email', email);
+      }
       throw error;
     }
 
@@ -559,11 +606,41 @@ export class IntakeProcessingService {
    * find and redact. The actor is null because the system did this; borrowing
    * a real user's id would attribute it to somebody who was asleep.
    */
+  /** Flat counters, no labels. See METRIC.INTAKE_* for why. */
+  private countOutcome(outcome: ProcessOutcome): void {
+    switch (outcome.result) {
+      case 'CONVERTED':
+        this.metrics.increment(METRIC.INTAKE_CONVERTED);
+        return;
+      case 'BLOCKED':
+        this.metrics.increment(METRIC.INTAKE_BLOCKED);
+        return;
+      case 'DUPLICATE':
+        this.metrics.increment(METRIC.INTAKE_DUPLICATE);
+        return;
+      // ALREADY_PROCESSED is a retry finding work already done, and SKIPPED is
+      // nothing having happened. Counting either would overstate the funnel.
+      default:
+        return;
+    }
+  }
+
   private async recordAudit(
     intakeId: string,
     outcome: ProcessOutcome,
     tx?: PrismaTransaction,
   ): Promise<void> {
+    /*
+     * Counted BEFORE the audit writes, and outside its try/catch.
+     *
+     * An audit write that failed is deliberately swallowed below — the record
+     * of what happened matters less than the thing that happened — and a
+     * counter incremented inside that block would be silently lost with it.
+     * Counting first means the funnel stays truthful even when the trail does
+     * not. SKIPPED is not counted: nothing happened to the enquiry.
+     */
+    this.countOutcome(outcome);
+
     try {
       if (outcome.result === 'CONVERTED') {
         await this.audit.record({
@@ -617,12 +694,21 @@ export class IntakeProcessingService {
 }
 
 /**
- * Thrown when the unique index refuses a lead because one already exists for
- * that number. Carries the mobile so the caller can name the lead it lost to.
+ * Thrown when a unique index refuses a lead because one already exists for that
+ * customer.
+ *
+ * Carries WHICH key collided and its value, so the recovery path can look the
+ * existing lead up the same way the index found it and name the lead this
+ * enquiry lost to. Two indexes can fire — mobile and email — and reporting an
+ * email collision as a mobile one would send somebody looking for a phone
+ * number that was never the problem.
  */
 class LateDuplicate extends Error {
-  constructor(readonly mobile: string) {
-    super('An active lead already exists for this mobile');
+  constructor(
+    readonly key: 'mobile' | 'email',
+    readonly value: string,
+  ) {
+    super(`An active lead already exists for this ${key}`);
     this.name = 'LateDuplicate';
   }
 }

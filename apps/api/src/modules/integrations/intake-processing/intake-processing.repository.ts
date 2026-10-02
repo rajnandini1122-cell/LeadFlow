@@ -190,6 +190,37 @@ export class IntakeProcessingRepository {
     });
   }
 
+  /**
+   * An active lead already holding this email address.
+   *
+   * The counterpart to activeLeadByMobile, and it exists because an enquiry
+   * with an email and no phone had no duplicate key at all: the mobile
+   * pre-check is guarded by `if (mobile)` and skipped, and no constraint
+   * covered email, so two submissions from one person who left the phone blank
+   * became two active leads.
+   *
+   * CASE-INSENSITIVE, matching `leads_org_email_uniq` which keys on
+   * lower(email). Stored addresses are not uniformly normalised — the intake
+   * DTO has always lowercased, the manual create and update DTOs did not until
+   * this change — so comparing raw strings would miss exactly the duplicate
+   * this is here to find.
+   *
+   * The predicate mirrors the index clause for clause. A LOST lead releases
+   * the address and a soft-deleted one never held it, so a customer who went
+   * quiet may legitimately return as a new enquiry.
+   */
+  async activeLeadByEmail(tx: PrismaTransaction, email: string) {
+    return tx.lead.findFirst({
+      where: {
+        email: { equals: email, mode: 'insensitive' },
+        deletedAt: null,
+        status: { not: 'LOST' },
+        duplicateAcknowledgedAt: null,
+      },
+      select: { id: true, leadNumber: true },
+    });
+  }
+
   /** The tenant's first-response SLA and dialling country, in one read. */
   async tenantPolicy(tx: PrismaTransaction): Promise<{ slaMinutes: number; country: string }> {
     const [settings, organization] = await Promise.all([

@@ -473,7 +473,68 @@ identity, lifecycle and counts — never a customer's leads, contacts or
 conversations. Every cross-tenant action is audited against the **target**
 organization, so a customer can see that it happened.
 
-### 3.3 Creating the first customer organization
+### 3.3 Preflight before the email duplicate guard
+
+Migration `20261002090000_lead_email_duplicate_guard` adds **one index** and
+changes **no data**:
+
+```sql
+CREATE UNIQUE INDEX "leads_org_email_uniq"
+  ON "leads" ("organization_id", lower("email"))
+  WHERE "email" IS NOT NULL
+    AND "deleted_at" IS NULL
+    AND "status" <> 'LOST'
+    AND "duplicate_acknowledged_at" IS NULL;
+```
+
+**It can fail, and that is deliberate.** If a tenant already holds two active,
+unacknowledged leads sharing an email address, PostgreSQL refuses to build the
+index and the migration aborts with nothing applied. Forcing it past real
+duplicates would mean choosing which customer record to break, and that is a
+person's decision, not a migration's.
+
+So run this **read-only** query first. It writes nothing, locks nothing, and is
+safe against production at any time:
+
+```sql
+-- Groups that would refuse the index. An empty result means it will build.
+SELECT organization_id,
+       lower(email)                     AS email_key,
+       count(*)                         AS active_leads,
+       array_agg(lead_number ORDER BY created_at) AS lead_numbers
+FROM leads
+WHERE email IS NOT NULL
+  AND deleted_at IS NULL
+  AND status <> 'LOST'
+  AND duplicate_acknowledged_at IS NULL
+GROUP BY organization_id, lower(email)
+HAVING count(*) > 1
+ORDER BY count(*) DESC;
+```
+
+**An empty result is the go signal.** Deploy normally.
+
+**Rows mean stop and resolve them through the product**, not through SQL. For
+each group, somebody decides which it is and acts in the CRM:
+
+| What it actually is | What to do |
+|---|---|
+| The same customer, written in twice | Close the later lead, or merge the contacts |
+| Deliberately two pieces of work | Mark one as an acknowledged duplicate — that is exactly what the exclusion in the index is for |
+| A typo putting one address on two customers | Correct the wrong address |
+| An opportunity that is over | Set it to `LOST`, which releases the address |
+
+Then re-run the query. When it returns nothing, deploy.
+
+Note the index keys on **`lower(email)`**, which is the one deliberate
+difference from `leads_org_mobile_uniq`. Historical addresses are not stored
+with consistent casing — the website intake has always lowercased, the manual
+create and update paths did not until this change — so an index on the raw
+column would treat `Dana@Example.test` and `dana@example.test` as two
+customers, which is precisely the duplicate it exists to catch. An expression
+index gets that right with **no backfill and no rewritten rows**.
+
+### 3.4 Creating the first customer organization
 
 Through the application's supported registration flow, not a script:
 
@@ -544,6 +605,7 @@ website components:
 | # | Step | Note |
 |---|---|---|
 | 0a | Provision PostgreSQL and Redis; configure `DATABASE_URL` and `DIRECT_DATABASE_URL` | |
+| 0a&#189; | **Run the email-duplicate preflight query** | Read-only. See §3.3 — a non-empty result means `db:migrate:deploy` will abort |
 | 0b | `db:migrate:deploy`, then `prisma migrate status` | Schema only — see §3.1 |
 | 0c | **`db:bootstrap`** | Reference data. Without it registration fails on a missing OWNER role |
 | 1 | Deploy LeadFlow API + worker, **automation and both integrations OFF** | `INTAKE_AUTO_PROCESSING_ENABLED=false` |

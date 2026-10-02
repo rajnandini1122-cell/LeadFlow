@@ -65,6 +65,17 @@ export interface AdminControlSummary {
    * to prevent. No endpoint here writes it.
    */
   intakeAutoProcessingEnabled: boolean;
+  /**
+   * Whether the signed website-intake route is open at all.
+   *
+   * A BOOLEAN, never a credential — the Admin Panel needs to distinguish "no
+   * enquiries because none arrived" from "no enquiries because the boundary
+   * answers 404", and that is the whole of what this says. The signing secret,
+   * its length, its age and the configured organization id are all absent, and
+   * must stay absent: a control plane that can read configuration is a control
+   * plane whose compromise reads configuration.
+   */
+  websiteIntakeEnabled: boolean;
 }
 
 /**
@@ -134,8 +145,22 @@ export class AdminControlOperations {
         processed: counts.intakes['PROCESSED'] ?? 0,
       },
       lastIntakeProcessingAt: counts.lastProcessingAt?.toISOString() ?? null,
-      // A boolean, never a credential. See the field's own comment.
+      // Booleans, never credentials. See each field's own comment.
       intakeAutoProcessingEnabled: this.config.get('INTAKE_AUTO_PROCESSING_ENABLED'),
+      websiteIntakeEnabled: this.config.get('WEBSITE_INTAKE_ENABLED'),
+      /*
+       * WORKER_ENABLED is deliberately NOT reported.
+       *
+       * It is a PER-PROCESS flag, and this summary is served by an API replica
+       * where it is false by design. Reporting it would answer "is the worker
+       * running?" with the API's own value and read as "conversion is off" on a
+       * perfectly healthy deployment — a monitoring signal that is wrong in the
+       * reassuring direction.
+       *
+       * `lastIntakeProcessingAt` above is the honest substitute: it is evidence
+       * that something actually converted an enquiry, which is the question
+       * behind the question.
+       */
     };
   }
 
