@@ -512,6 +512,15 @@ HAVING count(*) > 1
 ORDER BY count(*) DESC;
 ```
 
+> **Note the predicate, if you re-run this later.** The query above matches
+> `leads_org_email_uniq` as §3.3 creates it. §3.4 then adds
+> `AND deactivated_at IS NULL` to that index, because a deactivated lead
+> releases its identifiers. The query deliberately does **not** mention
+> `deactivated_at` — that column does not exist yet when the preflight is run,
+> and no row can be deactivated before §3.4 applies. If you re-run it on a
+> database where §3.4 is already applied, add `AND deactivated_at IS NULL` or it
+> will over-report: it would count pairs the live index now permits.
+
 **An empty result is the go signal.** Deploy normally.
 
 **Rows mean stop and resolve them through the product**, not through SQL. For
