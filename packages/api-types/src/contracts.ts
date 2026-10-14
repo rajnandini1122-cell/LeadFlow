@@ -1,5 +1,7 @@
 import type {
   AnyRoleKey,
+  LeadPriority,
+  LeadStatus,
   OrganizationStatus,
   OrganizationType,
   RoleKey,
@@ -737,9 +739,82 @@ export interface IntakeRetryResponse {
  * message can be four thousand characters, and one source record is easier to
  * redact than a copy in every table that found it interesting.
  */
+/**
+ * A lead as the CRAVION control plane sees it.
+ *
+ * READ-ONLY, and deliberately its own shape rather than the CRM's `LeadSummary`
+ * or its detail projection. Three reasons it is separate:
+ *
+ *   * it is a COMMERCIAL HANDOFF view — what an export operation needs to act
+ *     on an enquiry, which is the customer, the address, what they asked for
+ *     and who owns it;
+ *   * it carries `submissionId`, so a lead is traceable back to the website
+ *     submission that became it WITHOUT a second call. That direction was
+ *     previously impossible on this plane, which cannot read the CRM;
+ *   * reusing a CRM projection would mean every field added there appeared here
+ *     too, silently widening what the control plane can see.
+ *
+ * What is NOT here, on purpose: the activity timeline, the notes, the won and
+ * lost values, the follow-up history, and anything about the signing envelope.
+ * A control plane that can read a tenant's sales correspondence is a control
+ * plane whose compromise reads it.
+ */
+export interface AdminControlLead {
+  id: string;
+  leadNumber: string;
+  status: LeadStatus;
+  priority: LeadPriority;
+  name: string | null;
+  companyName: string | null;
+  mobile: string | null;
+  email: string | null;
+  /** The whole postal address, as captured. */
+  addressLine1: string | null;
+  addressLine2: string | null;
+  city: string | null;
+  state: string | null;
+  postalCode: string | null;
+  country: string | null;
+  /** What the customer asked for, in their words. Never a catalogue product. */
+  productInterest: string | null;
+  estimatedValue: string | null;
+  /** The customer relationship, when one is linked. Ids only. */
+  accountId: string | null;
+  assignedTo: { id: string; fullName: string } | null;
+  /**
+   * The website submission this lead came from, when it came from one.
+   *
+   * Null for a lead somebody typed in or imported. Present, this is the join
+   * key an export operation should persist: it is the one identifier the
+   * website and LeadFlow both independently know.
+   */
+  sourceSubmissionId: string | null;
+  /** The intake row behind it, for a follow-up read on this same plane. */
+  sourceIntakeId: string | null;
+  createdAt: string;
+}
+
+export interface AdminControlLeadPage {
+  items: AdminControlLead[];
+  total: number;
+}
+
 export interface LeadSourceIntake {
   id: string;
   source: string;
+  /**
+   * The SENDER's own id for the submission that became this lead.
+   *
+   * THE GAP THIS CLOSES. The intake id was returned and the website's own
+   * reference was not, so tracing a lead back to the submission it came from
+   * meant a second lookup against the operations queue — and over the Admin
+   * Control plane, which cannot read leads, it was not possible at all.
+   *
+   * Safe to expose for the same reason it is safe on the intake itself: an
+   * opaque reference the sender chose, not HMAC material, not the payload hash,
+   * and not derived from either.
+   */
+  submissionId: string;
   receivedAt: string;
   sourcePage: string | null;
   message: string | null;

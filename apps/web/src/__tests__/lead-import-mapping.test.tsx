@@ -323,6 +323,60 @@ describe('duplicate handling', () => {
     expect(screen.getByText(/Nothing on the existing lead is changed/)).toBeInTheDocument();
   });
 
+  it('will not import deliberate duplicates until they are confirmed', async () => {
+    await upload();
+
+    await userEvent.selectOptions(
+      screen.getByLabelText(/Rows that match a lead you already have/),
+      'CREATE_ANYWAY',
+    );
+
+    /*
+     * A SECOND, EXPLICIT acknowledgement, not just the dropdown.
+     *
+     * This mode creates a deliberate duplicate for every matching row at
+     * scale — forty rows means forty second leads for customers somebody is
+     * already working — and a dropdown changed minutes ago is a weak record of
+     * intent for that.
+     */
+    expect(screen.getByRole('button', { name: /^Import/ })).toBeDisabled();
+
+    await userEvent.click(
+      screen.getByLabelText(/I have checked these and want the second leads created/),
+    );
+    expect(screen.getByRole('button', { name: /^Import/ })).toBeEnabled();
+  });
+
+  it('forgets the confirmation when the mode changes', async () => {
+    await upload();
+
+    const mode = screen.getByLabelText(/Rows that match a lead you already have/);
+    await userEvent.selectOptions(mode, 'CREATE_ANYWAY');
+    await userEvent.click(
+      screen.getByLabelText(/I have checked these and want the second leads created/),
+    );
+
+    await userEvent.selectOptions(mode, 'SKIP');
+    await userEvent.selectOptions(mode, 'CREATE_ANYWAY');
+
+    // A tick left on from an earlier decision is not a decision about this one.
+    expect(screen.getByRole('button', { name: /^Import/ })).toBeDisabled();
+  });
+
+  it('says how many rows the mode will affect', async () => {
+    stubApi({ ...PREVIEW, duplicateRows: 7 });
+    await upload();
+
+    await userEvent.selectOptions(
+      screen.getByLabelText(/Rows that match a lead you already have/),
+      'CREATE_ANYWAY',
+    );
+
+    // The count, because "any matching row" and "seven rows" are different
+    // decisions to be asked to make.
+    expect(screen.getByText(/7 rows in this file match/)).toBeInTheDocument();
+  });
+
   it('sends the chosen mode', async () => {
     const apiPost = vi.spyOn(apiClient, 'apiPost');
     await upload();
@@ -330,6 +384,9 @@ describe('duplicate handling', () => {
     await userEvent.selectOptions(
       screen.getByLabelText(/Rows that match a lead you already have/),
       'CREATE_ANYWAY',
+    );
+    await userEvent.click(
+      screen.getByLabelText(/I have checked these and want the second leads created/),
     );
     await userEvent.click(screen.getByRole('button', { name: /^Import/ }));
 

@@ -99,6 +99,9 @@ export class IntakeOperationsRepository {
       select: {
         id: true,
         source: true,
+        // Returned as `submissionId`: the website's own reference, which is
+        // what makes a lead traceable back to one submission.
+        externalEventId: true,
         receivedAt: true,
         sourcePage: true,
         message: true,

@@ -435,6 +435,279 @@ describe('Database invariants', () => {
     });
   });
 
+  /**
+   * The deactivation lifecycle, at the level that actually enforces it.
+   *
+   * These are the cases the application's behaviour rests on: a deactivated
+   * lead RELEASES its mobile and email so the corrected record can be created,
+   * an acknowledged duplicate is permitted, and a reason is mandatory. All
+   * three are database guarantees rather than application conventions, which is
+   * what makes them worth asserting here — a rule kept only in a service goes
+   * missing the first time anything writes through another path.
+   */
+  describe('deactivation and deliberate duplicates', () => {
+    const insertLeadFull = (
+      organizationId: string,
+      leadNumber: string,
+      fields: {
+        mobile?: string | null;
+        email?: string | null;
+        acknowledged?: boolean;
+        deactivated?: boolean;
+      },
+    ) =>
+      attempt(
+        `insert into leads (
+           organization_id, lead_number, status, mobile, email,
+           next_follow_up_at, duplicate_acknowledged_at,
+           deactivated_at, deactivation_reason, updated_at
+         ) values (
+           $1, $2, 'NEW'::lead_status, $3, $4,
+           now(), ${fields.acknowledged ? 'now()' : 'null'},
+           ${fields.deactivated ? 'now()' : 'null'},
+           ${fields.deactivated ? "'taken out of service by a test'" : 'null'},
+           now()
+         )`,
+        [organizationId, leadNumber, fields.mobile ?? null, fields.email ?? null],
+      );
+
+    it('permits a second lead marked as a deliberate duplicate', async () => {
+      const orgId = await createOrg(`inv-ack-${Date.now()}`);
+
+      expect(await insertLeadFull(orgId, 'ACKM-1', { mobile: '9800000031' })).toBe('OK');
+      /*
+       * This is what makes the import's CREATE_ANYWAY mode possible at all, and
+       * the reason the importer must mark the row: both indexes exclude
+       * acknowledged rows, so without the mark the insert is refused and the
+       * mode silently creates nothing. That was caught once by its own test,
+       * reporting "0 created" with a constraint error in the log.
+       */
+      expect(
+        await insertLeadFull(orgId, 'ACKM-2', { mobile: '9800000031', acknowledged: true }),
+      ).toBe('OK');
+    });
+
+    it('still refuses an unmarked third lead once two hold the number', async () => {
+      const orgId = await createOrg(`inv-ack3-${Date.now()}`);
+
+      expect(
+        await insertLeadFull(orgId, 'ACK3-1', { mobile: '9800000032', acknowledged: true }),
+      ).toBe('OK');
+      expect(await insertLeadFull(orgId, 'ACK3-2', { mobile: '9800000032' })).toBe('OK');
+      // Acknowledging rows widens the index's exclusion; it does not switch the
+      // guarantee off for everybody else. One unacknowledged row may hold the
+      // number, a second may not.
+      expect(await insertLeadFull(orgId, 'ACK3-3', { mobile: '9800000032' })).toBe(
+        'leads_org_mobile_uniq',
+      );
+    });
+
+    it('frees the mobile while a lead is deactivated', async () => {
+      const orgId = await createOrg(`inv-deact-${Date.now()}`);
+
+      expect(await insertLeadFull(orgId, 'DEACT-1', { mobile: '9800000033' })).toBe('OK');
+      expect(
+        await attempt(
+          `update leads set deactivated_at = now(),
+                            deactivation_reason = 'wrong import mapping',
+                            next_follow_up_at = null
+             where organization_id = $1 and lead_number = 'DEACT-1'`,
+          [orgId],
+        ),
+      ).toBe('OK');
+
+      // THE POINT OF THE WHOLE FEATURE: the corrected lead can now be created
+      // with the same number.
+      expect(await insertLeadFull(orgId, 'DEACT-2', { mobile: '9800000033' })).toBe('OK');
+    });
+
+    it('frees the email while a lead is deactivated', async () => {
+      const orgId = await createOrg(`inv-deactmail-${Date.now()}`);
+
+      expect(await insertLeadFull(orgId, 'DMAIL-1', { email: 'released@example.test' })).toBe('OK');
+      expect(
+        await attempt(
+          `update leads set deactivated_at = now(),
+                            deactivation_reason = 'wrong import mapping',
+                            next_follow_up_at = null
+             where organization_id = $1 and lead_number = 'DMAIL-1'`,
+          [orgId],
+        ),
+      ).toBe('OK');
+
+      expect(await insertLeadFull(orgId, 'DMAIL-2', { email: 'RELEASED@Example.test' })).toBe('OK');
+    });
+
+    it('refuses a reactivation while another lead holds the number', async () => {
+      const orgId = await createOrg(`inv-react-${Date.now()}`);
+
+      expect(await insertLeadFull(orgId, 'REACT-1', { mobile: '9800000034' })).toBe('OK');
+      expect(
+        await attempt(
+          `update leads set deactivated_at = now(),
+                            deactivation_reason = 'wrong import mapping',
+                            next_follow_up_at = null
+             where organization_id = $1 and lead_number = 'REACT-1'`,
+          [orgId],
+        ),
+      ).toBe('OK');
+      expect(await insertLeadFull(orgId, 'REACT-2', { mobile: '9800000034' })).toBe('OK');
+
+      /*
+       * THE STRUCTURAL CONSEQUENCE of releasing the key, at the layer that
+       * enforces it. This is precisely why the application re-checks both keys
+       * before reactivating and returns a 409 NAMING the holder: without that
+       * check, a user would see this raw constraint error, which says nothing
+       * about which record is in the way.
+       */
+      expect(
+        await attempt(
+          `update leads set deactivated_at = null,
+                            deactivation_reason = null,
+                            next_follow_up_at = now()
+             where organization_id = $1 and lead_number = 'REACT-1'`,
+          [orgId],
+        ),
+      ).toBe('leads_org_mobile_uniq');
+    });
+
+    it('requires a reason on a deactivated row', async () => {
+      const orgId = await createOrg(`inv-reason-${Date.now()}`);
+      expect(await insertLeadFull(orgId, 'REASON-1', { mobile: '9800000035' })).toBe('OK');
+
+      // Enforced in the database, not only in a DTO.
+      expect(
+        await attempt(
+          `update leads set deactivated_at = now(), next_follow_up_at = null
+             where organization_id = $1 and lead_number = 'REASON-1'`,
+          [orgId],
+        ),
+      ).toBe('leads_deactivation_requires_reason');
+    });
+
+    it('refuses a reason that is only whitespace', async () => {
+      const orgId = await createOrg(`inv-blank-${Date.now()}`);
+      expect(await insertLeadFull(orgId, 'BLANK-1', { mobile: '9800000036' })).toBe('OK');
+
+      // `btrim` is checked as well as NULL, so a single space cannot satisfy it.
+      expect(
+        await attempt(
+          `update leads set deactivated_at = now(),
+                            deactivation_reason = '   ',
+                            next_follow_up_at = null
+             where organization_id = $1 and lead_number = 'BLANK-1'`,
+          [orgId],
+        ),
+      ).toBe('leads_deactivation_requires_reason');
+    });
+
+    it('lets a deactivated lead keep no next action', async () => {
+      const orgId = await createOrg(`inv-nofollow-${Date.now()}`);
+
+      // The widened `leads_active_requires_followup`. Without the exemption,
+      // deactivating a NEW lead and clearing its follow-up would be refused.
+      expect(
+        await attempt(
+          `insert into leads (organization_id, lead_number, status, mobile,
+                              next_follow_up_at, deactivated_at, deactivation_reason, updated_at)
+             values ($1, 'NOFOLLOW-1', 'NEW'::lead_status, '9800000037',
+                     null, now(), 'created inactive by a test', now())`,
+          [orgId],
+        ),
+      ).toBe('OK');
+    });
+  });
+
+  /**
+   * Import provenance, and what happens when somebody deletes a batch.
+   *
+   * Written because the migration's own comment claimed `ON DELETE SET NULL`
+   * would clear the link — and on a MULTI-COLUMN foreign key, PostgreSQL sets
+   * EVERY referencing column to null, including `organization_id`, which is
+   * NOT NULL. So the behaviour is not what the comment said, and this test is
+   * what established which it actually is.
+   */
+  describe('import batch provenance', () => {
+    it('refuses to delete a batch while leads still point at it', async () => {
+      const orgId = await createOrg(`inv-batch-${Date.now()}`);
+
+      const batchId = await withClient(async (client) => {
+        const result = await client.query(
+          `insert into lead_import_batches (organization_id, mapping, total_rows)
+             values ($1, '{}'::jsonb, 1) returning id`,
+          [orgId],
+        );
+        return result.rows[0].id as string;
+      });
+
+      expect(
+        await attempt(
+          `insert into leads (organization_id, lead_number, status, next_follow_up_at,
+                              import_batch_id, updated_at)
+             values ($1, 'BATCH-1', 'NEW'::lead_status, now(), $2, now())`,
+          [orgId, batchId],
+        ),
+      ).toBe('OK');
+
+      /*
+       * REFUSED, which is the safe direction and now the documented one.
+       *
+       * Deleting a batch must never delete customer leads — that is the
+       * destructive bulk operation this design refuses to build. Blocking the
+       * delete keeps both the leads and their provenance; the alternative,
+       * nulling the link, would quietly make a bad import untraceable.
+       */
+      const outcome = await attempt(`delete from lead_import_batches where id = $1`, [batchId]);
+      expect(outcome).not.toBe('OK');
+    });
+
+    it('deletes a batch that no lead references', async () => {
+      const orgId = await createOrg(`inv-batch-free-${Date.now()}`);
+
+      const batchId = await withClient(async (client) => {
+        const result = await client.query(
+          `insert into lead_import_batches (organization_id, mapping, total_rows)
+             values ($1, '{}'::jsonb, 0) returning id`,
+          [orgId],
+        );
+        return result.rows[0].id as string;
+      });
+
+      // A run that created nothing holds nothing hostage.
+      expect(await attempt(`delete from lead_import_batches where id = $1`, [batchId])).toBe('OK');
+    });
+
+    it('refuses a lead pointing at another tenant’s batch', async () => {
+      const stamp = Date.now();
+      const ours = await createOrg(`inv-batch-a-${stamp}`);
+      const theirs = await createOrg(`inv-batch-b-${stamp}`);
+
+      const foreignBatch = await withClient(async (client) => {
+        const result = await client.query(
+          `insert into lead_import_batches (organization_id, mapping, total_rows)
+             values ($1, '{}'::jsonb, 1) returning id`,
+          [theirs],
+        );
+        return result.rows[0].id as string;
+      });
+
+      /*
+       * The composite foreign key carries the tenant, so this is
+       * UNREPRESENTABLE rather than merely prevented in application code. A bug
+       * that attached one tenant's lead to another's batch would be refused by
+       * the database.
+       */
+      expect(
+        await attempt(
+          `insert into leads (organization_id, lead_number, status, next_follow_up_at,
+                              import_batch_id, updated_at)
+             values ($1, 'XBATCH-1', 'NEW'::lead_status, now(), $2, now())`,
+          [ours, foreignBatch],
+        ),
+      ).not.toBe('OK');
+    });
+  });
+
   describe('append-only timeline', () => {
     it('refuses UPDATE on lead_activities', async () => {
       const orgId = await createOrg(`inv-append-${Date.now()}`);
@@ -483,6 +756,8 @@ describe('Database invariants', () => {
           // is exactly why losing one to a generated migration has to fail CI
           // rather than quietly removing a duplicate guarantee.
           'leads_org_email_uniq',
+          'leads_org_deactivated_idx',
+          'leads_import_batch_idx',
           'leads_followup_sweep_idx',
           'leads_organization_id_status_idx',
           'leads_organization_id_assigned_to_status_idx',

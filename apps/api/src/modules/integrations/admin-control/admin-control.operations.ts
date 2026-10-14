@@ -1,5 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type {
+  AdminControlLead,
+  AdminControlLeadPage,
   AssignmentPreviewResult,
   AssignmentRuleView,
   IntakeRetryResponse,
@@ -14,6 +16,8 @@ import type {
   TerritoryListItem,
   TerritoryResolution,
 } from '@leadflow/api-types';
+import { ERROR_CODES } from '@leadflow/api-types';
+import { AppException } from '../../../common/errors/app.exception';
 import { AppConfig } from '../../../common/config/config.module';
 import type { MutationActor } from '../../../common/audit/mutation-actor';
 import type { PrismaTransaction } from '../../../common/prisma/transaction';
@@ -40,6 +44,8 @@ import type {
   UpdateTerritoryDto,
 } from '../../territories/dto/territories.dto';
 import type { IntakeQueryDto } from '../intake-processing/dto/intake-operations.dto';
+import type { AdminLeadQueryDto } from './dto/admin-leads.dto';
+import { AdminLeadsRepository } from './admin-leads.repository';
 
 /** The operational picture, in counts. */
 export interface AdminControlSummary {
@@ -106,6 +112,7 @@ export class AdminControlOperations {
     private readonly rulesService: AssignmentRulesService,
     private readonly territoriesService: TerritoriesService,
     private readonly intakesService: IntakeOperationsService,
+    private readonly adminLeads: AdminLeadsRepository,
   ) {}
 
   // --- summary ---------------------------------------------------------------
@@ -295,6 +302,28 @@ export class AdminControlOperations {
   /** Read-only. Asking where an address belongs changes nothing. */
   async resolveTerritory(dto: ResolveTerritoryDto): Promise<TerritoryResolution> {
     return this.territoriesService.preview(dto);
+  }
+
+  // --- leads -----------------------------------------------------------------
+  //
+  // READ-ONLY, and there is deliberately no write. The control plane can look
+  // at an enquiry; it cannot change a stage, reassign an owner, or create an
+  // order. A status is a sales judgement made by a person in the CRM, and a
+  // backend integration that could set one would be making that judgement on
+  // their behalf with no record of who decided.
+
+  async leads(query: AdminLeadQueryDto): Promise<AdminControlLeadPage> {
+    return this.adminLeads.list(query);
+  }
+
+  async lead(id: string): Promise<AdminControlLead> {
+    const lead = await this.adminLeads.findById(id);
+    // 404 for another tenant's lead and for one that does not exist, exactly
+    // as elsewhere on this plane: confirming an id would make the endpoint an
+    // enumeration oracle.
+    if (!lead) throw AppException.notFound(ERROR_CODES.NOT_FOUND, 'Lead not found.');
+
+    return lead;
   }
 
   // --- website intakes -------------------------------------------------------

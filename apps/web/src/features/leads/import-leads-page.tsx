@@ -47,6 +47,17 @@ export function ImportLeadsPage(): React.JSX.Element {
   const [followUp, setFollowUp] = useState(defaultNextFollowUp(3));
   const [assignedToId, setAssignedToId] = useState('');
   const [duplicateMode, setDuplicateMode] = useState<ImportDuplicateMode>('SKIP');
+  /*
+   * A second, explicit acknowledgement for CREATE_ANYWAY.
+   *
+   * The warning alone was not enough. This mode creates a deliberate duplicate
+   * for every matching row AT SCALE — forty rows means forty second leads for
+   * customers somebody is already working — and a dropdown the user may have
+   * changed minutes ago is a weak record of intent for that. The tick resets
+   * whenever the mode changes, so it can never be left on from a previous
+   * decision.
+   */
+  const [duplicatesAcknowledged, setDuplicatesAcknowledged] = useState(false);
   const [templateName, setTemplateName] = useState('');
   const [result, setResult] = useState<ImportResult | null>(null);
 
@@ -443,9 +454,12 @@ export function ImportLeadsPage(): React.JSX.Element {
                     <select
                       id="import-duplicates"
                       value={duplicateMode}
-                      onChange={(event) =>
-                        setDuplicateMode(event.target.value as ImportDuplicateMode)
-                      }
+                      onChange={(event) => {
+                        setDuplicateMode(event.target.value as ImportDuplicateMode);
+                        // Reset on every change, so a tick from an earlier
+                        // decision cannot carry over into a new one.
+                        setDuplicatesAcknowledged(false);
+                      }}
                       className={inputClass}
                     >
                       <option value="SKIP">Skip them (recommended)</option>
@@ -456,11 +470,35 @@ export function ImportLeadsPage(): React.JSX.Element {
                   </Field>
 
                   {duplicateMode === 'CREATE_ANYWAY' && (
-                    <Warning>
-                      Each matching row becomes a second live lead for a customer you are already
-                      working. Nothing on the existing lead is changed — not its owner, its stage,
-                      its value or its history.
-                    </Warning>
+                    <div className="space-y-2">
+                      <Warning>
+                        {data.duplicateRows > 0
+                          ? `${data.duplicateRows} ${
+                              data.duplicateRows === 1 ? 'row' : 'rows'
+                            } in this file match a lead you already have. Each becomes a second
+                             live lead for a customer somebody is already working.`
+                          : `Any row matching a lead you already have becomes a second live lead
+                             for a customer somebody is already working.`}{' '}
+                        Nothing on the existing lead is changed — not its owner, its stage, its
+                        value or its history.
+                      </Warning>
+
+                      <label className="flex items-start gap-2 text-sm text-slate-700">
+                        <input
+                          type="checkbox"
+                          checked={duplicatesAcknowledged}
+                          onChange={(event) => setDuplicatesAcknowledged(event.target.checked)}
+                          className="mt-1"
+                        />
+                        <span>
+                          I have checked these and want the second leads created
+                          <span className="block text-xs text-slate-500">
+                            Each new lead records on its timeline which existing lead it
+                            duplicates, and the import is recorded against your account.
+                          </span>
+                        </span>
+                      </label>
+                    </div>
                   )}
 
                   {runImport.isError && (
@@ -483,6 +521,9 @@ export function ImportLeadsPage(): React.JSX.Element {
                       runImport.isPending ||
                       missingRequired.length > 0 ||
                       collisions.length > 0 ||
+                      // Deliberate duplicates need the explicit tick, not just
+                      // the dropdown.
+                      (duplicateMode === 'CREATE_ANYWAY' && !duplicatesAcknowledged) ||
                       !followUp
                     }
                     className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:opacity-50"

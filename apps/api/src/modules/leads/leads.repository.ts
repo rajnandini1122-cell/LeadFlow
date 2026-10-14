@@ -31,6 +31,21 @@ import { AppConfig } from '../../common/config/config.module';
  * the page but not the count produces "showing 25 of 812" over a list of
  * fourteen, which is the kind of wrong that gets reported as a data bug.
  */
+/**
+ * What the creation entry on the timeline says.
+ *
+ * The duplicate clause is appended rather than replacing the source, because
+ * both facts matter to whoever reads the record later: where the lead came
+ * from, and that somebody deliberately allowed it alongside an existing one.
+ */
+function creationDescription(source?: string, duplicateOfLeadNumber?: string): string {
+  const base = source ? `Lead captured from ${source}` : 'Lead created';
+
+  return duplicateOfLeadNumber
+    ? `${base} — created deliberately alongside existing lead ${duplicateOfLeadNumber}`
+    : base;
+}
+
 export interface LeadListFilters {
   status?: LeadStatus | undefined;
   assignedToId?: string | undefined;
@@ -409,6 +424,16 @@ export class LeadsRepository {
      */
     duplicateAcknowledged?: boolean | undefined;
     /**
+     * What this lead knowingly duplicates, e.g. "LD-00042".
+     *
+     * Written onto the creation activity, because `duplicate_acknowledged_at`
+     * records only THAT a second lead was allowed — not which record it is a
+     * second copy of, which is the first thing anybody reviewing two live leads
+     * for one customer asks. The timeline is append-only and lives on the lead
+     * itself, so the answer survives the import batch row being deleted.
+     */
+    duplicateOfLeadNumber?: string | undefined;
+    /**
      * The import run that created this lead, when one did.
      *
      * Carried on the row so "every lead from that badly mapped file" is one
@@ -482,7 +507,7 @@ export class LeadsRepository {
           organizationId,
           leadId: created.id,
           activityType: 'LEAD_CREATED',
-          description: input.source ? `Lead captured from ${input.source}` : 'Lead created',
+          description: creationDescription(input.source, input.duplicateOfLeadNumber),
           performedById: input.actorId,
         },
       });

@@ -121,6 +121,7 @@ export class IntakeOperationsService {
     return {
       id: intake.id,
       source: intake.source,
+      submissionId: intake.externalEventId,
       receivedAt: intake.receivedAt.toISOString(),
       sourcePage: intake.sourcePage,
       message: intake.message,

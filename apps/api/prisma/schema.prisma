@@ -825,8 +825,11 @@ model Lead {
   /// The import this lead came from, or null if a person created it.
   ///
   /// What makes a mis-mapped import correctable: "every lead from that batch"
-  /// is the only query the correction workflow needs. SetNull, never Cascade —
-  /// deleting a batch record must not delete customer leads.
+  /// is the only query the correction workflow needs.
+  ///
+  /// RESTRICT, never Cascade: deleting a batch must not delete customer leads,
+  /// and must not quietly orphan their provenance either. A batch cannot be
+  /// deleted while any lead still points at it.
   importBatchId String? @map("import_batch_id") @db.Uuid
 
   deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
@@ -854,7 +857,13 @@ model Lead {
   /// expected to have several.
   sourceIntakes IntegrationIntake[] @relation("IntakeConversion")
   /// Composite, so another tenant's batch has nothing to match.
-  importBatch   LeadImportBatch?    @relation(fields: [importBatchId, organizationId], references: [id, organizationId], onDelete: SetNull)
+  ///
+  /// Restrict rather than SetNull. On a MULTI-COLUMN key SetNull nulls every
+  /// referencing column, including `organizationId`, which is NOT NULL — so the
+  /// delete was refused anyway, by a not-null violation rather than a readable
+  /// constraint, while the comment claimed the link would be cleared. A test
+  /// established which it actually was; see the migration for the reasoning.
+  importBatch   LeadImportBatch?    @relation(fields: [importBatchId, organizationId], references: [id, organizationId], onDelete: Restrict)
 
   /// Lets an intake point a COMPOSITE foreign key at the lead it became and
   /// carry the tenant into the key. `id` is unique on its own; this adds

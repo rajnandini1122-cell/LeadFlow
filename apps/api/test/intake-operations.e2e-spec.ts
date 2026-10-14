@@ -64,6 +64,15 @@ describe('Website enquiry operations', () => {
     return created.id;
   };
 
+  /** The stored row, for asserting what the API did and did not return. */
+  const intakeRow = async (id: string) =>
+    asSystem('e2e read intake row', () =>
+      prisma().integrationIntake.findFirst({
+        where: { id },
+        select: { externalEventId: true },
+      }),
+    );
+
   const teamWithAgent = async () => {
     const team = await ctx
       .http()
@@ -388,6 +397,47 @@ describe('Website enquiry operations', () => {
         productInterest: 'White onion powder',
       });
       expect(response.body.data.message).toContain('We lose enquiries every week');
+
+      /*
+       * The SENDER's own reference, newly returned here.
+       *
+       * The intake id was always present and the website's reference was not,
+       * so tracing a lead back to one submission meant a second lookup against
+       * the operations queue — and support holding a reference from the website
+       * side had nothing on the lead to match it against.
+       */
+      const intake = await intakeRow(intakeId);
+      expect(response.body.data.submissionId).toBe(intake?.externalEventId);
+      expect(response.body.data.submissionId).toBeTruthy();
+    });
+
+    it('exposes the submission reference and nothing else from the envelope', async () => {
+      const teamId = await teamWithAgent();
+      await ctx
+        .http()
+        .post('/api/v1/assignment-rules')
+        .set(owner())
+        .send({ name: unique('Website'), isFallback: true, targetTeamId: teamId })
+        .expect(201);
+
+      const intakeId = await seedIntake();
+      const converted = await ctx
+        .http()
+        .post(`/api/v1/integration-intakes/${intakeId}/retry`)
+        .set(owner())
+        .expect(200);
+
+      const response = await ctx
+        .http()
+        .get(`/api/v1/leads/${converted.body.data.intake.createdLead.id as string}/source-intake`)
+        .set(owner())
+        .expect(200);
+
+      // The submission id is an opaque reference the sender chose. The payload
+      // hash and the signature are HMAC material and never leave the server.
+      const serialised = JSON.stringify(response.body);
+      expect(serialised).not.toMatch(/payloadHash|signature/i);
+      expect(serialised).not.toContain('b'.repeat(64));
     });
 
     it('is null for a lead somebody created by hand', async () => {

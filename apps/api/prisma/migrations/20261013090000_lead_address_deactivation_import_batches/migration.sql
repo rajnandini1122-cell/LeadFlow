@@ -233,9 +233,29 @@ CREATE INDEX "lead_import_batches_organization_id_started_at_idx"
 -- another tenant's batch and the database would permit it. Including
 -- organization_id in the key makes that unrepresentable.
 --
--- ON DELETE SET NULL, not CASCADE. Deleting a batch record must never delete
--- customer leads — that is the destructive bulk deletion this design refuses to
--- build. Losing the provenance is recoverable; losing the customers is not.
+-- ON DELETE RESTRICT, and the choice was corrected after a test established
+-- what the database actually does.
+--
+-- CASCADE is out of the question: deleting a batch record must never delete
+-- customer leads, which is the destructive bulk operation this design refuses
+-- to build.
+--
+-- SET NULL was written first and was WRONG — not merely suboptimal. On a
+-- MULTI-COLUMN foreign key PostgreSQL sets EVERY referencing column to null,
+-- including `organization_id`, which is NOT NULL. So the delete was refused by
+-- a not-null violation while the comment claimed the link would be cleared:
+-- the right outcome for the wrong reason, described incorrectly. PostgreSQL 15+
+-- can scope it with `SET NULL (import_batch_id)`, but Prisma cannot express
+-- that, so the schema would have gone on believing something else.
+--
+-- RESTRICT says plainly what happens, in SQL and in schema.prisma alike: a
+-- batch cannot be deleted while any lead still points at it. That is also the
+-- better behaviour — nulling the link would quietly make a badly mapped import
+-- untraceable, which is the one thing this table exists to prevent. A batch
+-- that created nothing is still freely deletable.
+--
+-- Asserted in test/schema-invariants.e2e-spec.ts, under "import batch
+-- provenance".
 -- -----------------------------------------------------------------------------
 ALTER TABLE "leads" ADD COLUMN "import_batch_id" UUID;
 
@@ -243,7 +263,7 @@ ALTER TABLE "leads"
     ADD CONSTRAINT "leads_import_batch_id_organization_id_fkey"
     FOREIGN KEY ("import_batch_id", "organization_id")
     REFERENCES "lead_import_batches"("id", "organization_id")
-    ON DELETE SET NULL;
+    ON DELETE RESTRICT;
 
 -- "Every lead from that batch", which is the correction workflow's only query.
 -- Partial: a manually created lead has no batch, and in most tenants that is

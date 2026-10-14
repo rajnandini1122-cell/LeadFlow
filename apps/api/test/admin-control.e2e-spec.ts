@@ -811,6 +811,228 @@ describe('Central Admin control plane', () => {
       expect(refused.status).toBe(400);
     });
 
+    /**
+     * Qualified enquiries, for an export operation to act on.
+     *
+     * THE GAP THIS CLOSES. The control plane could read teams, rules,
+     * territories and intakes, and could follow a submission id forward to the
+     * lead it became — but it could NOT read leads. So "which enquiries are
+     * qualified and ready to hand off?" was unanswerable on this plane, and the
+     * reverse trace from a lead back to its submission was impossible.
+     */
+    describe('leads', () => {
+      const seedLead = async (fields: Record<string, unknown> = {}): Promise<string> => {
+        const created = await asSystem('e2e seed admin lead', () =>
+          prisma().lead.create({
+            data: {
+              organizationId: ADMIN_ORGANIZATION_ID,
+              leadNumber: unique('AL').slice(0, 20),
+              status: 'QUALIFIED',
+              firstName: 'Dana',
+              lastName: 'Whitfield',
+              companyName: 'Whitfield Foods',
+              email: `${unique('qualified')}@example.test`,
+              addressLine1: '12 High Street',
+              city: 'Pune',
+              state: 'Maharashtra',
+              postalCode: '411001',
+              country: 'IN',
+              productInterest: 'White onion powder, 500kg monthly',
+              nextFollowUpAt: new Date(Date.now() + 86_400_000),
+              ...fields,
+            },
+            select: { id: true },
+          }),
+        );
+
+        return created.id;
+      };
+
+      it('lists leads filtered to QUALIFIED', async () => {
+        const qualified = await seedLead();
+        const contacted = await seedLead({ status: 'CONTACTED' });
+
+        /*
+         * Signed WITHOUT the query string, which is the scheme's own rule —
+         * see admin-control-signature.ts. The server signs `request.path`, so
+         * a signature over the query would never match.
+         */
+        const response = await send('get', `${BASE}/leads?status=QUALIFIED`, {
+          signPath: `${BASE}/leads`,
+        });
+
+        expect(response.status).toBe(200);
+        const ids = (response.body.data.items as { id: string }[]).map((item) => item.id);
+        expect(ids).toContain(qualified);
+        expect(ids).not.toContain(contacted);
+      });
+
+      it('returns the address and what the customer asked for', async () => {
+        const id = await seedLead();
+
+        const response = await send('get', `${BASE}/leads/${id}`);
+
+        // What an export operation needs to act on an enquiry: the customer,
+        // where it ships, and what they want in their own words.
+        expect(response.body.data).toMatchObject({
+          status: 'QUALIFIED',
+          name: 'Dana Whitfield',
+          companyName: 'Whitfield Foods',
+          addressLine1: '12 High Street',
+          city: 'Pune',
+          state: 'Maharashtra',
+          postalCode: '411001',
+          country: 'IN',
+          productInterest: 'White onion powder, 500kg monthly',
+        });
+      });
+
+      it('traces a lead back to the website submission it came from', async () => {
+        const submissionId = unique('sub');
+        const leadId = await seedLead();
+
+        await asSystem('e2e seed converting intake', () =>
+          prisma().integrationIntake.create({
+            data: {
+              organizationId: ADMIN_ORGANIZATION_ID,
+              source: 'WEBSITE',
+              externalEventId: submissionId,
+              eventType: 'ENQUIRY',
+              payloadHash: 'c'.repeat(64),
+              status: 'PROCESSED',
+              createdLeadId: leadId,
+            },
+          }),
+        );
+
+        const response = await send('get', `${BASE}/leads/${leadId}`);
+
+        /*
+         * THE DIRECTION THAT WAS MISSING. Submission -> intake -> lead already
+         * worked here; lead -> submission did not, and this plane cannot reach
+         * the CRM route that would have answered it.
+         *
+         * `sourceSubmissionId` is what an export operation should persist: the
+         * one identifier the website and LeadFlow both independently know.
+         */
+        expect(response.body.data.sourceSubmissionId).toBe(submissionId);
+        expect(response.body.data.sourceIntakeId).toBeTruthy();
+      });
+
+      it('reports null for a lead nobody submitted', async () => {
+        const id = await seedLead();
+
+        const response = await send('get', `${BASE}/leads/${id}`);
+
+        // A lead somebody typed in or imported has no submission behind it, and
+        // says so rather than omitting the field.
+        expect(response.body.data.sourceSubmissionId).toBeNull();
+      });
+
+      it('never returns a deactivated lead', async () => {
+        const id = await seedLead({
+          deactivatedAt: new Date(),
+          deactivationReason: 'imported with the wrong mapping',
+          nextFollowUpAt: null,
+        });
+
+        // A record somebody took out of service is not work to hand off, and
+        // there is no filter here that can ask for one.
+        expect((await send('get', `${BASE}/leads/${id}`)).status).toBe(404);
+
+        const list = await send('get', `${BASE}/leads`);
+        expect((list.body.data.items as { id: string }[]).map((item) => item.id)).not.toContain(id);
+      });
+
+      it('never returns an archived lead', async () => {
+        const id = await seedLead({ deletedAt: new Date() });
+
+        expect((await send('get', `${BASE}/leads/${id}`)).status).toBe(404);
+      });
+
+      it('does not reach another organization’s lead', async () => {
+        const foreign = await asSystem('e2e seed foreign lead', () =>
+          prisma().lead.create({
+            data: {
+              organizationId: ctx.orgA.id,
+              leadNumber: unique('FL').slice(0, 20),
+              status: 'QUALIFIED',
+              firstName: 'Somebody',
+              nextFollowUpAt: new Date(Date.now() + 86_400_000),
+            },
+            select: { id: true },
+          }),
+        );
+
+        // 404, not 403: confirming the id exists would make this an
+        // enumeration oracle over another tenant's customers.
+        expect((await send('get', `${BASE}/leads/${foreign.id}`)).status).toBe(404);
+      });
+
+      it('counts only the administered organization', async () => {
+        await seedLead();
+
+        const response = await send('get', `${BASE}/leads`);
+        const ours = await asSystem('e2e count our leads', () =>
+          prisma().lead.count({
+            where: {
+              organizationId: ADMIN_ORGANIZATION_ID,
+              deletedAt: null,
+              deactivatedAt: null,
+            },
+          }),
+        );
+
+        // The total must describe the same set as the page above it.
+        expect(response.body.data.total).toBe(ours);
+      });
+
+      it('exposes no timeline, notes or closing values', async () => {
+        const id = await seedLead({ wonValue: 250000, lostReason: 'price' });
+
+        const serialised = JSON.stringify((await send('get', `${BASE}/leads/${id}`)).body);
+
+        /*
+         * The projection is an explicit `select`, not an `include`, precisely so
+         * this stays true as columns are added. A control plane that can read a
+         * tenant's sales correspondence is a control plane whose compromise
+         * reads it.
+         */
+        expect(serialised).not.toMatch(/activities|wonValue|lostReason|notes/i);
+      });
+
+      it('is not reachable without a signature', async () => {
+        const id = await seedLead();
+
+        expect((await send('get', `${BASE}/leads/${id}`, { signature: null })).status).toBe(401);
+        expect((await send('get', `${BASE}/leads`, { signature: null })).status).toBe(401);
+      });
+
+      it('refuses a status it does not recognise', async () => {
+        expect(
+          (await send('get', `${BASE}/leads?status=EXPORTING`, { signPath: `${BASE}/leads` }))
+            .status,
+        ).toBe(400);
+      });
+
+      it('offers no way to change a lead', async () => {
+        const id = await seedLead();
+
+        /*
+         * READ-ONLY, asserted rather than assumed. A status is a sales
+         * judgement made by a person in the CRM; a backend integration that
+         * could set one would be making that judgement on their behalf with no
+         * record of who decided. There is no route, so Nest answers 404.
+         */
+        expect((await send('patch', `${BASE}/leads/${id}`, { body: { status: 'WON' } })).status).toBe(
+          404,
+        );
+        expect((await send('post', `${BASE}/leads`, { body: { firstName: 'New' } })).status).toBe(
+          404,
+        );
+      });
+    });
+
     it('reports a summary of counts, and no credentials', async () => {
       const response = await send('get', `${BASE}/summary`);
 

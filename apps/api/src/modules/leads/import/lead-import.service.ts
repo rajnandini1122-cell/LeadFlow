@@ -516,6 +516,17 @@ export class LeadImportService {
        * matched nothing stays inside the index, where it belongs.
        */
       duplicateAcknowledged: duplicateOf?.kind === 'existing',
+      /*
+       * WHICH lead this one duplicates, onto the timeline.
+       *
+       * `duplicateAcknowledged` above only records that a second lead was
+       * allowed. Without this, reviewing two live leads for one customer gives
+       * no way to tell which was the original or that the second was
+       * deliberate — only that a flag is set.
+       */
+      ...(duplicateOf?.kind === 'existing'
+        ? { duplicateOfLeadNumber: duplicateOf.leadNumber }
+        : {}),
       actorId: principal.userId,
     });
   }
