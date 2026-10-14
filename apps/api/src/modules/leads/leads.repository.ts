@@ -21,6 +21,41 @@ import { AppConfig } from '../../common/config/config.module';
  * Creating a lead is implemented; editing, reassignment and status-transition
  * rules remain Phase 2.
  */
+/**
+ * Everything the lead list and its total can be narrowed by.
+ *
+ * ONE type, used by `listWhere`, `list` and `countMatching` alike. They
+ * previously declared three different inline shapes and the two narrow ones
+ * omitted several real filters; the values still arrived through a spread, so
+ * the compiler never objected and the omission was invisible. A filter added to
+ * the page but not the count produces "showing 25 of 812" over a list of
+ * fourteen, which is the kind of wrong that gets reported as a data bug.
+ */
+export interface LeadListFilters {
+  status?: LeadStatus | undefined;
+  assignedToId?: string | undefined;
+  productId?: string | undefined;
+  accountId?: string | undefined;
+  search?: string | undefined;
+  /**
+   * Owner restriction derived from the caller's permissions. Applied AFTER the
+   * caller-supplied assignedToId filter so a rep cannot widen their own
+   * visibility by passing someone else's id in the query string.
+   */
+  restrictToUserId?: string | undefined;
+  /** Every lead from one CSV import, for correcting a bad run. */
+  importBatchId?: string | undefined;
+  /**
+   * Which lifecycle states to include. Defaults to ACTIVE only.
+   *
+   * Not a boolean, because there are three useful answers and a boolean gives
+   * two: the working pipeline, the records somebody took out of service, and —
+   * for the import-correction screen — everything from one batch whatever state
+   * it is in.
+   */
+  lifecycle?: 'ACTIVE' | 'INACTIVE' | 'ALL' | undefined;
+}
+
 @Injectable()
 export class LeadsRepository {
   constructor(
@@ -35,15 +70,22 @@ export class LeadsRepository {
    * Extracted so the two cannot drift: a total computed from different filters
    * than the page is worse than no total at all.
    */
-  private listWhere(filters: {
-    status?: LeadStatus | undefined;
-    assignedToId?: string | undefined;
-    productId?: string | undefined;
-    accountId?: string | undefined;
-    search?: string | undefined;
-    restrictToUserId?: string | undefined;
-  }): Record<string, unknown> {
+  private listWhere(filters: LeadListFilters): Record<string, unknown> {
     const where: Record<string, unknown> = { deletedAt: null };
+
+    /*
+     * Deactivated leads are OUT of the default list, every count and every
+     * dashboard that goes through here.
+     *
+     * That is the whole point of the state: a wrongly imported lead must stop
+     * distorting the forecast. `INACTIVE` is the explicit filter that makes
+     * those rows reachable again, and `ALL` exists for the import-correction
+     * screen, which has to show what it is about to act on regardless of state.
+     */
+    if (filters.lifecycle === 'INACTIVE') where['deactivatedAt'] = { not: null };
+    else if (filters.lifecycle !== 'ALL') where['deactivatedAt'] = null;
+
+    if (filters.importBatchId) where['importBatchId'] = filters.importBatchId;
     if (filters.status) where['status'] = filters.status;
     if (filters.assignedToId) where['assignedToId'] = filters.assignedToId;
     if (filters.productId) where['productId'] = filters.productId;
@@ -56,34 +98,21 @@ export class LeadsRepository {
         { lastName: { contains: filters.search, mode: 'insensitive' } },
         { companyName: { contains: filters.search, mode: 'insensitive' } },
         { mobile: { contains: filters.search } },
+        // Email was missing, so searching for a customer by the address they
+        // wrote from found nothing — on exactly the leads that have no phone
+        // number and are hardest to find any other way.
+        { email: { contains: filters.search, mode: 'insensitive' } },
       ];
     }
 
     return where;
   }
 
-  async countMatching(filters: {
-    status?: LeadStatus | undefined;
-    assignedToId?: string | undefined;
-    search?: string | undefined;
-    restrictToUserId?: string | undefined;
-  }): Promise<number> {
+  async countMatching(filters: LeadListFilters): Promise<number> {
     return this.prisma.client.lead.count({ where: this.listWhere(filters) });
   }
 
-  async list(filters: {
-    status?: LeadStatus | undefined;
-    assignedToId?: string | undefined;
-    search?: string | undefined;
-    cursor?: string | undefined;
-    limit: number;
-    /**
-     * Owner restriction derived from the caller's permissions. Applied AFTER
-     * the caller-supplied assignedToId filter so a rep cannot widen their own
-     * visibility by passing someone else's id in the query string.
-     */
-    restrictToUserId?: string | undefined;
-  }) {
+  async list(filters: LeadListFilters & { cursor?: string | undefined; limit: number }) {
     const where = this.listWhere(filters);
 
     // Fetch one extra row to determine hasMore without a second count query.
@@ -155,7 +184,17 @@ export class LeadsRepository {
    */
   async findActiveByMobile(mobile: string) {
     return this.prisma.client.lead.findFirst({
-      where: { mobile, deletedAt: null, status: { not: 'LOST' } },
+      where: {
+        mobile,
+        deletedAt: null,
+        // Mirrors `leads_org_mobile_uniq` / `leads_org_email_uniq`, which gained
+        // this clause in 20261013090000: a deactivated lead RELEASES its mobile
+        // and email so the corrected record can be created. Without it here the
+        // pre-check would refuse a lead the database would accept, blocking the
+        // deactivate-then-recreate workflow with its own guard.
+        deactivatedAt: null,
+        status: { not: 'LOST' },
+      },
       select: {
         id: true,
         leadNumber: true,
@@ -163,6 +202,34 @@ export class LeadsRepository {
         lastName: true,
         companyName: true,
         status: true,
+      },
+    });
+  }
+
+  /**
+   * Just enough of a lead to decide a lifecycle change.
+   *
+   * Deliberately NOT `findById`, which applies the assignee visibility filter
+   * and returns the whole detail projection. Deactivation is an administrative
+   * correction aimed at records that may be assigned to somebody else or to
+   * nobody, so a visibility filter here would make the feature unable to reach
+   * the rows it exists for. Tenant isolation is untouched — this read runs in
+   * the tenant context like every other.
+   *
+   * Soft-deleted rows are excluded: an archived lead is already out of service
+   * and is not the thing deactivation is for.
+   */
+  async findLifecycleState(id: string) {
+    return this.prisma.client.lead.findFirst({
+      where: { id, deletedAt: null },
+      select: {
+        id: true,
+        leadNumber: true,
+        status: true,
+        mobile: true,
+        email: true,
+        deactivatedAt: true,
+        deactivationReason: true,
       },
     });
   }
@@ -184,6 +251,12 @@ export class LeadsRepository {
       where: {
         email: { equals: email, mode: 'insensitive' },
         deletedAt: null,
+        // Mirrors `leads_org_mobile_uniq` / `leads_org_email_uniq`, which gained
+        // this clause in 20261013090000: a deactivated lead RELEASES its mobile
+        // and email so the corrected record can be created. Without it here the
+        // pre-check would refuse a lead the database would accept, blocking the
+        // deactivate-then-recreate workflow with its own guard.
+        deactivatedAt: null,
         status: { not: 'LOST' },
         duplicateAcknowledgedAt: null,
       },
@@ -304,6 +377,19 @@ export class LeadsRepository {
     email?: string | undefined;
     companyName?: string | undefined;
     city?: string | undefined;
+    /**
+     * The rest of the postal address.
+     *
+     * `city` above predates these and is unchanged. Together they are what a
+     * CSV with an "Address Line 1" column can finally be mapped onto — before
+     * this the importer had nowhere to put it, so it was dropped.
+     */
+    addressLine1?: string | undefined;
+    addressLine2?: string | undefined;
+    state?: string | undefined;
+    postalCode?: string | undefined;
+    /** ISO 3166-1 alpha-2. Upper-cased by the caller. */
+    country?: string | undefined;
     source?: string | undefined;
     productId?: string | undefined;
     /** Verified to belong to this tenant by the service before it reaches here. */
@@ -322,6 +408,13 @@ export class LeadsRepository {
      * it the index refuses what the API just agreed to.
      */
     duplicateAcknowledged?: boolean | undefined;
+    /**
+     * The import run that created this lead, when one did.
+     *
+     * Carried on the row so "every lead from that badly mapped file" is one
+     * query rather than a manual hunt. Null for a lead a person typed in.
+     */
+    importBatchId?: string | undefined;
     /**
      * Null for a SYSTEM write.
      *
@@ -359,6 +452,11 @@ export class LeadsRepository {
           email: input.email ?? null,
           companyName: input.companyName ?? null,
           city: input.city ?? null,
+          addressLine1: input.addressLine1 ?? null,
+          addressLine2: input.addressLine2 ?? null,
+          state: input.state ?? null,
+          postalCode: input.postalCode ?? null,
+          country: input.country ?? null,
           source: input.source ?? null,
           productId: input.productId ?? null,
           accountId: input.accountId ?? null,
@@ -371,6 +469,7 @@ export class LeadsRepository {
           nextFollowUpAt: input.nextFollowUpAt,
           contactId: input.contactId ?? null,
           duplicateAcknowledgedAt: input.duplicateAcknowledged ? new Date() : null,
+          importBatchId: input.importBatchId ?? null,
           lastActivityAt: new Date(),
           createdBy: input.actorId,
           updatedBy: input.actorId,

@@ -534,7 +534,78 @@ column would treat `Dana@Example.test` and `dana@example.test` as two
 customers, which is precisely the duplicate it exists to catch. An expression
 index gets that right with **no backfill and no rewritten rows**.
 
-### 3.4 Creating the first customer organization
+### 3.4 The address, deactivation and import-batch migration
+
+`20261013090000_lead_address_deactivation_import_batches`
+
+**No preflight. This one cannot fail on existing data**, and the difference from
+§3.3 is worth being precise about, because the two ship together.
+
+| | §3.3 email index | §3.4 this migration |
+|---|---|---|
+| Narrows a constraint | **Yes** — can be refused by existing duplicates | No |
+| Preflight required | **Yes** | No |
+| Changes any row | No | No |
+
+Everything here either adds a nullable column with no default, widens a CHECK,
+or adds an exclusion clause to a partial index — and a widened constraint
+accepts a strict superset of the rows accepted today. Two tables are created.
+
+**What it does, in the order it matters:**
+
+1. **Five address columns on `leads`** — `address_line1`, `address_line2`,
+   `state`, `postal_code`, `country`. `city` already existed and is untouched.
+   Until this, `leads` could hold only `city`, so a CSV with an address column
+   had nowhere to put it.
+2. **`deactivated_at` / `deactivation_reason` / `deactivated_by`** — a third
+   lifecycle, deliberately NOT a fourth meaning for `status = LOST` or
+   `deleted_at`. Reversible, reasoned and attributed.
+3. **`leads_active_requires_followup` widened** to exempt deactivated rows.
+   Without this, deactivating a lead and clearing its follow-up would violate
+   the constraint.
+4. **Both partial unique indexes rebuilt** with `AND deactivated_at IS NULL`.
+   A deactivated lead **releases** its mobile and email, which is the point: the
+   whole purpose of deactivating a wrongly imported lead is to create the right
+   one with the same details.
+5. **`lead_import_batches` and `lead_import_mapping_templates`**, plus
+   `leads.import_batch_id` with a composite tenant-carrying foreign key and
+   `ON DELETE SET NULL` — deleting a batch record must never delete customer
+   leads.
+
+**One operational note.** On a database where §3.3 has not yet run, that
+migration builds `leads_org_email_uniq` and this one immediately rebuilds it
+with the extra clause. A few seconds of wasted index build on first deploy, and
+the correct trade for keeping migration history append-only: a migration that
+changes after it may already have been applied somewhere is not a migration.
+
+**Lock behaviour.** Both index rebuilds take `ACCESS EXCLUSIVE` on `leads` for
+the duration, so run this in the same low-traffic window as §3.3 and expect it
+to queue behind any long-running transaction touching that table.
+
+### 3.5 Rolling back these two migrations
+
+There is **no down migration**, here or anywhere in this project — Prisma
+`migrate deploy` is forward-only by design. Reversal is a new forward migration,
+and what that migration should do depends on which half is being reversed:
+
+* **The email duplicate guard (§3.3)** — `DROP INDEX "leads_org_email_uniq";`
+  Safe at any time. It removes a guarantee; it destroys nothing.
+* **The deactivation index clause (§3.4)** — rebuild both indexes without
+  `AND deactivated_at IS NULL`. **This can fail**, and for a reason worth
+  anticipating: if anybody has already deactivated a lead and created its
+  replacement, both rows are active under the old predicate and the index will
+  refuse to build. Deal with those pairs the same way §3.3's preflight says to.
+* **The columns and tables (§3.4)** — leave them. Dropping `address_line1` or
+  `lead_import_batches` destroys customer data and import provenance to undo a
+  feature; an unused nullable column costs nothing. Only the application's
+  reading of them needs reverting, which is a deploy rather than a migration.
+
+The practical rollback for both is therefore **redeploy the previous API
+image**. The new columns sit unread, the new tables sit empty, and the only
+behaviour that differs is that the email duplicate guard keeps protecting rows
+the old code did not know about — which is the safe direction.
+
+### 3.6 Creating the first customer organization
 
 Through the application's supported registration flow, not a script:
 

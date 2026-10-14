@@ -71,6 +71,17 @@ export const TENANT_SCOPED_MODELS: Record<string, string> = {
    */
   UserDevice: 'organizationId',
   FollowUp: 'organizationId',
+  /*
+   * Import provenance.
+   *
+   * A batch row holds a tenant's CSV header names and its import counts. An
+   * unscoped read would show one tenant how another structures its data; an
+   * unscoped write would let a lead be attached to a foreign batch, which is
+   * the composite foreign key's job to prevent and this layer's job to never
+   * attempt. Scoped on the same fail-closed terms as leads.
+   */
+  LeadImportBatch: 'organizationId',
+  LeadImportMappingTemplate: 'organizationId',
   Contact: 'organizationId',
   Subscription: 'organizationId',
   // Omnichannel capture. Conversations and messages are customer

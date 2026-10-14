@@ -185,7 +185,16 @@ export class IntakeProcessingRepository {
    */
   async activeLeadByMobile(tx: PrismaTransaction, mobile: string) {
     return tx.lead.findFirst({
-      where: { mobile, deletedAt: null, status: { not: 'LOST' } },
+      where: {
+        mobile,
+        deletedAt: null,
+        // Mirrors `leads_org_mobile_uniq` / `leads_org_email_uniq`, which gained
+        // this clause in 20261013090000. A deactivated lead has released its
+        // identifiers, so a website enquiry from that customer is a NEW lead
+        // rather than a duplicate of a record somebody took out of service.
+        deactivatedAt: null,
+        status: { not: 'LOST' },
+      },
       select: { id: true, leadNumber: true },
     });
   }
@@ -214,6 +223,11 @@ export class IntakeProcessingRepository {
       where: {
         email: { equals: email, mode: 'insensitive' },
         deletedAt: null,
+        // Mirrors `leads_org_mobile_uniq` / `leads_org_email_uniq`, which gained
+        // this clause in 20261013090000. A deactivated lead has released its
+        // identifiers, so a website enquiry from that customer is a NEW lead
+        // rather than a duplicate of a record somebody took out of service.
+        deactivatedAt: null,
         status: { not: 'LOST' },
         duplicateAcknowledgedAt: null,
       },
