@@ -4,6 +4,8 @@ import { LeadsService } from './leads.service';
 import { LeadsRepository } from './leads.repository';
 import { LeadMutationsService } from './lead-mutations.service';
 import { LeadImportService } from './import/lead-import.service';
+import { LeadImportRepository } from './import/lead-import.repository';
+import { LeadLifecycleService } from './lead-lifecycle.service';
 import { forwardRef } from '@nestjs/common';
 import { FollowUpsModule } from '../follow-ups/follow-ups.module';
 import { ContactsModule } from '../contacts/contacts.module';
@@ -15,7 +17,14 @@ import { IntakeProcessingModule } from '../integrations/intake-processing/intake
   // relation rather than copied onto the lead.
   imports: [forwardRef(() => FollowUpsModule), ContactsModule, IntakeProcessingModule],
   controllers: [LeadsController],
-  providers: [LeadsService, LeadMutationsService, LeadImportService, LeadsRepository],
-  exports: [LeadsService, LeadMutationsService, LeadsRepository],
+  providers: [
+    LeadsService,
+    LeadMutationsService,
+    LeadLifecycleService,
+    LeadImportService,
+    LeadImportRepository,
+    LeadsRepository,
+  ],
+  exports: [LeadsService, LeadMutationsService, LeadLifecycleService, LeadsRepository],
 })
 export class LeadsModule {}

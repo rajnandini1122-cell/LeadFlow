@@ -24,7 +24,7 @@ import {
 import { useAuth } from '../auth/auth-context';
 import { LeadConversationsCard } from '../omnichannel/lead-conversations-card';
 import { WebsiteEnquiryPanel } from '../intakes/website-enquiry-panel';
-import { useLead, type LeadActivity } from './use-leads';
+import { useLead, type LeadActivity, type LeadDetail } from './use-leads';
 import {
   useAddNote,
   useArchiveLead,
@@ -35,6 +35,8 @@ import {
 } from './use-lead-mutations';
 import {
   AssignLeadDialog,
+  DeactivateLeadDialog,
+  ReactivateLeadDialog,
   ChangeStatusDialog,
   CompleteFollowUpDialog,
   EditLeadDialog,
@@ -55,7 +57,7 @@ export function LeadDetailPage(): React.JSX.Element {
   const { can } = useAuth();
 
   const [dialog, setDialog] = useState<
-    'edit' | 'status' | 'assign' | 'schedule' | null
+    'edit' | 'status' | 'assign' | 'schedule' | 'deactivate' | 'reactivate' | null
   >(null);
   const [completing, setCompleting] = useState<FollowUp | null>(null);
   const [rescheduling, setRescheduling] = useState<FollowUp | null>(null);
@@ -66,6 +68,14 @@ export function LeadDetailPage(): React.JSX.Element {
   const activities = useLeadActivities(id, activityLimit);
   const followUps = useLeadFollowUps(id);
   const archive = useArchiveLead(id ?? '');
+  /*
+   * The deactivation mutations live in the DIALOGS, not here.
+   *
+   * Both need a form — a required reason, and a follow-up date — so they follow
+   * the same shape as every other lead mutation on this page rather than being
+   * a `window.confirm` like Archive. Archive can get away with a confirm
+   * because it takes no input; that is also why it records nothing.
+   */
 
   if (lead.isPending) {
     return (
@@ -132,6 +142,17 @@ export function LeadDetailPage(): React.JSX.Element {
               </div>
             </div>
 
+            {data.deactivatedAt && (
+              <DeactivatedBanner
+                at={data.deactivatedAt}
+                reason={data.deactivationReason}
+                canReactivate={can('lead.deactivate')}
+                onReactivate={() => setDialog('reactivate')}
+              />
+            )}
+
+            <ContactDetails lead={data} />
+
             <QuickActions lead={data} onLogged={setNotice} />
 
             <div className="flex flex-wrap gap-2 border-t border-slate-100 px-5 py-3">
@@ -148,6 +169,12 @@ export function LeadDetailPage(): React.JSX.Element {
                 <ActionButton onClick={() => setDialog('schedule')} primary>
                   + Follow-up
                 </ActionButton>
+              )}
+              {can('lead.deactivate') && !data.deactivatedAt && (
+                <ActionButton onClick={() => setDialog('deactivate')}>Deactivate</ActionButton>
+              )}
+              {can('lead.deactivate') && data.deactivatedAt && (
+                <ActionButton onClick={() => setDialog('reactivate')}>Reactivate</ActionButton>
               )}
               {can('lead.delete') && (
                 <button
@@ -321,6 +348,16 @@ export function LeadDetailPage(): React.JSX.Element {
       <EditLeadDialog lead={data} open={dialog === 'edit'} onClose={() => setDialog(null)} />
       <ChangeStatusDialog lead={data} open={dialog === 'status'} onClose={() => setDialog(null)} />
       <AssignLeadDialog lead={data} open={dialog === 'assign'} onClose={() => setDialog(null)} />
+      <DeactivateLeadDialog
+        lead={data}
+        open={dialog === 'deactivate'}
+        onClose={() => setDialog(null)}
+      />
+      <ReactivateLeadDialog
+        lead={data}
+        open={dialog === 'reactivate'}
+        onClose={() => setDialog(null)}
+      />
       <ScheduleFollowUpDialog
         leadId={data.id}
         open={dialog === 'schedule'}
@@ -537,5 +574,95 @@ function Timeline({ activities }: { activities: LeadActivity[] }): React.JSX.Ele
         </li>
       ))}
     </ol>
+  );
+}
+
+
+/**
+ * Says plainly that this record is not live work, and why.
+ *
+ * At the top of the lead rather than in a corner: somebody who opens a
+ * deactivated lead and does not notice will waste a call on it, and the whole
+ * point of the state is that the record should not be worked.
+ */
+function DeactivatedBanner({
+  at,
+  reason,
+  canReactivate,
+  onReactivate,
+}: {
+  at: string;
+  reason: string | null;
+  canReactivate: boolean;
+  onReactivate: () => void;
+}): React.JSX.Element {
+  return (
+    <div className="mx-5 mb-4 rounded-lg bg-amber-50 px-4 py-3">
+      <p className="text-sm font-medium text-amber-900">
+        This lead is deactivated and is not in the pipeline.
+      </p>
+      <p className="mt-0.5 text-xs text-amber-800">
+        {reason ? `${reason} · ` : ''}
+        {formatDate(at)}
+      </p>
+      {canReactivate && (
+        <button
+          type="button"
+          onClick={onReactivate}
+          className="mt-2 rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-medium text-amber-900 transition hover:bg-amber-100"
+        >
+          Reactivate it
+        </button>
+      )}
+    </div>
+  );
+}
+
+/**
+ * How to reach this customer, and where they are.
+ *
+ * THE ADDRESS IS HERE because until this release it could not be: `leads` held
+ * only `city`, so an imported address was dropped. Showing it is what lets
+ * somebody verify an import actually landed correctly — the counts said
+ * "created 2,000" either way.
+ *
+ * Each field renders only when it has a value: a column of dashes on a lead
+ * captured from a two-field web form buries the three things that do have
+ * values.
+ */
+function ContactDetails({ lead }: { lead: LeadDetail }): React.JSX.Element | null {
+  const address = [
+    lead.addressLine1,
+    lead.addressLine2,
+    lead.city,
+    lead.state,
+    lead.postalCode,
+    lead.country,
+  ].filter(Boolean);
+
+  if (!lead.mobile && !lead.email && address.length === 0) return null;
+
+  return (
+    <dl className="grid gap-x-6 gap-y-2 border-t border-slate-100 px-5 py-3 text-sm sm:grid-cols-3">
+      {lead.mobile && <DetailField label="Mobile" value={lead.mobile} />}
+      {lead.email && <DetailField label="Email" value={lead.email} />}
+      {address.length > 0 && (
+        <div className="sm:col-span-3">
+          <dt className="text-xs text-slate-500">Address</dt>
+          {/* Joined for reading, but each part is stored in its own column —
+              which is what makes "every customer in Maharashtra" answerable. */}
+          <dd className="text-slate-800">{address.join(', ')}</dd>
+        </div>
+      )}
+    </dl>
+  );
+}
+
+function DetailField({ label, value }: { label: string; value: string }): React.JSX.Element {
+  return (
+    <div>
+      <dt className="text-xs text-slate-500">{label}</dt>
+      <dd className="truncate text-slate-800">{value}</dd>
+    </div>
   );
 }

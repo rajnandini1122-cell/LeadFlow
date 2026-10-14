@@ -4,3 +4,4 @@ export * from './domain';
 export * from './permissions';
 export * from './contracts';
 export * from './subscriptions';
+export * from './lead-import';

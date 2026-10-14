@@ -14,6 +14,8 @@ import {
   useAssignLead,
   useCompleteFollowUp,
   useCreateFollowUp,
+  useDeactivateLead,
+  useReactivateLead,
   useRescheduleFollowUp,
   useUpdateLead,
   type FollowUp,
@@ -744,11 +746,20 @@ function DialogActions({
   busy,
   label,
   busyLabel,
+  disabled = false,
 }: {
   onCancel: () => void;
   busy: boolean;
   label: string;
   busyLabel: string;
+  /**
+   * Blocks the submit when the form is not yet valid.
+   *
+   * Needed because every form in this file is `noValidate` — errors are
+   * rendered by the app rather than by the browser's own bubbles — so a
+   * `required` input does not stop a submit on its own.
+   */
+  disabled?: boolean;
 }): React.JSX.Element {
   return (
     <div className="flex justify-end gap-2 border-t border-slate-100 pt-4">
@@ -757,12 +768,221 @@ function DialogActions({
       </button>
       <button
         type="submit"
-        disabled={busy}
+        disabled={busy || disabled}
         aria-busy={busy}
         className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:opacity-50"
       >
         {busy ? busyLabel : label}
       </button>
     </div>
+  );
+}
+
+// -----------------------------------------------------------------------------
+// Deactivate / reactivate
+// -----------------------------------------------------------------------------
+
+/**
+ * Taking a lead out of the live pipeline.
+ *
+ * Deliberately a dialog with a required reason rather than a confirm box like
+ * Archive. The reason is the point: a record nobody explained is a record the
+ * next person cannot act on, and the whole defect this fixes was people leaving
+ * bad imported rows in the pipeline because the only alternatives were
+ * irreversible archival or marking them LOST.
+ */
+export function DeactivateLeadDialog({
+  lead,
+  open,
+  onClose,
+}: {
+  lead: LeadDetail;
+  open: boolean;
+  onClose: () => void;
+}): React.JSX.Element | null {
+  const deactivate = useDeactivateLead(lead.id);
+  const [reason, setReason] = useState('');
+
+  useEffect(() => {
+    if (!open) return;
+    setReason('');
+    deactivate.reset();
+  }, [open, lead]);
+
+  if (!open) return null;
+
+  const submit = (event: FormEvent): void => {
+    event.preventDefault();
+    deactivate.mutate({ reason: reason.trim() }, { onSuccess: onClose });
+  };
+
+  return (
+    <Dialog open={open} title="Deactivate lead" onClose={onClose}>
+      <form onSubmit={submit} className="space-y-4 p-5" noValidate>
+        <p className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600">
+          {lead.leadNumber} leaves the active pipeline and its open reminders are cancelled.
+          Nothing is deleted — the lead, its history and its customer all stay, and you can bring
+          it back. Its mobile and email are freed, so you can create the corrected lead with the
+          same details.
+        </p>
+
+        <Field
+          label="Why"
+          htmlFor="deactivate-reason"
+          required
+          hint="Recorded on the lead and on its timeline, for whoever finds it next."
+          error={fieldErrorOf(deactivate.error, 'reason')}
+        >
+          <input
+            id="deactivate-reason"
+            value={reason}
+            required
+            minLength={3}
+            maxLength={255}
+            placeholder="e.g. wrong column mapping on the October import"
+            onChange={(event) => setReason(event.target.value)}
+            className={inputClass}
+          />
+        </Field>
+
+        {deactivate.isError && (
+          <p
+            role="alert"
+            aria-live="assertive"
+            className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700"
+          >
+            {errorMessage(deactivate.error, 'Could not deactivate the lead.')}
+          </p>
+        )}
+
+        <DialogActions
+          onCancel={onClose}
+          busy={deactivate.isPending}
+          /*
+           * Disabled until the reason is real, because the form is `noValidate`
+           * like every other dialog here — so `required` on the input does not
+           * stop a submit. Without this the dialog posted an empty reason and
+           * relied on the server's 400, which is a round trip to be told
+           * something the screen already knew.
+           */
+          disabled={reason.trim().length < 3}
+          label="Deactivate"
+          busyLabel="Deactivating…"
+        />
+      </form>
+    </Dialog>
+  );
+}
+
+/**
+ * Putting a lead back.
+ *
+ * TWO things this has to handle that deactivation does not.
+ *
+ * A follow-up date is required, because `leads_active_requires_followup` forbids
+ * a live lead with nothing to do — and a server-chosen date would be a reminder
+ * nobody agreed to. Not asked for a WON or LOST lead, which the constraint
+ * exempts.
+ *
+ * And it CAN FAIL: deactivation released the mobile and email, so another
+ * active lead may have taken them. The 409's message names that lead, so the
+ * error is surfaced verbatim rather than replaced with a generic failure.
+ */
+export function ReactivateLeadDialog({
+  lead,
+  open,
+  onClose,
+}: {
+  lead: LeadDetail;
+  open: boolean;
+  onClose: () => void;
+}): React.JSX.Element | null {
+  const reactivate = useReactivateLead(lead.id);
+  const closed = isTerminalLeadStatus(lead.status);
+  const [nextFollowUpAt, setNextFollowUpAt] = useState(defaultNextFollowUp(3));
+  const [reason, setReason] = useState('');
+
+  useEffect(() => {
+    if (!open) return;
+    setNextFollowUpAt(defaultNextFollowUp(3));
+    setReason('');
+    reactivate.reset();
+  }, [open, lead]);
+
+  if (!open) return null;
+
+  const submit = (event: FormEvent): void => {
+    event.preventDefault();
+    reactivate.mutate(
+      {
+        ...(closed ? {} : { nextFollowUpAt: new Date(nextFollowUpAt).toISOString() }),
+        ...(reason.trim() ? { reason: reason.trim() } : {}),
+      },
+      { onSuccess: onClose },
+    );
+  };
+
+  return (
+    <Dialog open={open} title="Reactivate lead" onClose={onClose}>
+      <form onSubmit={submit} className="space-y-4 p-5" noValidate>
+        <p className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600">
+          {lead.leadNumber} returns to the active pipeline at its existing stage
+          {closed ? '.' : ', with the next action below.'}
+        </p>
+
+        {!closed && (
+          <Field
+            label="Next follow-up"
+            htmlFor="reactivate-followup"
+            required
+            hint="Every active lead must have a next action, so say when you intend to act."
+            error={fieldErrorOf(reactivate.error, 'nextFollowUpAt')}
+          >
+            <input
+              id="reactivate-followup"
+              type="datetime-local"
+              value={nextFollowUpAt}
+              required
+              onChange={(event) => setNextFollowUpAt(event.target.value)}
+              className={inputClass}
+            />
+          </Field>
+        )}
+
+        <Field
+          label="Reason"
+          htmlFor="reactivate-reason"
+          hint="Optional. Recorded on the timeline."
+        >
+          <input
+            id="reactivate-reason"
+            value={reason}
+            maxLength={255}
+            onChange={(event) => setReason(event.target.value)}
+            className={inputClass}
+          />
+        </Field>
+
+        {reactivate.isError && (
+          <p
+            role="alert"
+            aria-live="assertive"
+            className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700"
+          >
+            {/* The 409 names the lead now holding this one's mobile or email,
+                and that name is the only actionable part — so it is shown as
+                sent rather than replaced with "could not reactivate". */}
+            {errorMessage(reactivate.error, 'Could not reactivate the lead.')}
+          </p>
+        )}
+
+        <DialogActions
+          onCancel={onClose}
+          busy={reactivate.isPending}
+          label="Reactivate"
+          busyLabel="Reactivating…"
+        />
+      </form>
+    </Dialog>
   );
 }

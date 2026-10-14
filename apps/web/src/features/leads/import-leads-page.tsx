@@ -1,63 +1,30 @@
 import { useState, type ChangeEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  IMPORT_FIELD_GROUPS,
+  IMPORT_FIELD_LABELS,
+  REQUIRED_IMPORT_FIELDS,
+  type ImportDuplicateMode,
+  type ImportPreview,
+  type ImportPreviewRow,
+  type ImportResult,
+  type ImportableField,
+  type LeadImportMappingTemplateSummary,
+} from '@leadflow/api-types';
 import { ApiError, apiGet, apiPost } from '../../lib/api-client';
 import { Card, CardHeader, ErrorNotice, PageHeader } from '../../components/ui';
 import { defaultNextFollowUp, Field, inputClass } from './lead-dialogs';
 
-const IMPORTABLE_FIELDS = [
-  'firstName',
-  'lastName',
-  'mobile',
-  'email',
-  'companyName',
-  'city',
-  'source',
-  'productInterest',
-  'estimatedValue',
-  'nextFollowUpAt',
-] as const;
-
-type ImportableField = (typeof IMPORTABLE_FIELDS)[number];
-
-const FIELD_LABELS: Record<ImportableField, string> = {
-  firstName: 'First name *',
-  lastName: 'Last name',
-  mobile: 'Mobile *',
-  email: 'Email',
-  companyName: 'Company',
-  city: 'City',
-  source: 'Source',
-  productInterest: 'Product interest',
-  estimatedValue: 'Estimated value',
-  nextFollowUpAt: 'Follow-up date',
-};
-
-interface PreviewRow {
-  line: number;
-  values: Partial<Record<ImportableField, string>>;
-  errors: string[];
-  duplicateOf: { leadNumber: string; kind: 'existing' } | { line: number; kind: 'file' } | null;
-}
-
-interface ImportPreview {
-  headers: string[];
-  mapping: Record<string, ImportableField>;
-  unmapped: string[];
-  missingRequired: ImportableField[];
-  totalRows: number;
-  validRows: number;
-  invalidRows: number;
-  duplicateRows: number;
-  rows: PreviewRow[];
-}
-
-interface ImportResult {
-  created: number;
-  skipped: number;
-  failed: number;
-  failures: { line: number; reason: string }[];
-}
+/*
+ * The field list, its labels and its grouping come from @leadflow/api-types.
+ *
+ * They used to be re-declared here by hand, and the two copies had drifted: the
+ * API knew ten fields, this screen knew ten in a different order, and neither
+ * knew the address existed. That duplication is a direct cause of the mapping
+ * defects this release fixes — a field added to the server was invisible here
+ * until somebody remembered to add it twice.
+ */
 
 const MAX_BYTES = 2_000_000;
 
@@ -79,7 +46,8 @@ export function ImportLeadsPage(): React.JSX.Element {
   const [mapping, setMapping] = useState<Record<string, ImportableField | ''>>({});
   const [followUp, setFollowUp] = useState(defaultNextFollowUp(3));
   const [assignedToId, setAssignedToId] = useState('');
-  const [skipDuplicates, setSkipDuplicates] = useState(true);
+  const [duplicateMode, setDuplicateMode] = useState<ImportDuplicateMode>('SKIP');
+  const [templateName, setTemplateName] = useState('');
   const [result, setResult] = useState<ImportResult | null>(null);
 
   const assignable = useQuery({
@@ -87,8 +55,14 @@ export function ImportLeadsPage(): React.JSX.Element {
     queryFn: () => apiGet<{ id: string; fullName: string }[]>('/leads/assignable-users'),
   });
 
+  const templates = useQuery({
+    queryKey: ['lead-import-mappings'],
+    queryFn: () =>
+      apiGet<LeadImportMappingTemplateSummary[]>('/leads/import/mappings'),
+  });
+
   const preview = useMutation({
-    mutationFn: (body: { csv: string; mapping?: Record<string, string> }) =>
+    mutationFn: (body: Record<string, unknown>) =>
       apiPost<ImportPreview>('/leads/import/preview', body),
     onSuccess: (data) => {
       // Only seed the mapping from the server's suggestion the first time;
@@ -104,6 +78,16 @@ export function ImportLeadsPage(): React.JSX.Element {
       void queryClient.invalidateQueries({ queryKey: ['leads'] });
       void queryClient.invalidateQueries({ queryKey: ['contacts'] });
       void queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      void queryClient.invalidateQueries({ queryKey: ['lead-import-batches'] });
+    },
+  });
+
+  const saveTemplate = useMutation({
+    mutationFn: (body: { name: string; mapping: Record<string, string> }) =>
+      apiPost<LeadImportMappingTemplateSummary>('/leads/import/mappings', body),
+    onSuccess: () => {
+      setTemplateName('');
+      void queryClient.invalidateQueries({ queryKey: ['lead-import-mappings'] });
     },
   });
 
@@ -125,31 +109,43 @@ export function ImportLeadsPage(): React.JSX.Element {
       const text = String(reader.result ?? '');
       setCsv(text);
       setFileName(file.name);
-      preview.mutate({ csv: text });
+      preview.mutate({ csv: text, fileName: file.name });
     };
     reader.onerror = () => setFileError('That file could not be read.');
-    reader.readAsText(file);
+    // UTF-8 explicitly: the default depends on the browser's locale, and a
+    // Marathi or Devanagari file read as windows-1252 arrives as mojibake that
+    // imports successfully and is unreadable afterwards.
+    reader.readAsText(file, 'UTF-8');
   };
 
   const applyMapping = (): void => {
-    preview.mutate({ csv, mapping: cleanMapping(mapping) });
+    preview.mutate({ csv, fileName, mapping: cleanMapping(mapping) });
   };
 
   const commit = (): void => {
     runImport.mutate({
       csv,
+      fileName,
       mapping: cleanMapping(mapping),
       defaultNextFollowUpAt: new Date(followUp).toISOString(),
       ...(assignedToId ? { assignedToId } : {}),
-      skipDuplicates,
+      duplicateMode,
     });
   };
 
   const data = preview.data;
-  const mapped = new Set(Object.values(cleanMapping(mapping)));
-  const missingRequired = (['firstName', 'mobile'] as ImportableField[]).filter(
-    (field) => !mapped.has(field),
-  );
+  const clean = cleanMapping(mapping);
+  /*
+   * `cleanMapping` widens the values to `string` for the wire, so they are
+   * narrowed back here. Without it `IMPORT_FIELD_LABELS[field]` is an implicit
+   * any — and an implicit any is how a field name that no longer exists gets
+   * rendered as "undefined" to a user.
+   */
+  const mapped = Object.values(clean) as ImportableField[];
+  const missingRequired = REQUIRED_IMPORT_FIELDS.filter((field) => !mapped.includes(field));
+  // Computed here as well as on the server, so the warning appears the moment
+  // the user creates it rather than after another round trip.
+  const collisions = [...new Set(mapped.filter((field, index) => mapped.indexOf(field) !== index))];
 
   return (
     <>
@@ -157,12 +153,20 @@ export function ImportLeadsPage(): React.JSX.Element {
         title="Import leads"
         subtitle="Upload a CSV, check the mapping, then import"
         action={
-          <Link
-            to="/leads"
-            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
-          >
-            Back to leads
-          </Link>
+          <span className="flex gap-2">
+            <Link
+              to="/leads/import/batches"
+              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+            >
+              Past imports
+            </Link>
+            <Link
+              to="/leads"
+              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+            >
+              Back to leads
+            </Link>
+          </span>
         }
       />
 
@@ -177,6 +181,7 @@ export function ImportLeadsPage(): React.JSX.Element {
                 type="file"
                 accept=".csv,text/csv"
                 onChange={onFile}
+                aria-label="CSV file"
                 className="block w-full text-sm text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-slate-900 file:px-3 file:py-2 file:text-sm file:font-medium file:text-white hover:file:bg-slate-800"
               />
               {fileName && <p className="text-xs text-slate-500">Loaded {fileName}</p>}
@@ -185,7 +190,9 @@ export function ImportLeadsPage(): React.JSX.Element {
                 <ErrorNotice
                   message={
                     preview.error instanceof ApiError
-                      ? (preview.error.details?.['csv']?.[0] ?? preview.error.message)
+                      ? (preview.error.details?.['csv']?.[0] ??
+                        preview.error.details?.['mapping']?.join(' ') ??
+                        preview.error.message)
                       : 'That file could not be read.'
                   }
                 />
@@ -198,54 +205,135 @@ export function ImportLeadsPage(): React.JSX.Element {
               <Card>
                 <CardHeader
                   title="2 · Match the columns"
-                  subtitle="Checked against your file's header row. Correct anything that looks wrong."
+                  subtitle="Every column in your file is listed. Nothing is imported unless it has a field."
+                  action={
+                    (templates.data ?? []).length > 0 ? (
+                      <select
+                        aria-label="Use a saved mapping"
+                        defaultValue=""
+                        onChange={(event) => {
+                          const chosen = (templates.data ?? []).find(
+                            (template) => template.id === event.target.value,
+                          );
+                          if (chosen) setMapping(chosen.mapping);
+                        }}
+                        className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm"
+                      >
+                        <option value="">Use a saved mapping…</option>
+                        {(templates.data ?? []).map((template) => (
+                          <option key={template.id} value={template.id}>
+                            {template.name}
+                          </option>
+                        ))}
+                      </select>
+                    ) : undefined
+                  }
                 />
-                <div className="space-y-3 p-5">
+                <div className="space-y-4 p-5">
+                  {data.duplicateHeaders.length > 0 && (
+                    <Warning>
+                      {data.duplicateHeaders.join(', ')} appears more than once in your file. Only
+                      the first column with that name is read — rename them if they hold different
+                      things.
+                    </Warning>
+                  )}
+
+                  {collisions.length > 0 && (
+                    <Warning tone="error">
+                      Two columns are mapped to{' '}
+                      {collisions.map((field) => IMPORT_FIELD_LABELS[field].replace(' *', '')).join(', ')}.
+                      Only one can be, so pick which column holds it.
+                    </Warning>
+                  )}
+
                   <div className="grid gap-3 sm:grid-cols-2">
-                    {data.headers.map((header) => (
-                      <div key={header}>
+                    {data.columns.map((column) => (
+                      <div key={`${column.header}-${column.index}`}>
                         <label
-                          htmlFor={`map-${header}`}
-                          className="mb-1 block truncate text-xs font-medium text-slate-600"
+                          htmlFor={`map-${column.index}`}
+                          className="mb-1 flex items-center gap-2 text-xs font-medium text-slate-600"
                         >
-                          {header}
+                          <span className="truncate">{column.header || '(unnamed column)'}</span>
+                          {column.confidence === 'fuzzy' && (
+                            <span className="shrink-0 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800">
+                              Check this
+                            </span>
+                          )}
                         </label>
                         <select
-                          id={`map-${header}`}
-                          value={mapping[header] ?? ''}
+                          id={`map-${column.index}`}
+                          value={mapping[column.header] ?? ''}
                           onChange={(event) =>
                             setMapping((current) => ({
                               ...current,
-                              [header]: event.target.value as ImportableField | '',
+                              [column.header]: event.target.value as ImportableField | '',
                             }))
                           }
                           className={inputClass}
                         >
-                          <option value="">Ignore this column</option>
-                          {IMPORTABLE_FIELDS.map((field) => (
-                            <option key={field} value={field}>
-                              {FIELD_LABELS[field]}
-                            </option>
+                          <option value="">Do not import this column</option>
+                          {/* Grouped, because a flat list of sixteen fields is
+                              how somebody picks "state" when they meant
+                              "status". */}
+                          {IMPORT_FIELD_GROUPS.map((group) => (
+                            <optgroup key={group.label} label={group.label}>
+                              {group.fields.map((field) => (
+                                <option key={field} value={field}>
+                                  {IMPORT_FIELD_LABELS[field]}
+                                </option>
+                              ))}
+                            </optgroup>
                           ))}
                         </select>
+                        {/* The note is the fix for "the column vanished and
+                            nobody said anything". */}
+                        {column.note && !mapping[column.header] && (
+                          <p className="mt-1 text-[11px] text-slate-500">{column.note}</p>
+                        )}
                       </div>
                     ))}
                   </div>
 
                   {missingRequired.length > 0 && (
                     <p role="alert" className="text-xs text-red-600">
-                      Map a column to {missingRequired.join(' and ')} before importing.
+                      Map a column to{' '}
+                      {missingRequired
+                        .map((field) => IMPORT_FIELD_LABELS[field].replace(' *', ''))
+                        .join(' and ')}{' '}
+                      before importing.
                     </p>
                   )}
 
-                  <button
-                    type="button"
-                    onClick={applyMapping}
-                    disabled={preview.isPending}
-                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
-                  >
-                    {preview.isPending ? 'Checking…' : 'Re-check with this mapping'}
-                  </button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={applyMapping}
+                      disabled={preview.isPending}
+                      className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
+                    >
+                      {preview.isPending ? 'Checking…' : 'Re-check with this mapping'}
+                    </button>
+
+                    <span className="flex gap-2">
+                      <input
+                        aria-label="Name for this mapping"
+                        placeholder="Save this mapping as…"
+                        value={templateName}
+                        onChange={(event) => setTemplateName(event.target.value)}
+                        className="w-48 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                      />
+                      <button
+                        type="button"
+                        disabled={!templateName.trim() || saveTemplate.isPending}
+                        onClick={() =>
+                          saveTemplate.mutate({ name: templateName.trim(), mapping: clean })
+                        }
+                        className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
+                      >
+                        Save
+                      </button>
+                    </span>
+                  </div>
                 </div>
               </Card>
 
@@ -253,6 +341,14 @@ export function ImportLeadsPage(): React.JSX.Element {
                 <CardHeader
                   title="3 · Preview"
                   subtitle={`${data.totalRows} rows · ${data.validRows} ready · ${data.duplicateRows} duplicates · ${data.invalidRows} with problems`}
+                  action={
+                    data.errorCsv ? (
+                      <DownloadErrors
+                        csv={data.errorCsv}
+                        fileName={`${fileName.replace(/\.csv$/i, '') || 'import'}-problems.csv`}
+                      />
+                    ) : undefined
+                  }
                 />
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-xs">
@@ -262,6 +358,10 @@ export function ImportLeadsPage(): React.JSX.Element {
                         <th className="px-3 py-2 font-medium">Name</th>
                         <th className="px-3 py-2 font-medium">Mobile</th>
                         <th className="px-3 py-2 font-medium">Company</th>
+                        {/* The address is in the preview because its absence
+                            was the defect: a user has to be able to SEE that
+                            it arrived in the right place. */}
+                        <th className="px-3 py-2 font-medium">Address</th>
                         <th className="px-3 py-2 font-medium">Status</th>
                       </tr>
                     </thead>
@@ -278,6 +378,7 @@ export function ImportLeadsPage(): React.JSX.Element {
                           <td className="px-3 py-2 text-slate-600">
                             {row.values.companyName ?? '—'}
                           </td>
+                          <td className="px-3 py-2 text-slate-600">{addressOf(row) || '—'}</td>
                           <td className="px-3 py-2">
                             <RowStatus row={row} />
                           </td>
@@ -289,7 +390,7 @@ export function ImportLeadsPage(): React.JSX.Element {
                 {data.totalRows > data.rows.length && (
                   <p className="border-t border-slate-100 px-5 py-3 text-xs text-slate-500">
                     Showing the first {data.rows.length} rows. All {data.totalRows} are checked —
-                    the counts above cover the whole file.
+                    the counts above cover the whole file, and the download has every problem row.
                   </p>
                 )}
               </Card>
@@ -313,7 +414,11 @@ export function ImportLeadsPage(): React.JSX.Element {
                       />
                     </Field>
 
-                    <Field label="Assign to" htmlFor="import-owner" hint="Leave blank to import unassigned.">
+                    <Field
+                      label="Assign to"
+                      htmlFor="import-owner"
+                      hint="Leave blank to import unassigned."
+                    >
                       <select
                         id="import-owner"
                         value={assignedToId}
@@ -330,27 +435,42 @@ export function ImportLeadsPage(): React.JSX.Element {
                     </Field>
                   </div>
 
-                  <label className="flex items-start gap-2 text-sm text-slate-700">
-                    <input
-                      type="checkbox"
-                      checked={skipDuplicates}
-                      onChange={(event) => setSkipDuplicates(event.target.checked)}
-                      className="mt-1"
-                    />
-                    <span>
-                      Skip rows whose mobile already belongs to an active lead
-                      <span className="block text-xs text-slate-500">
-                        Recommended. Otherwise a file that overlaps your pipeline doubles the
-                        leads you are already working.
-                      </span>
-                    </span>
-                  </label>
+                  <Field
+                    label="Rows that match a lead you already have"
+                    htmlFor="import-duplicates"
+                    hint="A row repeated inside this file is always skipped, whichever you choose."
+                  >
+                    <select
+                      id="import-duplicates"
+                      value={duplicateMode}
+                      onChange={(event) =>
+                        setDuplicateMode(event.target.value as ImportDuplicateMode)
+                      }
+                      className={inputClass}
+                    >
+                      <option value="SKIP">Skip them (recommended)</option>
+                      <option value="CREATE_ANYWAY">
+                        Create a second lead for them anyway
+                      </option>
+                    </select>
+                  </Field>
+
+                  {duplicateMode === 'CREATE_ANYWAY' && (
+                    <Warning>
+                      Each matching row becomes a second live lead for a customer you are already
+                      working. Nothing on the existing lead is changed — not its owner, its stage,
+                      its value or its history.
+                    </Warning>
+                  )}
 
                   {runImport.isError && (
                     <ErrorNotice
                       message={
                         runImport.error instanceof ApiError
-                          ? runImport.error.message
+                          ? [
+                              runImport.error.message,
+                              ...(runImport.error.details?.['mapping'] ?? []),
+                            ].join(' ')
                           : 'The import could not be started.'
                       }
                     />
@@ -359,7 +479,12 @@ export function ImportLeadsPage(): React.JSX.Element {
                   <button
                     type="button"
                     onClick={commit}
-                    disabled={runImport.isPending || missingRequired.length > 0 || !followUp}
+                    disabled={
+                      runImport.isPending ||
+                      missingRequired.length > 0 ||
+                      collisions.length > 0 ||
+                      !followUp
+                    }
                     className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:opacity-50"
                   >
                     {runImport.isPending
@@ -376,17 +501,83 @@ export function ImportLeadsPage(): React.JSX.Element {
   );
 }
 
-function RowStatus({ row }: { row: PreviewRow }): React.JSX.Element {
+/** The address as one line, for the preview column. */
+function addressOf(row: ImportPreviewRow): string {
+  return [
+    row.values.addressLine1,
+    row.values.addressLine2,
+    row.values.city,
+    row.values.state,
+    row.values.postalCode,
+    row.values.country,
+  ]
+    .filter(Boolean)
+    .join(', ');
+}
+
+function Warning({
+  children,
+  tone = 'warn',
+}: {
+  children: React.ReactNode;
+  tone?: 'warn' | 'error';
+}): React.JSX.Element {
+  const styles =
+    tone === 'error'
+      ? 'bg-red-50 text-red-800'
+      : 'bg-amber-50 text-amber-800';
+
+  return <p className={`rounded-lg px-3 py-2 text-xs ${styles}`}>{children}</p>;
+}
+
+/**
+ * The problem rows, as a file.
+ *
+ * A download rather than a longer table, because the point is to FIX the source
+ * file: this CSV carries each bad row's own values back, so the user can
+ * correct them and re-import without cross-referencing line numbers by hand.
+ * That is what made the old on-screen list of a hundred failures unusable on a
+ * nine-hundred-row file.
+ *
+ * Built with a Blob rather than a `data:` URL, which some browsers refuse to
+ * download from a top-level navigation.
+ */
+function DownloadErrors({ csv, fileName }: { csv: string; fileName: string }): React.JSX.Element {
+  const download = (): void => {
+    // The BOM makes Excel open a UTF-8 CSV correctly. Without it a file
+    // containing Marathi names opens as mojibake, and the user concludes the
+    // import corrupted their data.
+    const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = fileName;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={download}
+      className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+    >
+      Download problem rows
+    </button>
+  );
+}
+
+function RowStatus({ row }: { row: ImportPreviewRow }): React.JSX.Element {
   if (row.errors.length > 0) {
-    return <span className="text-red-600">{row.errors.join('; ')}</span>;
+    return <span className="text-red-600">{row.errors.join(' ')}</span>;
   }
 
   if (row.duplicateOf) {
     return (
       <span className="text-amber-700">
         {row.duplicateOf.kind === 'existing'
-          ? `Duplicate of ${row.duplicateOf.leadNumber}`
-          : `Duplicate of row ${row.duplicateOf.line}`}
+          ? `Same ${row.duplicateOf.matchedOn} as ${row.duplicateOf.leadNumber}`
+          : `Same ${row.duplicateOf.matchedOn} as row ${row.duplicateOf.line}`}
       </span>
     );
   }
@@ -403,7 +594,14 @@ function ResultCard({
 }): React.JSX.Element {
   return (
     <Card>
-      <CardHeader title="Import finished" />
+      <CardHeader
+        title="Import finished"
+        action={
+          result.errorCsv ? (
+            <DownloadErrors csv={result.errorCsv} fileName="import-problems.csv" />
+          ) : undefined
+        }
+      />
       <div className="space-y-4 p-5">
         <dl className="grid grid-cols-3 gap-4">
           <Stat label="Created" value={result.created} tone="text-emerald-700" />
@@ -424,13 +622,23 @@ function ResultCard({
           </div>
         )}
 
-        <button
-          type="button"
-          onClick={onDone}
-          className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800"
-        >
-          View leads
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={onDone}
+            className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800"
+          >
+            View leads
+          </button>
+          {result.batchId && (
+            <Link
+              to={`/leads?importBatchId=${result.batchId}`}
+              className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+            >
+              See just these leads
+            </Link>
+          )}
+        </div>
       </div>
     </Card>
   );
@@ -453,7 +661,7 @@ function Stat({
   );
 }
 
-/** Drops "ignore this column" entries before sending the mapping. */
+/** Drops "do not import this column" entries before sending the mapping. */
 function cleanMapping(mapping: Record<string, ImportableField | ''>): Record<string, string> {
   return Object.fromEntries(
     Object.entries(mapping).filter((entry): entry is [string, ImportableField] => entry[1] !== ''),

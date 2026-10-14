@@ -1,6 +1,7 @@
 import { Type } from 'class-transformer';
 import { IsIn, IsInt, IsOptional, IsString, IsUUID, Max, MaxLength, Min } from 'class-validator';
-import { LEAD_STATUSES, type LeadStatus } from '@leadflow/api-types';
+import { LEAD_LIFECYCLE_FILTERS, LEAD_STATUSES } from '@leadflow/api-types';
+import type { LeadLifecycleFilter, LeadStatus } from '@leadflow/api-types';
 
 export class ListLeadsDto {
   @IsOptional()
@@ -25,6 +26,31 @@ export class ListLeadsDto {
   @IsString()
   @MaxLength(100)
   search?: string;
+
+  /**
+   * Every lead from one CSV import.
+   *
+   * What makes a badly mapped run correctable: the screen that fixes it has to
+   * be able to list exactly what that run created, and nothing else.
+   */
+  @IsOptional()
+  @IsUUID('7', { message: 'must be a valid import batch id' })
+  importBatchId?: string;
+
+  /**
+   * Which lifecycle states to list. Defaults to ACTIVE.
+   *
+   * The default is what keeps a deactivated lead out of the working pipeline
+   * and out of every total computed through this filter. `INACTIVE` is the
+   * explicit filter that makes those records reachable, and `ALL` exists for
+   * the import-correction screen, which must show what it is about to act on
+   * whatever state it is in.
+   */
+  @IsOptional()
+  @IsIn(LEAD_LIFECYCLE_FILTERS, {
+    message: `must be one of: ${LEAD_LIFECYCLE_FILTERS.join(', ')}`,
+  })
+  lifecycle?: LeadLifecycleFilter;
 
   @IsOptional()
   @IsUUID('7')

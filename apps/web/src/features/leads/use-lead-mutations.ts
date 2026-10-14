@@ -153,6 +153,41 @@ export function useArchiveLead(leadId: string) {
   });
 }
 
+/**
+ * Takes a lead out of the live pipeline, reversibly.
+ *
+ * A different thing from `useArchiveLead` above, and the difference matters:
+ * archiving records no reason and cannot be undone, while this records who,
+ * when and why — and can be reversed. A wrongly imported lead needs the second.
+ */
+export function useDeactivateLead(leadId: string) {
+  const refresh = useRefreshLeadData();
+
+  return useMutation({
+    mutationFn: (input: { reason: string }) =>
+      apiPost<LeadSummary>(`/leads/${leadId}/deactivate`, input),
+    onSuccess: () => refresh(leadId),
+  });
+}
+
+/**
+ * Puts it back.
+ *
+ * CAN FAIL with 409: deactivation released this lead's mobile and email, so
+ * another active lead may have taken them in the meantime. The error names the
+ * lead that holds the identifier, so the caller should surface its message
+ * rather than a generic failure.
+ */
+export function useReactivateLead(leadId: string) {
+  const refresh = useRefreshLeadData();
+
+  return useMutation({
+    mutationFn: (input: { nextFollowUpAt?: string; reason?: string }) =>
+      apiPost<LeadSummary>(`/leads/${leadId}/reactivate`, input),
+    onSuccess: () => refresh(leadId),
+  });
+}
+
 export function useLogActivity(leadId: string) {
   const refresh = useRefreshLeadData();
 

@@ -28,6 +28,15 @@ export interface LeadSummary {
   nextFollowUpAt: string | null;
   assignedTo: { id: string; fullName: string } | null;
   createdAt: string;
+  /**
+   * Null for a live lead.
+   *
+   * On the SUMMARY, not just the detail, so the inactive list can show when
+   * each record was taken out of service without a second request per row. The
+   * address stays off the summary — a page of results pays for every field, and
+   * nobody scans a list by street name.
+   */
+  deactivatedAt: string | null;
 }
 
 @Injectable()
@@ -51,6 +60,10 @@ export class LeadsService {
       accountId: dto.accountId,
       search: dto.search,
       restrictToUserId: restriction?.assignedToId,
+      importBatchId: dto.importBatchId,
+      // Absent means ACTIVE, which the repository applies. Stated here so the
+      // default is visible at the call site rather than only in the WHERE.
+      lifecycle: dto.lifecycle ?? 'ACTIVE',
     };
 
     // The total is counted with the SAME filters, so "showing 25 of 812"
@@ -84,6 +97,26 @@ export class LeadsService {
       accountId: string | null;
       account: { id: string; name: string; status: string } | null;
       source: string | null;
+      email: string | null;
+      /**
+       * The whole postal address.
+       *
+       * `city` was previously the only one of these that existed, which is why
+       * a CSV address column had nowhere to go. On the detail rather than the
+       * summary: it is five more fields on a record somebody opened
+       * deliberately, and five more on every row of a list of eight hundred.
+       */
+      addressLine1: string | null;
+      addressLine2: string | null;
+      city: string | null;
+      state: string | null;
+      postalCode: string | null;
+      country: string | null;
+      /** Why this record is not live work, and who decided. Null when it is. */
+      deactivationReason: string | null;
+      deactivatedBy: string | null;
+      /** The import run that created it, or null if a person typed it in. */
+      importBatchId: string | null;
     }
   > {
     // A lead outside the caller's visibility is a 404, exactly like one in
@@ -127,6 +160,16 @@ export class LeadsService {
       accountId: lead.accountId,
       account: lead.account,
       source: lead.source,
+      email: lead.email,
+      addressLine1: lead.addressLine1,
+      addressLine2: lead.addressLine2,
+      city: lead.city,
+      state: lead.state,
+      postalCode: lead.postalCode,
+      country: lead.country,
+      deactivationReason: lead.deactivationReason,
+      deactivatedBy: lead.deactivatedBy,
+      importBatchId: lead.importBatchId,
       activities: activities.map((activity) => ({
         id: activity.id,
         type: activity.activityType,
@@ -501,6 +544,7 @@ type LeadRow = {
   estimatedValue: { toString(): string } | null;
   nextFollowUpAt: Date | null;
   createdAt: Date;
+  deactivatedAt: Date | null;
   assignedTo: { id: string; fullName: string } | null;
 };
 
@@ -521,5 +565,6 @@ function toSummary(lead: LeadRow): LeadSummary {
     nextFollowUpAt: lead.nextFollowUpAt?.toISOString() ?? null,
     assignedTo: lead.assignedTo,
     createdAt: lead.createdAt.toISOString(),
+    deactivatedAt: lead.deactivatedAt?.toISOString() ?? null,
   };
 }

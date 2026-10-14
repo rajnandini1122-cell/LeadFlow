@@ -5,7 +5,12 @@ import {
   type InfiniteData,
   type UseQueryResult,
 } from '@tanstack/react-query';
-import type { LeadPriority, LeadStatus, Paginated } from '@leadflow/api-types';
+import type {
+  LeadLifecycleFilter,
+  LeadPriority,
+  LeadStatus,
+  Paginated,
+} from '@leadflow/api-types';
 import { apiGet } from '../../lib/api-client';
 
 export interface LeadSummary {
@@ -20,6 +25,8 @@ export interface LeadSummary {
   nextFollowUpAt: string | null;
   assignedTo: { id: string; fullName: string } | null;
   createdAt: string;
+  /** Null for a live lead. On the summary so the inactive list can show it. */
+  deactivatedAt: string | null;
 }
 
 export interface LeadActivity {
@@ -30,12 +37,36 @@ export interface LeadActivity {
   createdAt: string;
 }
 
-export type LeadDetail = LeadSummary & { activities: LeadActivity[] };
+export type LeadDetail = LeadSummary & {
+  activities: LeadActivity[];
+  email: string | null;
+  /**
+   * The whole postal address.
+   *
+   * `city` was the only one of these that existed before this release, which is
+   * why a CSV address column had nowhere to go and was dropped.
+   */
+  addressLine1: string | null;
+  addressLine2: string | null;
+  city: string | null;
+  state: string | null;
+  postalCode: string | null;
+  country: string | null;
+  /** Why this record is not live work, and who decided. Null when it is. */
+  deactivationReason: string | null;
+  deactivatedBy: string | null;
+  /** The import run that created it, or null if a person typed it in. */
+  importBatchId: string | null;
+};
 
 export interface LeadFilters {
   status?: LeadStatus | undefined;
   search?: string | undefined;
   assignedToId?: string | undefined;
+  /** Every lead from one CSV import, for correcting a bad run. */
+  importBatchId?: string | undefined;
+  /** Omitted means ACTIVE, which is what keeps deactivated leads out. */
+  lifecycle?: LeadLifecycleFilter | undefined;
 }
 
 /**
@@ -55,6 +86,8 @@ export function useLeadsPage(
   if (filters.status) params['status'] = filters.status;
   if (filters.search) params['search'] = filters.search;
   if (filters.assignedToId) params['assignedToId'] = filters.assignedToId;
+  if (filters.importBatchId) params['importBatchId'] = filters.importBatchId;
+  if (filters.lifecycle) params['lifecycle'] = filters.lifecycle;
 
   return useInfiniteQuery({
     queryKey: ['leads', 'page', params],
