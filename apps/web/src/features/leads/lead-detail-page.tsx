@@ -36,6 +36,7 @@ import {
 import {
   AssignLeadDialog,
   DeactivateLeadDialog,
+  RecordAttemptDialog,
   ReactivateLeadDialog,
   ChangeStatusDialog,
   CompleteFollowUpDialog,
@@ -59,6 +60,14 @@ export function LeadDetailPage(): React.JSX.Element {
   const [dialog, setDialog] = useState<
     'edit' | 'status' | 'assign' | 'schedule' | 'deactivate' | 'reactivate' | null
   >(null);
+  /**
+   * Which failed-attempt button opened the dialog, so it starts on that answer.
+   *
+   * Separate from `dialog` because the attempt dialog is opened from two
+   * buttons that mean different things, and reopening it should not silently
+   * keep the previous one's selection.
+   */
+  const [attempt, setAttempt] = useState<string | null>(null);
   const [completing, setCompleting] = useState<FollowUp | null>(null);
   const [rescheduling, setRescheduling] = useState<FollowUp | null>(null);
   const [activityLimit, setActivityLimit] = useState(25);
@@ -153,7 +162,11 @@ export function LeadDetailPage(): React.JSX.Element {
 
             <ContactDetails lead={data} />
 
-            <QuickActions lead={data} onLogged={setNotice} />
+            <QuickActions
+              lead={data}
+              onLogged={setNotice}
+              onAttempt={(activityType) => setAttempt(activityType)}
+            />
 
             <div className="flex flex-wrap gap-2 border-t border-slate-100 px-5 py-3">
               {can('lead.update') && (
@@ -262,14 +275,33 @@ export function LeadDetailPage(): React.JSX.Element {
           </Card>
 
           <Card>
-            <CardHeader title="Follow-ups" subtitle={`${openFollowUps.length} open`} />
+            <CardHeader
+              title="Follow-ups"
+              /*
+               * "0 open" beside a next-action date read as a bug, and often
+               * was one — four paths set the date and created no follow-up.
+               * That is fixed at the source; what remains legitimately is an
+               * UNASSIGNED lead, where no follow-up can exist because
+               * `assigned_user_id` is NOT NULL. Saying so beats a bare zero
+               * that looks like data loss.
+               */
+              subtitle={
+                openFollowUps.length === 0 && data.nextFollowUpAt && !data.assignedTo
+                  ? 'Nobody owns this lead yet, so nothing is queued'
+                  : `${openFollowUps.length} open`
+              }
+            />
             {followUps.isPending ? (
               <SkeletonRows rows={2} />
             ) : (followUps.data ?? []).length === 0 ? (
               <EmptyState
                 icon="◷"
-                title="Nothing scheduled"
-                description="Schedule the next action so this lead is not forgotten."
+                title={data.assignedTo ? 'Nothing scheduled' : 'Not assigned'}
+                description={
+                  data.assignedTo
+                    ? 'Schedule the next action so this lead is not forgotten.'
+                    : 'A follow-up belongs to somebody. Assign this lead and its next action joins their queue.'
+                }
               />
             ) : (
               <ul className="divide-y divide-slate-100">
@@ -358,6 +390,12 @@ export function LeadDetailPage(): React.JSX.Element {
         open={dialog === 'reactivate'}
         onClose={() => setDialog(null)}
       />
+      <RecordAttemptDialog
+        lead={data}
+        open={attempt !== null}
+        {...(attempt ? { initialAttempt: attempt } : {})}
+        onClose={() => setAttempt(null)}
+      />
       <ScheduleFollowUpDialog
         leadId={data.id}
         open={dialog === 'schedule'}
@@ -387,9 +425,18 @@ export function LeadDetailPage(): React.JSX.Element {
 function QuickActions({
   lead,
   onLogged,
+  onAttempt,
 }: {
   lead: { id: string; mobile: string | null };
   onLogged: (message: string) => void;
+  /**
+   * Opens the attempt dialog instead of logging straight away.
+   *
+   * These two buttons used to post one activity row and stop — no retry, no
+   * note, nothing in the queue. They now open a form that records all three in
+   * one action, because that is what a missed call actually needs.
+   */
+  onAttempt: (activityType: string) => void;
 }): React.JSX.Element {
   const log = useLogActivity(lead.id);
   const addNote = useAddNote(lead.id);
@@ -429,14 +476,14 @@ function QuickActions({
         </a>
         <button
           type="button"
-          onClick={() => record('CALL_NOT_ANSWERED', 'Logged as no answer.')}
+          onClick={() => onAttempt('CALL_NOT_ANSWERED')}
           className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
         >
           No answer
         </button>
         <button
           type="button"
-          onClick={() => record('CALL_BACK_LATER', 'Logged as call back later.')}
+          onClick={() => onAttempt('CALL_BACK_LATER')}
           className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
         >
           Call back later

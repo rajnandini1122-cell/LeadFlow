@@ -16,6 +16,7 @@ import {
   useCreateFollowUp,
   useDeactivateLead,
   useReactivateLead,
+  useRecordAttempt,
   useRescheduleFollowUp,
   useUpdateLead,
   type FollowUp,
@@ -981,6 +982,170 @@ export function ReactivateLeadDialog({
           busy={reactivate.isPending}
           label="Reactivate"
           busyLabel="Reactivating…"
+        />
+      </form>
+    </Dialog>
+  );
+}
+
+// -----------------------------------------------------------------------------
+// Failed contact attempt
+// -----------------------------------------------------------------------------
+
+/** What the rep tried, in the words they would use. */
+const ATTEMPTS = [
+  { value: 'CALL_NOT_ANSWERED', label: 'No answer' },
+  { value: 'CALL_BACK_LATER', label: 'They asked me to call back' },
+  { value: 'WHATSAPP_OPENED', label: 'Messaged on WhatsApp, no reply' },
+] as const;
+
+/** How soon to try again. The common answers, as one click. */
+const RETRY_PRESETS = [
+  { label: 'In 2 hours', hours: 2 },
+  { label: 'Tomorrow', hours: 24 },
+  { label: 'In 3 days', hours: 72 },
+] as const;
+
+/**
+ * Logs a failed attempt and schedules the retry, in one action.
+ *
+ * THE DEFECT THIS REPLACES. "No answer" was a single button that posted one
+ * activity row and did nothing else: no retry was scheduled, the pending
+ * follow-up kept its original date, and the rep's reason went unrecorded unless
+ * they then typed a note and then opened the reschedule dialog — three writes
+ * for one phone call.
+ *
+ * THE STAGE IS NOT ON THIS FORM, and cannot be. A lead nobody answered has not
+ * been contacted, so there is no status control here and the endpoint accepts
+ * none. The dialog says so, because a rep who expects "No answer" to advance
+ * the lead should find out here rather than from a wrong forecast.
+ */
+export function RecordAttemptDialog({
+  lead,
+  open,
+  onClose,
+  initialAttempt,
+}: {
+  lead: LeadDetail;
+  open: boolean;
+  onClose: () => void;
+  /** Which attempt the button that opened this dialog meant. */
+  initialAttempt?: string;
+}): React.JSX.Element | null {
+  const record = useRecordAttempt(lead.id);
+
+  const [activityType, setActivityType] = useState<string>(
+    initialAttempt ?? ATTEMPTS[0].value,
+  );
+  const [note, setNote] = useState('');
+  const [retryAt, setRetryAt] = useState(defaultNextFollowUp(1));
+
+  useEffect(() => {
+    if (!open) return;
+    setActivityType(initialAttempt ?? ATTEMPTS[0].value);
+    setNote('');
+    setRetryAt(defaultNextFollowUp(1));
+    record.reset();
+  }, [open, initialAttempt, lead]);
+
+  if (!open) return null;
+
+  const submit = (event: FormEvent): void => {
+    event.preventDefault();
+    record.mutate(
+      {
+        activityType,
+        ...(note.trim() ? { note: note.trim() } : {}),
+        retryAt: new Date(retryAt).toISOString(),
+      },
+      { onSuccess: onClose },
+    );
+  };
+
+  return (
+    <Dialog open={open} title="Could not reach them" onClose={onClose}>
+      <form onSubmit={submit} className="space-y-4 p-5" noValidate>
+        <Field label="What happened?" htmlFor="attempt-type">
+          <select
+            id="attempt-type"
+            value={activityType}
+            onChange={(event) => setActivityType(event.target.value)}
+            className={inputClass}
+          >
+            {ATTEMPTS.map((attempt) => (
+              <option key={attempt.value} value={attempt.value}>
+                {attempt.label}
+              </option>
+            ))}
+          </select>
+        </Field>
+
+        <Field
+          label="Note"
+          htmlFor="attempt-note"
+          hint="Goes on the timeline with the attempt, so the next person knows what you tried."
+        >
+          <textarea
+            id="attempt-note"
+            rows={2}
+            value={note}
+            maxLength={1000}
+            onChange={(event) => setNote(event.target.value)}
+            className={inputClass}
+          />
+        </Field>
+
+        <Field
+          label="Try again"
+          htmlFor="attempt-retry"
+          required
+          error={fieldErrorOf(record.error, 'retryAt')}
+          hint="This replaces the follow-up that is pending, so the lead stays in the queue."
+        >
+          <input
+            id="attempt-retry"
+            type="datetime-local"
+            value={retryAt}
+            required
+            onChange={(event) => setRetryAt(event.target.value)}
+            className={inputClass}
+          />
+        </Field>
+
+        <div className="flex flex-wrap gap-2">
+          {RETRY_PRESETS.map((preset) => (
+            <button
+              key={preset.label}
+              type="button"
+              onClick={() => setRetryAt(toLocalInput(new Date(Date.now() + preset.hours * 3_600_000)))}
+              className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+            >
+              {preset.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Said plainly, because the opposite is what a rep would assume. */}
+        <p className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600">
+          The lead stays at <strong className="font-medium">{humanise(lead.status)}</strong>. An
+          attempt nobody answered is not contact, so the stage does not move.
+        </p>
+
+        {record.isError && (
+          <p
+            role="alert"
+            aria-live="assertive"
+            className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700"
+          >
+            {errorMessage(record.error, 'Could not log the attempt.')}
+          </p>
+        )}
+
+        <DialogActions
+          onCancel={onClose}
+          busy={record.isPending}
+          label="Log and reschedule"
+          busyLabel="Saving…"
         />
       </form>
     </Dialog>

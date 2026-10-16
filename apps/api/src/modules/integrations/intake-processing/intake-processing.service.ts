@@ -479,6 +479,9 @@ export class IntakeProcessingService {
         assignedToId: chosen.userId,
         nextFollowUpAt: scheduledAt,
         contactId: contact.id,
+        // Names the first follow-up this creates: a first RESPONSE, against an
+        // SLA measured from when the enquiry arrived.
+        followUpTitle: 'First response to website enquiry',
         // Never. A duplicate website enquiry is not authorisation to create a
         // second lead; that decision belongs to a person.
         duplicateAcknowledged: false,
@@ -501,21 +504,22 @@ export class IntakeProcessingService {
       throw error;
     }
 
-    await this.followUps.create({
-      leadId,
-      assignedUserId: chosen.userId,
-      /*
-       * Measured from when the enquiry ARRIVED, never from when the worker got
-       * to it. A sweep that ran late should produce a follow-up that is
-       * honestly already due, not one whose clock was quietly restarted —
-       * hiding the delay would hide exactly the thing an operator needs to see.
-       */
-      scheduledAt,
-      type: 'CALL',
-      title: 'First response to website enquiry',
-      actorId: null,
-      tx,
-    });
+    /*
+     * The first follow-up is created by `createWithActivity` above, from the
+     * same `scheduledAt` this path passes it as `nextFollowUpAt`.
+     *
+     * It used to be created here as a second call, which was correct while
+     * `createWithActivity` created none. Once that gained the responsibility —
+     * so that manually created and imported leads stopped promising a next
+     * action with nothing in the queue — having both run gave every converted
+     * enquiry TWO open follow-ups. One creator, told what to title the row.
+     *
+     * The schedule is unchanged and still measured from when the enquiry
+     * ARRIVED, never from when the worker got to it: a sweep that ran late
+     * should produce a follow-up that is honestly already due, not one whose
+     * clock was quietly restarted — hiding the delay would hide exactly the
+     * thing an operator needs to see.
+     */
 
     // Belt and braces: createWithActivity already wrote this, and writing it
     // again from the same value is what guarantees the two agree rather than

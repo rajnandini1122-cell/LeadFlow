@@ -3,6 +3,7 @@ import type { LeadPriority, LeadStatus } from '@leadflow/api-types';
 import type { ActivityType } from '../../generated/prisma/enums';
 import { sideEffectsFor } from './lead-status';
 import { PrismaService, type PrismaTransaction } from '../../common/prisma/prisma.service';
+import { initialFollowUpStatus } from '../follow-ups/follow-ups.repository';
 import { TenantContextService } from '../../common/tenancy/tenant-context.service';
 import { AppConfig } from '../../common/config/config.module';
 
@@ -450,6 +451,14 @@ export class LeadsRepository {
      * not resolve to a row, and the insert would fail.
      */
     actorId: string | null;
+    /**
+     * What to call the first follow-up. Defaults to 'First contact'.
+     *
+     * The website pipeline passes its own wording because the row means
+     * something more specific there — a first RESPONSE, against an SLA
+     * measured from when the enquiry arrived.
+     */
+    followUpTitle?: string | undefined;
     /** Supplied when this write belongs to a caller's larger transaction. */
     tx?: PrismaTransaction | undefined;
   }) {
@@ -522,6 +531,48 @@ export class LeadsRepository {
             performedById: input.actorId,
           },
         });
+
+        /*
+         * The next action becomes a REAL follow-up, in this same transaction.
+         *
+         * Before this, create set `next_follow_up_at` and nothing else — so
+         * every manually created and every imported lead showed a next-action
+         * date beside "Follow-ups: 0 open", and the work never appeared in
+         * anybody's queue. The column is a MIRROR of the earliest open
+         * follow-up; a lead promising an action with no row behind it is the
+         * inconsistency this model exists to rule out.
+         *
+         * Guarded by `assignedToId` because `follow_ups.assigned_user_id` is
+         * NOT NULL with a foreign key: an unassigned follow-up cannot exist.
+         * For an unassigned lead the mirror alone is the honest answer — "this
+         * needs doing by then, and nobody owns it yet" — and inventing an
+         * assignee would hand the work to whoever imported a file.
+         *
+         * The intake pipeline already did this correctly and is unchanged;
+         * these are the three paths that did not.
+         */
+        if (input.nextFollowUpAt) {
+          await tx.followUp.create({
+            data: {
+              organizationId,
+              leadId: created.id,
+              assignedUserId: input.assignedToId,
+              scheduledAt: input.nextFollowUpAt,
+              type: 'CALL',
+              /*
+               * DUE from the first instant when the date has already passed.
+               *
+               * The website pipeline measures its SLA from when the enquiry
+               * ARRIVED, so a sweep that ran late converts with a schedule in
+               * the past — and a row left UPCOMING would appear in neither the
+               * due nor the overdue view.
+               */
+              status: initialFollowUpStatus(input.nextFollowUpAt),
+              title: input.followUpTitle ?? 'First contact',
+              createdBy: input.actorId,
+            },
+          });
+        }
       }
 
       // Re-read through findById so the caller always gets the same shape as

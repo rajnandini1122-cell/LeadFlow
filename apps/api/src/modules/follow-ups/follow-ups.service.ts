@@ -12,6 +12,7 @@ import type {
   CancelFollowUpDto,
   CompleteFollowUpDto,
   CreateFollowUpDto,
+  RecordAttemptDto,
   RescheduleFollowUpDto,
 } from './dto/follow-ups.dto';
 
@@ -290,6 +291,119 @@ export class FollowUpsService {
    * that an attempt was missed — which is the single most useful signal a
    * manager has. The chain stays visible instead.
    */
+  /**
+   * Records a FAILED CONTACT ATTEMPT and schedules the retry.
+   *
+   * THE DEFECT THIS FIXES. "No answer" posted a single activity row and
+   * stopped: no retry was scheduled, the pending follow-up was untouched, and
+   * nothing reached the queue. A rep who rang four times and got no answer had
+   * four timeline entries, an overdue follow-up still sitting at its original
+   * date, and no record that anybody had tried.
+   *
+   * WHY THIS IS NOT `complete`. An unanswered call is an attempt, not an
+   * outcome: the work is still owed. Completing the follow-up would mark the
+   * task done and drop it out of the queue — the precise opposite of what a
+   * missed call means. So the attempt is logged, the pending follow-up is
+   * SUPERSEDED by one at the retry time, and the lead keeps its place in the
+   * queue.
+   *
+   * THE SALES STAGE IS NEVER TOUCHED. Not by omission — there is no parameter
+   * for it, so no caller can. A lead at NEW that nobody answered is still at
+   * NEW: "Contacted" means somebody was reached, and letting a failed attempt
+   * set it would overstate the pipeline and corrupt every stage-conversion
+   * figure computed from it.
+   *
+   * Outcome, note and retry time are all ONE request, so the three facts about
+   * one phone call commit together or not at all.
+   */
+  async recordAttempt(
+    leadId: string,
+    dto: RecordAttemptDto,
+    principal: TenantPrincipal,
+  ): Promise<{
+    followUp: FollowUpView | null;
+    nextFollowUpAt: string | null;
+    leadStatus: LeadStatus;
+  }> {
+    const lead = await this.requireVisibleLead(leadId, principal);
+
+    /*
+     * A closed lead owes nobody a call.
+     *
+     * Refused rather than silently reopening it: reopening is a deliberate
+     * decision with its own audit trail, and a quick-action button is not where
+     * a won deal should be able to make it.
+     */
+    if (isTerminal(lead.status as LeadStatus)) {
+      throw AppException.validation(
+        'This lead is closed. Reopen it before logging another attempt.',
+        { leadId: ['lead is won or lost'] },
+      );
+    }
+
+    /*
+     * The attempt goes on the timeline FIRST.
+     *
+     * If the scheduling below fails, the record that somebody tried still
+     * stands — which is the fact the rep most wants kept. The reverse order
+     * would risk a retry appearing with no evidence of why.
+     */
+    await this.leads.recordActivity({
+      leadId,
+      activityType: dto.activityType,
+      description: attemptDescription(dto),
+      performedById: principal.userId,
+    });
+
+    const result = await this.repository.setNextForLead({
+      leadId,
+      scheduledAt: parseWhen(dto.retryAt),
+      // Null when nobody owns the lead: there is no such thing as an
+      // unassigned follow-up, and inventing an assignee would hand this
+      // person's work to whoever happened to click the button.
+      assignedUserId: lead.assignedToId ?? null,
+      ...(dto.type ? { type: dto.type as FollowUpType } : {}),
+      reason: `Retry after ${ATTEMPT_LABELS[dto.activityType] ?? 'a failed attempt'}`,
+      actorId: principal.userId,
+    });
+
+    const followUp = result.followUpId
+      ? await this.repository.findById(result.followUpId)
+      : null;
+
+    return {
+      followUp: followUp ? toView(followUp) : null,
+      nextFollowUpAt: result.nextFollowUpAt.toISOString(),
+      // Returned so the caller can SEE the stage did not move, rather than
+      // taking it on trust.
+      leadStatus: lead.status as LeadStatus,
+    };
+  }
+
+  /**
+   * Moves a lead's next action, from the lead screen rather than a follow-up.
+   *
+   * Used by the lead edit form and by activity logging, both of which used to
+   * write `leads.next_follow_up_at` directly and create no follow-up row. That
+   * is what produced "Next action: a date" beside "Follow-ups: 0 open".
+   */
+  async setNextForLead(
+    leadId: string,
+    scheduledAt: Date,
+    principal: TenantPrincipal,
+    reason?: string,
+  ): Promise<{ followUpId: string | null; nextFollowUpAt: Date }> {
+    const lead = await this.requireVisibleLead(leadId, principal);
+
+    return this.repository.setNextForLead({
+      leadId,
+      scheduledAt,
+      assignedUserId: lead.assignedToId ?? null,
+      ...(reason ? { reason } : {}),
+      actorId: principal.userId,
+    });
+  }
+
   async reschedule(
     id: string,
     dto: RescheduleFollowUpDto,
@@ -428,6 +542,32 @@ export class FollowUpsService {
 
     return requested;
   }
+}
+
+/**
+ * How each attempt type reads in a sentence.
+ *
+ * Only the types that mean "I tried and did not get through" are here; the
+ * DTO's own `@IsIn` is what restricts the input to them.
+ */
+const ATTEMPT_LABELS: Record<string, string> = {
+  CALL_NOT_ANSWERED: 'no answer',
+  CALL_BACK_LATER: 'a call-back request',
+  WHATSAPP_OPENED: 'a WhatsApp message',
+};
+
+/**
+ * The timeline entry for one attempt.
+ *
+ * The rep's own note wins when there is one, because it says more than any
+ * label this code could choose. Without a note the label still records what
+ * happened, so the entry is never just "activity logged".
+ */
+function attemptDescription(dto: { activityType: string; note?: string | undefined }): string {
+  const label = ATTEMPT_LABELS[dto.activityType] ?? 'attempt';
+  const base = `Tried to reach the customer — ${label}`;
+
+  return dto.note ? `${base}: ${dto.note}` : base;
 }
 
 function parseWhen(value: string): Date {

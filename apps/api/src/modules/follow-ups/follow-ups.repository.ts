@@ -7,6 +7,23 @@ import { TenantContextService } from '../../common/tenancy/tenant-context.servic
 export const OPEN_STATUSES: FollowUpStatus[] = ['UPCOMING', 'DUE', 'OVERDUE'];
 
 /**
+ * The status a newly created follow-up starts in.
+ *
+ * A follow-up whose moment has already passed is DUE from the first instant,
+ * not UPCOMING. That happens for real: the website pipeline measures the SLA
+ * from when the ENQUIRY arrived, so a sweep that ran late must produce a row
+ * that is honestly already due rather than one whose clock was quietly
+ * restarted.
+ *
+ * Extracted because it was written inline in one creator and then omitted by
+ * two more — a late-converted enquiry started UPCOMING and appeared in neither
+ * the due nor the overdue view, which is invisible work.
+ */
+export function initialFollowUpStatus(scheduledAt: Date, now = new Date()): FollowUpStatus {
+  return scheduledAt.getTime() <= now.getTime() ? 'DUE' : 'UPCOMING';
+}
+
+/**
  * Follow-up data access.
  *
  * `FollowUp` is registered in TENANT_SCOPED_MODELS, so every read here is
@@ -144,7 +161,7 @@ export class FollowUpsRepository {
         type: input.type,
         title: input.title ?? null,
         notes: input.notes ?? null,
-        status: input.scheduledAt.getTime() <= Date.now() ? 'DUE' : 'UPCOMING',
+        status: initialFollowUpStatus(input.scheduledAt),
         createdBy: input.actorId,
       },
       include: this.include,
@@ -307,6 +324,129 @@ export class FollowUpsRepository {
     });
 
     return next;
+  }
+
+  /**
+   * Sets a lead's next action, keeping the QUEUE and the MIRROR in step.
+   *
+   * THE BUG THIS EXISTS TO END. `leads.next_follow_up_at` is documented as a
+   * denormalised mirror of the earliest OPEN follow-up, and
+   * `syncLeadNextFollowUp` is what maintains it. Four paths wrote that column
+   * directly and created no follow-up row at all — manual lead create, CSV
+   * import, editing the next-action date, and logging an activity with a next
+   * date. Every lead made that way showed "Next action: 20 Nov" beside
+   * "Follow-ups: 0 open", which is the inconsistency this file's own comment on
+   * `create` already warned about.
+   *
+   * ONE TRANSACTION, because the two facts must not be able to disagree: the
+   * open follow-up is replaced (or created) and the mirror is recomputed from
+   * what is actually there, never from what the caller passed.
+   *
+   * Returns null when the lead has NO OWNER. `follow_ups.assigned_user_id` is
+   * NOT NULL with a real foreign key, so there is no such thing as an
+   * unassigned follow-up — and inventing an assignee would silently hand
+   * somebody else's work to whoever imported a file. In that case the mirror is
+   * set on its own and the caller is told, so the UI can say "unassigned"
+   * rather than implying something is missing.
+   */
+  async setNextForLead(input: {
+    leadId: string;
+    scheduledAt: Date;
+    /** Null when the lead is unassigned — see the note above. */
+    assignedUserId: string | null;
+    type?: FollowUpType | undefined;
+    title?: string | undefined;
+    notes?: string | undefined;
+    /** Recorded on whichever open follow-up this displaces. */
+    reason?: string | undefined;
+    actorId: string | null;
+    tx?: PrismaTransaction | undefined;
+  }): Promise<{ followUpId: string | null; nextFollowUpAt: Date }> {
+    const organizationId = this.tenantContext.requireOrganizationId();
+
+    const run = async (tx: PrismaTransaction) => {
+      if (input.assignedUserId === null) {
+        /*
+         * No owner, so no queue row is possible. The mirror still carries the
+         * date, because "this lead needs action by then" is true whether or not
+         * anybody has been given it yet.
+         */
+        await tx.lead.updateMany({
+          where: { id: input.leadId },
+          data: { nextFollowUpAt: input.scheduledAt },
+        });
+
+        return { followUpId: null, nextFollowUpAt: input.scheduledAt };
+      }
+
+      /*
+       * Every open follow-up is superseded, not just the earliest.
+       *
+       * A lead should have one next action. Rescheduling only the earliest
+       * would leave a second, later row open, and the mirror would then point
+       * at a date the user did not choose.
+       */
+      const open = await tx.followUp.findMany({
+        where: { leadId: input.leadId, status: { in: OPEN_STATUSES } },
+        select: { id: true, type: true, title: true },
+        orderBy: { scheduledAt: 'asc' },
+      });
+
+      const created = await tx.followUp.create({
+        data: {
+          organizationId,
+          leadId: input.leadId,
+          assignedUserId: input.assignedUserId,
+          scheduledAt: input.scheduledAt,
+          // The displaced follow-up's type and title carry over unless the
+          // caller names new ones, so rescheduling a "Meeting" does not
+          // silently turn it into a "Call".
+          type: input.type ?? open[0]?.type ?? 'CALL',
+          // A retry set in the past is due immediately, like any other.
+          status: initialFollowUpStatus(input.scheduledAt),
+          ...(input.title ?? open[0]?.title
+            ? { title: input.title ?? (open[0]?.title as string) }
+            : {}),
+          ...(input.notes ? { notes: input.notes } : {}),
+          createdBy: input.actorId,
+        },
+        select: { id: true },
+      });
+
+      if (open.length > 0) {
+        await tx.followUp.updateMany({
+          where: { id: { in: open.map((row) => row.id) } },
+          data: {
+            status: 'CANCELLED',
+            cancelledAt: new Date(),
+            cancelledReason: input.reason ?? 'Rescheduled',
+            // Points at the replacement, so the trail from the missed attempt
+            // to the retry is followable on the record itself.
+            rescheduledToId: created.id,
+          },
+        });
+      }
+
+      // Recomputed from the rows, never from the argument: if anything above
+      // did not land, the mirror says so instead of lying.
+      const earliest = await tx.followUp.findFirst({
+        where: { leadId: input.leadId, status: { in: OPEN_STATUSES } },
+        orderBy: { scheduledAt: 'asc' },
+        select: { scheduledAt: true },
+      });
+
+      await tx.lead.updateMany({
+        where: { id: input.leadId },
+        data: { nextFollowUpAt: earliest?.scheduledAt ?? null },
+      });
+
+      return {
+        followUpId: created.id,
+        nextFollowUpAt: earliest?.scheduledAt ?? input.scheduledAt,
+      };
+    };
+
+    return input.tx ? run(input.tx) : this.prisma.client.$transaction(run);
   }
 
   /** Bucket counts for the dashboard, computed in one round trip. */

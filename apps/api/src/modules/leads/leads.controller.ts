@@ -36,7 +36,7 @@ import { LeadLifecycleService } from './lead-lifecycle.service';
 import { DeactivateLeadDto, ReactivateLeadDto } from './dto/lead-lifecycle.dto';
 import { FollowUpsService } from '../follow-ups/follow-ups.service';
 import { IntakeOperationsService } from '../integrations/intake-processing/intake-operations.service';
-import { CreateFollowUpDto } from '../follow-ups/dto/follow-ups.dto';
+import { CreateFollowUpDto, RecordAttemptDto } from '../follow-ups/dto/follow-ups.dto';
 import { Inject, forwardRef } from '@nestjs/common';
 
 /**
@@ -330,6 +330,42 @@ export class LeadsController {
     @CurrentUser() principal: TenantPrincipal,
   ): Promise<void> {
     await this.mutations.archive(id, principal);
+  }
+
+  /**
+   * "I tried and could not reach them."
+   *
+   * One request for the three facts about one failed call: what happened, the
+   * rep's note, and when to try again. It logs the attempt, SUPERSEDES the
+   * pending follow-up with one at the retry time, and leaves the sales stage
+   * exactly where it was.
+   *
+   * Deliberately NOT the complete endpoint. An unanswered call is an attempt,
+   * not an outcome — the work is still owed, so completing the follow-up would
+   * drop the lead out of the queue, which is the opposite of what a missed call
+   * means.
+   *
+   * `lead.update` rather than a new permission: logging that you rang somebody
+   * is the same weight of action as logging that you spoke to them, and anybody
+   * who may work a lead may record having tried.
+   */
+  @Post(':id/attempts')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSIONS.LEAD_UPDATE)
+  @ApiOperation({
+    summary: 'Log a failed contact attempt and schedule the retry',
+    description:
+      'Records the attempt on the timeline, replaces the pending follow-up ' +
+      'with one at the retry time, and returns the lead status unchanged. ' +
+      'There is no way to move the sales stage from here: a failed attempt is ' +
+      'not contact.',
+  })
+  async recordAttempt(
+    @Param('id', new ParseUUIDPipe({ version: '7' })) id: string,
+    @Body() dto: RecordAttemptDto,
+    @CurrentUser() principal: TenantPrincipal,
+  ) {
+    return this.followUps.recordAttempt(id, dto, principal);
   }
 
   @Get(':id/activities')

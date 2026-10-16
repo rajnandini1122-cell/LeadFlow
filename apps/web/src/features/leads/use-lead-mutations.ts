@@ -188,6 +188,39 @@ export function useReactivateLead(leadId: string) {
   });
 }
 
+/**
+ * "I tried and could not reach them."
+ *
+ * One request for the three facts about one failed call — what happened, the
+ * note, and when to try again — so they commit together. Previously the lead
+ * screen needed three: log the activity, type a note, open the reschedule
+ * dialog. That produced three timeline entries for one call, and a rep who
+ * stopped after the first left the retry unscheduled.
+ *
+ * Deliberately NOT useCompleteFollowUp: an unanswered call is an attempt, not
+ * an outcome, so the work is still owed and the follow-up must stay open.
+ */
+export function useRecordAttempt(leadId: string) {
+  const refresh = useRefreshLeadData();
+
+  return useMutation({
+    mutationFn: (input: {
+      activityType: string;
+      note?: string;
+      retryAt: string;
+      type?: string;
+    }) =>
+      apiPost<{
+        followUp: FollowUp | null;
+        nextFollowUpAt: string | null;
+        leadStatus: LeadStatus;
+      }>(`/leads/${leadId}/attempts`, input),
+    // Every queue the attempt touches: the lead, its timeline, its follow-ups,
+    // the follow-up buckets and the dashboard counts.
+    onSuccess: () => refresh(leadId),
+  });
+}
+
 export function useLogActivity(leadId: string) {
   const refresh = useRefreshLeadData();
 
