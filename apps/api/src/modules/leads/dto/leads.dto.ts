@@ -1,5 +1,15 @@
-import { Type } from 'class-transformer';
-import { IsIn, IsInt, IsOptional, IsString, IsUUID, Max, MaxLength, Min } from 'class-validator';
+import { Transform, Type } from 'class-transformer';
+import {
+  IsBoolean,
+  IsIn,
+  IsInt,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Max,
+  MaxLength,
+  Min,
+} from 'class-validator';
 import { LEAD_LIFECYCLE_FILTERS, LEAD_STATUSES } from '@leadflow/api-types';
 import type { LeadLifecycleFilter, LeadStatus } from '@leadflow/api-types';
 
@@ -11,6 +21,19 @@ export class ListLeadsDto {
   @IsOptional()
   @IsUUID('7')
   assignedToId?: string;
+
+  /**
+   * Only leads nobody owns.
+   *
+   * An unassigned lead cannot have a follow-up row — `assigned_user_id` is NOT
+   * NULL — so it appears in no follow-up queue at all. Without this filter a
+   * manager could find those leads only by scanning the whole list for the
+   * word "Unassigned", which is how they stayed unworked.
+   */
+  @IsOptional()
+  @Transform(({ value }) => (value === 'true' ? true : value === 'false' ? false : value))
+  @IsBoolean()
+  unassigned?: boolean;
 
   /** Narrows the list to one product, for the product drill-down. */
   @IsOptional()

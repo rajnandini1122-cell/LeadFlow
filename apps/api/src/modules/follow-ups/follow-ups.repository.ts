@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { FollowUpStatus, FollowUpType } from '../../generated/prisma/enums';
+import type { ActivityType, FollowUpStatus, FollowUpType } from '../../generated/prisma/enums';
 import { PrismaService, type PrismaTransaction } from '../../common/prisma/prisma.service';
 import { TenantContextService } from '../../common/tenancy/tenant-context.service';
 
@@ -21,6 +21,83 @@ export const OPEN_STATUSES: FollowUpStatus[] = ['UPCOMING', 'DUE', 'OVERDUE'];
  */
 export function initialFollowUpStatus(scheduledAt: Date, now = new Date()): FollowUpStatus {
   return scheduledAt.getTime() <= now.getTime() ? 'DUE' : 'UPCOMING';
+}
+
+/** What a follow-up write needs to know about the lead it holds locked. */
+export interface LockedLead {
+  id: string;
+  status: string;
+  assignedToId: string | null;
+  nextFollowUpAt: Date | null;
+}
+
+/**
+ * Takes the lead's row lock for the rest of the transaction.
+ *
+ * THE RACE THIS CLOSES. Every follow-up write on a lead reads the open rows,
+ * then acts on what it read. Two agents — or one agent and a retried request —
+ * each read the same open follow-up, each created a replacement, and each
+ * cancelled the original. The lead was left with two open follow-ups, and a
+ * late "no answer" could overwrite a COMPLETED row as CANCELLED, erasing the
+ * record that the call happened. Holding the lead's row lock makes the second
+ * writer wait and then read what the first one committed.
+ *
+ * Same idiom as `lockActiveTeam`: a no-op UPDATE through the tenant-scoped
+ * client acquires the row-level lock, because raw `SELECT ... FOR UPDATE`
+ * bypasses tenant scoping and is banned. `updatedAt` is written back with the
+ * value it already has, so nothing a user can see changes.
+ *
+ * Null when the lead is absent, archived or another tenant's.
+ */
+export async function lockLeadForFollowUps(
+  tx: PrismaTransaction,
+  leadId: string,
+): Promise<LockedLead | null> {
+  const lead = await tx.lead.findFirst({
+    where: { id: leadId, deletedAt: null },
+    select: { id: true, updatedAt: true },
+  });
+  if (!lead) return null;
+
+  const locked = await tx.lead.updateMany({
+    where: { id: leadId, deletedAt: null },
+    data: { updatedAt: lead.updatedAt },
+  });
+  if (locked.count === 0) return null;
+
+  // Re-read UNDER the lock: the values above may predate a write that
+  // committed while this transaction was waiting for it.
+  return tx.lead.findFirst({
+    where: { id: leadId },
+    select: { id: true, status: true, assignedToId: true, nextFollowUpAt: true },
+  });
+}
+
+/**
+ * The timeline entry an earlier request with this Idempotency-Key wrote, if any.
+ *
+ * The key lives in that entry's metadata, so the replay check and the original
+ * write are the same row: there is no separate idempotency table to fall out of
+ * step with the timeline. Must be called with the lead locked, which is what
+ * makes check-then-write safe — a concurrent duplicate waits for the lock and
+ * then finds the entry the first request committed.
+ */
+export async function findReplay(
+  tx: PrismaTransaction,
+  input: { leadId: string; activityType: ActivityType; key: string | null | undefined },
+): Promise<Record<string, unknown> | null> {
+  if (!input.key) return null;
+
+  const entry = await tx.leadActivity.findFirst({
+    where: {
+      leadId: input.leadId,
+      activityType: input.activityType,
+      metadata: { path: ['idempotencyKey'], equals: input.key },
+    },
+    select: { metadata: true },
+  });
+
+  return entry ? ((entry.metadata ?? {}) as Record<string, unknown>) : null;
 }
 
 /**
@@ -59,10 +136,78 @@ export class FollowUpsRepository {
     assignedUser: { select: { id: true, fullName: true } },
   };
 
-  async findById(id: string, restrictToUserId?: string) {
-    return this.prisma.client.followUp.findFirst({
+  async findById(id: string, restrictToUserId?: string, tx?: PrismaTransaction) {
+    return (tx ?? this.prisma.client).followUp.findFirst({
       where: { id, ...(restrictToUserId ? { assignedUserId: restrictToUserId } : {}) },
       include: this.include,
+    });
+  }
+
+  /**
+   * Runs `work` in ONE transaction, holding the lead's row lock when there is a
+   * lead.
+   *
+   * What lets a service compose several follow-up writes — close, change the
+   * stage, schedule the next, re-derive the mirror, write the timeline — into a
+   * single commit. They used to be five separate writes: a failure partway left
+   * a completed follow-up with no next action, and the CHECK constraint then
+   * refused the mirror update as a 500 after the completion had already landed.
+   *
+   * `lead` is null for an account-level follow-up (no lead to lock) and when the
+   * lead has gone, which the caller reports as not-found.
+   */
+  async inLeadTransaction<T>(
+    leadId: string | null,
+    work: (tx: PrismaTransaction, lead: LockedLead | null) => Promise<T>,
+  ): Promise<T> {
+    return this.prisma.client.$transaction(async (tx) => {
+      const lead = leadId ? await lockLeadForFollowUps(tx, leadId) : null;
+      return work(tx, lead);
+    });
+  }
+
+  /**
+   * Appends a timeline entry inside the caller's transaction, and keeps
+   * `last_activity_at` honest in the same commit.
+   *
+   * `idempotencyKey` is stored in the entry's metadata. That is what a replay
+   * of the same request is matched against — see `findReplay`.
+   */
+  async recordLeadActivity(
+    tx: PrismaTransaction,
+    input: {
+      leadId: string;
+      activityType: ActivityType;
+      description: string;
+      actorId: string | null;
+      idempotencyKey?: string | null | undefined;
+      /** What a replay needs to answer with the original result. */
+      result?: Record<string, string | null> | undefined;
+    },
+  ): Promise<void> {
+    const organizationId = this.tenantContext.requireOrganizationId();
+    const metadata =
+      input.idempotencyKey || input.result
+        ? {
+            ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
+            ...(input.result ?? {}),
+          }
+        : undefined;
+
+    await tx.leadActivity.create({
+      data: {
+        organizationId,
+        leadId: input.leadId,
+        activityType: input.activityType,
+        description: input.description,
+        performedById: input.actorId,
+        ...(metadata ? { metadata } : {}),
+      },
+    });
+
+    await tx.lead.updateMany({
+      where: { id: input.leadId },
+      data: { lastActivityAt: new Date() },
     });
   }
 
@@ -182,8 +327,9 @@ export class FollowUpsRepository {
     notes?: string | undefined;
     reason?: string | undefined;
     actorId: string;
+    tx?: PrismaTransaction | undefined;
   }): Promise<number> {
-    const result = await this.prisma.client.followUp.updateMany({
+    const result = await (input.tx ?? this.prisma.client).followUp.updateMany({
       where: { id: input.id, status: { in: OPEN_STATUSES } },
       data:
         input.status === 'COMPLETED'
@@ -230,10 +376,33 @@ export class FollowUpsRepository {
     title?: string | undefined;
     reason?: string | undefined;
     actorId: string;
+    /** A replay with the same key returns the first replacement. Lead follow-ups only. */
+    idempotencyKey?: string | null | undefined;
   }) {
     const organizationId = this.tenantContext.requireOrganizationId();
 
     return this.prisma.client.$transaction(async (tx) => {
+      /*
+       * The lead's lock first, so this serialises with every other follow-up
+       * write on the lead — a "no answer" racing this reschedule included.
+       * Without it the two could each leave a replacement open.
+       */
+      if (input.leadId) {
+        await lockLeadForFollowUps(tx, input.leadId);
+
+        const replay = await findReplay(tx, {
+          leadId: input.leadId,
+          activityType: 'FOLLOW_UP_RESCHEDULED',
+          key: input.idempotencyKey,
+        });
+        const replacementId = replay?.['replacementId'];
+        if (typeof replacementId === 'string') {
+          // The same request, again. Answer with what it produced the first
+          // time instead of reporting the original as already cancelled.
+          return tx.followUp.findFirst({ where: { id: replacementId }, include: this.include });
+        }
+      }
+
       const closed = await tx.followUp.updateMany({
         where: { id: input.originalId, status: { in: OPEN_STATUSES } },
         data: {
@@ -275,15 +444,19 @@ export class FollowUpsRepository {
       // follow-up has none. Its history is the follow-up chain itself, which
       // rescheduledToId already records.
       if (input.leadId) {
-        await tx.leadActivity.create({
-          data: {
-            organizationId,
-            leadId: input.leadId,
-            activityType: 'FOLLOW_UP_RESCHEDULED',
-            description: `Rescheduled to ${input.scheduledAt.toISOString()}`,
-            performedById: input.actorId,
-          },
+        await this.recordLeadActivity(tx, {
+          leadId: input.leadId,
+          activityType: 'FOLLOW_UP_RESCHEDULED',
+          description: `Rescheduled to ${input.scheduledAt.toISOString()}`,
+          actorId: input.actorId,
+          idempotencyKey: input.idempotencyKey,
+          result: { replacementId: replacement.id },
         });
+
+        // The mirror moves in the SAME commit. It used to be re-derived after
+        // the transaction, so a failure between the two left the lead screen
+        // promising the old date while the queue held the new one.
+        await this.syncLeadNextFollowUp(input.leadId, tx);
       }
 
       return replacement;
@@ -308,8 +481,18 @@ export class FollowUpsRepository {
    *
    * Returns the new value so callers can tell whether the lead now has none.
    */
-  async syncLeadNextFollowUp(leadId: string): Promise<Date | null> {
-    const earliest = await this.prisma.client.followUp.findFirst({
+  /** The lead's current next-action mirror, as committed. */
+  async leadNextFollowUpAt(leadId: string, tx?: PrismaTransaction): Promise<Date | null> {
+    const lead = await (tx ?? this.prisma.client).lead.findFirst({
+      where: { id: leadId },
+      select: { nextFollowUpAt: true },
+    });
+    return lead?.nextFollowUpAt ?? null;
+  }
+
+  async syncLeadNextFollowUp(leadId: string, tx?: PrismaTransaction): Promise<Date | null> {
+    const client = tx ?? this.prisma.client;
+    const earliest = await client.followUp.findFirst({
       where: { leadId, status: { in: OPEN_STATUSES } },
       orderBy: { scheduledAt: 'asc' },
       select: { scheduledAt: true },
@@ -318,7 +501,7 @@ export class FollowUpsRepository {
     const next = earliest?.scheduledAt ?? null;
 
     // updateMany, not update: it carries the tenant scope.
-    await this.prisma.client.lead.updateMany({
+    await client.lead.updateMany({
       where: { id: leadId },
       data: { nextFollowUpAt: next },
     });
@@ -365,6 +548,10 @@ export class FollowUpsRepository {
     const organizationId = this.tenantContext.requireOrganizationId();
 
     const run = async (tx: PrismaTransaction) => {
+      // Serialise with every other follow-up write on this lead. Re-taking it
+      // inside a caller's transaction that already holds it is a no-op.
+      await lockLeadForFollowUps(tx, input.leadId);
+
       if (input.assignedUserId === null) {
         /*
          * No owner, so no queue row is possible. The mirror still carries the
@@ -415,7 +602,10 @@ export class FollowUpsRepository {
 
       if (open.length > 0) {
         await tx.followUp.updateMany({
-          where: { id: { in: open.map((row) => row.id) } },
+          // Still-open only. Without this predicate a row completed between
+          // the read above and this write was overwritten as CANCELLED, which
+          // erased the record that the call had actually happened.
+          where: { id: { in: open.map((row) => row.id) }, status: { in: OPEN_STATUSES } },
           data: {
             status: 'CANCELLED',
             cancelledAt: new Date(),

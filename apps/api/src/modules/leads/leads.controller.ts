@@ -16,6 +16,7 @@ import { PERMISSIONS, type LeadSourceIntake, type Paginated } from '@leadflow/ap
 import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
+import { IdempotencyKey } from '../../common/web/idempotency-key.decorator';
 import { LeadsService, type LeadSummary } from './leads.service';
 import { ListLeadsDto } from './dto/leads.dto';
 import { CreateLeadDto } from './dto/create-lead.dto';
@@ -364,8 +365,9 @@ export class LeadsController {
     @Param('id', new ParseUUIDPipe({ version: '7' })) id: string,
     @Body() dto: RecordAttemptDto,
     @CurrentUser() principal: TenantPrincipal,
+    @IdempotencyKey() idempotencyKey: string | null,
   ) {
-    return this.followUps.recordAttempt(id, dto, principal);
+    return this.followUps.recordAttempt(id, dto, principal, idempotencyKey);
   }
 
   @Get(':id/activities')
@@ -429,7 +431,8 @@ export class LeadsController {
     @Param('id', new ParseUUIDPipe({ version: '7' })) id: string,
     @Body() dto: CreateFollowUpDto,
     @CurrentUser() principal: TenantPrincipal,
+    @IdempotencyKey() idempotencyKey: string | null,
   ) {
-    return this.followUps.create(id, dto, principal);
+    return this.followUps.create(id, dto, principal, idempotencyKey);
   }
 }

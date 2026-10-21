@@ -270,26 +270,28 @@ export class LeadMutationsService {
       });
     }
 
-    const updated = await this.repository.applyUpdate(id, {
-      assignedToId: dto.assignedToId,
-      assignedById: principal.userId,
-      updatedBy: principal.userId,
-    });
-    if (updated === 0) throw AppException.leadNotFound();
-
-    await this.repository.recordActivity({
+    // Owner, owed work and timeline in one commit — see `reassign` for why the
+    // follow-ups have to move with the lead.
+    const result = await this.repository.reassign({
       leadId: id,
+      previousOwnerId: lead.assignedToId,
+      newOwnerId: dto.assignedToId,
+      actorId: principal.userId,
       activityType: lead.assignedToId ? 'LEAD_REASSIGNED' : 'LEAD_ASSIGNED',
       description: dto.reason ?? 'Lead ownership changed',
-      performedById: principal.userId,
     });
+    if (result.leadsChanged === 0) throw AppException.leadNotFound();
 
     await this.audit.record({
       action: 'lead.assigned',
       entityType: 'lead',
       entityId: id,
       before: { assignedToId: lead.assignedToId },
-      after: { assignedToId: dto.assignedToId },
+      after: {
+        assignedToId: dto.assignedToId,
+        followUpsMoved: result.followUpsMoved,
+        followUpCreated: result.followUpCreated,
+      },
     });
 
     return { id };

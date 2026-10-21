@@ -56,6 +56,7 @@ export class LeadsService {
     const filters = {
       status: dto.status,
       assignedToId: dto.assignedToId,
+      unassigned: dto.unassigned,
       productId: dto.productId,
       accountId: dto.accountId,
       search: dto.search,

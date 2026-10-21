@@ -50,6 +50,8 @@ function creationDescription(source?: string, duplicateOfLeadNumber?: string): s
 export interface LeadListFilters {
   status?: LeadStatus | undefined;
   assignedToId?: string | undefined;
+  /** Only leads with no owner — the ones no follow-up queue can show. */
+  unassigned?: boolean | undefined;
   productId?: string | undefined;
   accountId?: string | undefined;
   search?: string | undefined;
@@ -104,6 +106,11 @@ export class LeadsRepository {
     if (filters.importBatchId) where['importBatchId'] = filters.importBatchId;
     if (filters.status) where['status'] = filters.status;
     if (filters.assignedToId) where['assignedToId'] = filters.assignedToId;
+    // An AND clause rather than `assignedToId = null`, so the owner restriction
+    // below INTERSECTS with it instead of overwriting it. A rep who may see only
+    // their own leads gets an empty list here — never their own leads mislabelled
+    // as unassigned.
+    if (filters.unassigned) where['AND'] = [{ assignedToId: null }];
     if (filters.productId) where['productId'] = filters.productId;
     if (filters.accountId) where['accountId'] = filters.accountId;
     if (filters.restrictToUserId) where['assignedToId'] = filters.restrictToUserId;
@@ -717,10 +724,12 @@ export class LeadsRepository {
     description: string;
     actorId: string;
     cancelReason?: string | undefined;
+    /** Supplied when this is one step of a caller's larger atomic operation. */
+    tx?: PrismaTransaction | undefined;
   }): Promise<{ leadsChanged: number; followUpsCancelled: number }> {
     const organizationId = this.tenantContext.requireOrganizationId();
 
-    return this.prisma.client.$transaction(async (tx) => {
+    const run = async (tx: PrismaTransaction) => {
       const updated = await tx.lead.updateMany({
         where: { id: input.leadId, deletedAt: null },
         data: input.data,
@@ -808,7 +817,9 @@ export class LeadsRepository {
       });
 
       return { leadsChanged: updated.count, followUpsCancelled };
-    });
+    };
+
+    return input.tx ? run(input.tx) : this.prisma.client.$transaction(run);
   }
 
   async applyUpdate(leadId: string, data: Record<string, unknown>): Promise<number> {
@@ -817,6 +828,115 @@ export class LeadsRepository {
       data,
     });
     return result.count;
+  }
+
+  /**
+   * Changes the owner AND moves the owed work with the lead, in one commit.
+   *
+   * THE DEFECT THIS FIXES. Reassignment set `assigned_to` and nothing else, so
+   * the open follow-up kept the previous owner. The new owner's queue never
+   * showed the lead, and the previous owner kept being reminded about a lead
+   * their visibility no longer let them open. An unassigned lead — which can
+   * only carry the date mirror, because a follow-up row needs an owner — stayed
+   * out of every queue for good even after somebody was given it.
+   *
+   * WHAT MOVES. Open follow-ups owed by the PREVIOUS owner move to the new one.
+   * A follow-up a manager scheduled for themselves on this lead stays theirs —
+   * that is a commitment the manager made, not the lead's owner.
+   *
+   * WHAT IS CREATED. When nothing is open afterwards but the lead is live and
+   * carries a next-action date, a follow-up is created for the new owner AT
+   * THAT DATE. No date is invented: it is the one the lead already promised,
+   * finally given a row so it reaches a queue.
+   *
+   * The lead's row is updated first, which takes its row lock — the same lock
+   * every follow-up write holds — so a "no answer" logged mid-reassignment
+   * cannot be handed to the wrong person.
+   */
+  async reassign(input: {
+    leadId: string;
+    previousOwnerId: string | null;
+    newOwnerId: string;
+    actorId: string;
+    activityType: ActivityType;
+    description: string;
+  }): Promise<{ leadsChanged: number; followUpsMoved: number; followUpCreated: boolean }> {
+    const organizationId = this.tenantContext.requireOrganizationId();
+
+    return this.prisma.client.$transaction(async (tx) => {
+      const updated = await tx.lead.updateMany({
+        where: { id: input.leadId, deletedAt: null },
+        data: {
+          assignedToId: input.newOwnerId,
+          assignedById: input.actorId,
+          updatedBy: input.actorId,
+        },
+      });
+      if (updated.count === 0) return { leadsChanged: 0, followUpsMoved: 0, followUpCreated: false };
+
+      const moved = input.previousOwnerId
+        ? await tx.followUp.updateMany({
+            where: {
+              leadId: input.leadId,
+              assignedUserId: input.previousOwnerId,
+              status: { in: ['UPCOMING', 'DUE', 'OVERDUE'] },
+            },
+            data: { assignedUserId: input.newOwnerId },
+          })
+        : { count: 0 };
+
+      const lead = await tx.lead.findFirst({
+        where: { id: input.leadId },
+        select: { status: true, deactivatedAt: true, nextFollowUpAt: true },
+      });
+      const live =
+        lead !== null &&
+        lead.deactivatedAt === null &&
+        lead.status !== 'WON' &&
+        lead.status !== 'LOST';
+
+      let followUpCreated = false;
+      if (live && lead.nextFollowUpAt) {
+        const open = await tx.followUp.count({
+          where: { leadId: input.leadId, status: { in: ['UPCOMING', 'DUE', 'OVERDUE'] } },
+        });
+
+        if (open === 0) {
+          await tx.followUp.create({
+            data: {
+              organizationId,
+              leadId: input.leadId,
+              assignedUserId: input.newOwnerId,
+              scheduledAt: lead.nextFollowUpAt,
+              type: 'CALL',
+              status: initialFollowUpStatus(lead.nextFollowUpAt),
+              title: 'First contact',
+              createdBy: input.actorId,
+            },
+          });
+          followUpCreated = true;
+        }
+      }
+
+      const description =
+        moved.count > 0
+          ? `${input.description} — ${moved.count} open follow-${moved.count === 1 ? 'up' : 'ups'} handed over`
+          : followUpCreated
+            ? `${input.description} — next action added to the new owner's queue`
+            : input.description;
+
+      await tx.leadActivity.create({
+        data: {
+          organizationId,
+          leadId: input.leadId,
+          activityType: input.activityType,
+          description,
+          performedById: input.actorId,
+        },
+      });
+
+      return { leadsChanged: updated.count, followUpsMoved: moved.count, followUpCreated };
+    });
   }
 
   /** Appends one timeline entry. The timeline is append-only by design. */
@@ -854,6 +974,7 @@ export class LeadsRepository {
     lostReason?: string | undefined;
     wonValue?: number | undefined;
     actorId: string;
+    tx?: PrismaTransaction | undefined;
   }): Promise<void> {
     const effects = sideEffectsFor(input.status, {
       lostReason: input.lostReason,
@@ -885,6 +1006,7 @@ export class LeadsRepository {
           : `Status changed to ${input.status}`,
       actorId: input.actorId,
       cancelReason: `Lead marked ${input.status}`,
+      tx: input.tx,
     });
   }
 
