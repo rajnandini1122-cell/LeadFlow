@@ -154,6 +154,8 @@ describe('logging a failed attempt', () => {
           note: 'Rang twice, voicemail',
           retryAt: expect.any(String) as unknown,
         }),
+        // One Idempotency-Key per dialog opening, so a double click is ONE attempt.
+        { headers: { 'Idempotency-Key': expect.stringMatching(/^[A-Za-z0-9_-]{8,100}$/) as unknown } },
       ),
     );
     expect(apiPost).toHaveBeenCalledTimes(1);

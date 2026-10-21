@@ -21,19 +21,25 @@ import {
   useUpdateLead,
   type FollowUp,
 } from './use-lead-mutations';
+import { zonedDefault, zonedFromNow, zonedInputToIso, toZonedInput } from '../../lib/zoned-input';
+import { newIdempotencyKey } from '../../lib/idempotency';
 
 const FOLLOW_UP_TYPES = ['CALL', 'WHATSAPP', 'EMAIL', 'MEETING', 'OTHER'];
 
-/** Local datetime string for `datetime-local`, offset-corrected. */
+/**
+ * `datetime-local` value for an instant, in the ORGANIZATION's timezone.
+ *
+ * It used the browser's offset, while every timestamp on screen is shown in the
+ * organization's — so a device set to another zone typed one time and saved
+ * another. See lib/zoned-input.ts.
+ */
 export function toLocalInput(date: Date): string {
-  const offset = date.getTimezoneOffset() * 60_000;
-  return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+  return toZonedInput(date);
 }
 
+/** `days` from today at 11:00, on the organization's calendar. */
 export function defaultNextFollowUp(days = 3): string {
-  const date = new Date(Date.now() + days * 86_400_000);
-  date.setHours(11, 0, 0, 0);
-  return toLocalInput(date);
+  return zonedDefault(days);
 }
 
 /**
@@ -347,7 +353,7 @@ export function ChangeStatusDialog({
         status,
         ...(status === 'LOST' ? { lostReason } : {}),
         ...(status === 'WON' && wonValue ? { wonValue: Number(wonValue) } : {}),
-        ...(needsFollowUp ? { nextFollowUpAt: new Date(nextFollowUpAt).toISOString() } : {}),
+        ...(needsFollowUp ? { nextFollowUpAt: zonedInputToIso(nextFollowUpAt) } : {}),
       },
       { onSuccess: onClose },
     );
@@ -494,12 +500,14 @@ export function ScheduleFollowUpDialog({
   const [scheduledAt, setScheduledAt] = useState(defaultNextFollowUp());
   const [type, setType] = useState('CALL');
   const [title, setTitle] = useState('');
+  const [idempotencyKey, setIdempotencyKey] = useState(newIdempotencyKey);
 
   useEffect(() => {
     if (!open) return;
     setScheduledAt(defaultNextFollowUp());
     setType('CALL');
     setTitle('');
+    setIdempotencyKey(newIdempotencyKey());
     create.reset();
   }, [open]);
 
@@ -509,9 +517,10 @@ export function ScheduleFollowUpDialog({
     event.preventDefault();
     create.mutate(
       {
-        scheduledAt: new Date(scheduledAt).toISOString(),
+        scheduledAt: zonedInputToIso(scheduledAt),
         type,
         ...(title ? { title } : {}),
+        idempotencyKey,
       },
       { onSuccess: onClose },
     );
@@ -579,9 +588,11 @@ export function CompleteFollowUpDialog({
   const [nextFollowUpAt, setNextFollowUpAt] = useState(defaultNextFollowUp());
   const [lostReason, setLostReason] = useState('');
   const [wonValue, setWonValue] = useState('');
+  const [idempotencyKey, setIdempotencyKey] = useState(newIdempotencyKey);
 
   useEffect(() => {
     if (!open) return;
+    setIdempotencyKey(newIdempotencyKey());
     setOutcome(OUTCOMES[0] as string);
     setNotes('');
     setNext('schedule');
@@ -600,10 +611,11 @@ export function CompleteFollowUpDialog({
       {
         id: followUp.id,
         leadId: followUp.leadId,
+        idempotencyKey,
         outcome,
         ...(notes ? { notes } : {}),
         ...(next === 'schedule'
-          ? { nextFollowUpAt: new Date(nextFollowUpAt).toISOString() }
+          ? { nextFollowUpAt: zonedInputToIso(nextFollowUpAt) }
           : next === 'won'
             ? { leadStatus: 'WON' as LeadStatus, ...(wonValue ? { wonValue: Number(wonValue) } : {}) }
             : { leadStatus: 'LOST' as LeadStatus, lostReason }),
@@ -696,11 +708,13 @@ export function RescheduleFollowUpDialog({
   const reschedule = useRescheduleFollowUp();
   const [scheduledAt, setScheduledAt] = useState(defaultNextFollowUp(1));
   const [reason, setReason] = useState('');
+  const [idempotencyKey, setIdempotencyKey] = useState(newIdempotencyKey);
 
   useEffect(() => {
     if (!open) return;
     setScheduledAt(defaultNextFollowUp(1));
     setReason('');
+    setIdempotencyKey(newIdempotencyKey());
     reschedule.reset();
   }, [open, followUp]);
 
@@ -712,7 +726,8 @@ export function RescheduleFollowUpDialog({
       {
         id: followUp.id,
         leadId: followUp.leadId,
-        scheduledAt: new Date(scheduledAt).toISOString(),
+        idempotencyKey,
+        scheduledAt: zonedInputToIso(scheduledAt),
         ...(reason ? { reason } : {}),
       },
       { onSuccess: onClose },
@@ -725,6 +740,19 @@ export function RescheduleFollowUpDialog({
         <Field label="New date and time" htmlFor="re-when" required>
           <input id="re-when" type="datetime-local" value={scheduledAt} required onChange={(e) => setScheduledAt(e.target.value)} className={inputClass} />
         </Field>
+
+        <div className="flex flex-wrap gap-2">
+          {RETRY_PRESETS.map((preset) => (
+            <button
+              key={preset.label}
+              type="button"
+              onClick={() => setScheduledAt(zonedFromNow(preset.hours))}
+              className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+            >
+              {preset.label}
+            </button>
+          ))}
+        </div>
 
         <Field label="Reason" htmlFor="re-reason" hint="The original stays on the timeline, so the missed attempt is visible.">
           <input id="re-reason" value={reason} onChange={(e) => setReason(e.target.value)} className={inputClass} />
@@ -916,7 +944,7 @@ export function ReactivateLeadDialog({
     event.preventDefault();
     reactivate.mutate(
       {
-        ...(closed ? {} : { nextFollowUpAt: new Date(nextFollowUpAt).toISOString() }),
+        ...(closed ? {} : { nextFollowUpAt: zonedInputToIso(nextFollowUpAt) }),
         ...(reason.trim() ? { reason: reason.trim() } : {}),
       },
       { onSuccess: onClose },
@@ -1026,7 +1054,12 @@ export function RecordAttemptDialog({
   onClose,
   initialAttempt,
 }: {
-  lead: LeadDetail;
+  /**
+   * Only what the dialog uses, so the Follow-ups queue can open it from a row
+   * without fetching the whole lead. Pass a STABLE object: it is an effect
+   * dependency, and a fresh one per render would reset the form mid-typing.
+   */
+  lead: Pick<LeadDetail, 'id' | 'status'>;
   open: boolean;
   onClose: () => void;
   /** Which attempt the button that opened this dialog meant. */
@@ -1039,9 +1072,11 @@ export function RecordAttemptDialog({
   );
   const [note, setNote] = useState('');
   const [retryAt, setRetryAt] = useState(defaultNextFollowUp(1));
+  const [idempotencyKey, setIdempotencyKey] = useState(newIdempotencyKey);
 
   useEffect(() => {
     if (!open) return;
+    setIdempotencyKey(newIdempotencyKey());
     setActivityType(initialAttempt ?? ATTEMPTS[0].value);
     setNote('');
     setRetryAt(defaultNextFollowUp(1));
@@ -1056,7 +1091,8 @@ export function RecordAttemptDialog({
       {
         activityType,
         ...(note.trim() ? { note: note.trim() } : {}),
-        retryAt: new Date(retryAt).toISOString(),
+        retryAt: zonedInputToIso(retryAt),
+        idempotencyKey,
       },
       { onSuccess: onClose },
     );
@@ -1117,7 +1153,7 @@ export function RecordAttemptDialog({
             <button
               key={preset.label}
               type="button"
-              onClick={() => setRetryAt(toLocalInput(new Date(Date.now() + preset.hours * 3_600_000)))}
+              onClick={() => setRetryAt(zonedFromNow(preset.hours))}
               className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
             >
               {preset.label}

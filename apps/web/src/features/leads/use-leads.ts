@@ -63,6 +63,8 @@ export interface LeadFilters {
   status?: LeadStatus | undefined;
   search?: string | undefined;
   assignedToId?: string | undefined;
+  /** Only leads nobody owns — the ones no follow-up queue can show. */
+  unassigned?: boolean | undefined;
   /** Every lead from one CSV import, for correcting a bad run. */
   importBatchId?: string | undefined;
   /** Omitted means ACTIVE, which is what keeps deactivated leads out. */
@@ -86,6 +88,7 @@ export function useLeadsPage(
   if (filters.status) params['status'] = filters.status;
   if (filters.search) params['search'] = filters.search;
   if (filters.assignedToId) params['assignedToId'] = filters.assignedToId;
+  if (filters.unassigned) params['unassigned'] = 'true';
   if (filters.importBatchId) params['importBatchId'] = filters.importBatchId;
   if (filters.lifecycle) params['lifecycle'] = filters.lifecycle;
 

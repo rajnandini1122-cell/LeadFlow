@@ -43,7 +43,13 @@ export function LeadsPage(): React.JSX.Element {
   const [status, setStatus] = useState<LeadStatus | 'ALL'>('ALL');
   const [dialogOpen, setDialogOpen] = useState(false);
   const [lifecycle, setLifecycle] = useState<LeadLifecycleFilter>('ACTIVE');
+  /*
+   * Leads nobody owns. They cannot carry a follow-up row, so they appear in no
+   * follow-up queue — this is the one place a manager can find them to assign.
+   */
+  const [unassignedOnly, setUnassignedOnly] = useState(false);
   const { user, can } = useAuth();
+  const canSeeTeam = can('lead.view.all');
 
   /*
    * The import batch comes from the URL, not from a control on this page.
@@ -66,6 +72,7 @@ export function LeadsPage(): React.JSX.Element {
     {
       search: search || undefined,
       status: status === 'ALL' ? undefined : status,
+      ...(canSeeTeam && unassignedOnly ? { unassigned: true } : {}),
       /*
        * Filtering by batch shows ALL of it, deactivated rows included.
        *
@@ -207,6 +214,16 @@ export function LeadsPage(): React.JSX.Element {
               active={lifecycle === 'ALL'}
               onClick={() => setLifecycle('ALL')}
             />
+            {canSeeTeam && (
+              <>
+                <span className="mx-1 h-4 w-px bg-slate-200" aria-hidden />
+                <FilterChip
+                  label="Unassigned only"
+                  active={unassignedOnly}
+                  onClick={() => setUnassignedOnly((value) => !value)}
+                />
+              </>
+            )}
           </div>
         )}
 

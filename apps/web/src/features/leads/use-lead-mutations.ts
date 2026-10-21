@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query';
 import type { LeadPriority, LeadStatus, Paginated } from '@leadflow/api-types';
 import { api, apiGet, apiPatch, apiPost } from '../../lib/api-client';
+import { idempotencyHeaders } from '../../lib/idempotency';
 import type { LeadActivity, LeadSummary } from './use-leads';
 
 export interface FollowUp {
@@ -204,17 +205,22 @@ export function useRecordAttempt(leadId: string) {
   const refresh = useRefreshLeadData();
 
   return useMutation({
-    mutationFn: (input: {
+    mutationFn: ({
+      idempotencyKey,
+      ...input
+    }: {
       activityType: string;
       note?: string;
       retryAt: string;
       type?: string;
+      /** One per dialog opening, so a double click is ONE attempt. */
+      idempotencyKey?: string;
     }) =>
       apiPost<{
         followUp: FollowUp | null;
         nextFollowUpAt: string | null;
         leadStatus: LeadStatus;
-      }>(`/leads/${leadId}/attempts`, input),
+      }>(`/leads/${leadId}/attempts`, input, idempotencyHeaders(idempotencyKey)),
     // Every queue the attempt touches: the lead, its timeline, its follow-ups,
     // the follow-up buckets and the dashboard counts.
     onSuccess: () => refresh(leadId),
@@ -247,13 +253,17 @@ export function useCreateFollowUp(leadId: string) {
   const refresh = useRefreshLeadData();
 
   return useMutation({
-    mutationFn: (input: {
+    mutationFn: ({
+      idempotencyKey,
+      ...input
+    }: {
       scheduledAt: string;
       type?: string;
       title?: string;
       notes?: string;
       assignedUserId?: string;
-    }) => apiPost<FollowUp>(`/leads/${leadId}/follow-ups`, input),
+      idempotencyKey?: string;
+    }) => apiPost<FollowUp>(`/leads/${leadId}/follow-ups`, input, idempotencyHeaders(idempotencyKey)),
     onSuccess: () => refresh(leadId),
   });
 }
@@ -271,10 +281,16 @@ export function useCompleteFollowUp() {
   const refresh = useRefreshLeadData();
 
   return useMutation({
-    mutationFn: ({ id, ...input }: CompleteFollowUpInput & { id: string; leadId?: string }) =>
+    mutationFn: ({
+      id,
+      idempotencyKey,
+      leadId: _leadId,
+      ...input
+    }: CompleteFollowUpInput & { id: string; leadId?: string; idempotencyKey?: string }) =>
       apiPost<{ followUp: FollowUp; nextFollowUpAt: string | null }>(
         `/follow-ups/${id}/complete`,
         input,
+        idempotencyHeaders(idempotencyKey),
       ),
     onSuccess: (_result, variables) => refresh(variables.leadId),
   });
@@ -286,6 +302,8 @@ export function useRescheduleFollowUp() {
   return useMutation({
     mutationFn: ({
       id,
+      idempotencyKey,
+      leadId: _leadId,
       ...input
     }: {
       id: string;
@@ -293,7 +311,8 @@ export function useRescheduleFollowUp() {
       scheduledAt: string;
       type?: string;
       reason?: string;
-    }) => apiPost<FollowUp>(`/follow-ups/${id}/reschedule`, input),
+      idempotencyKey?: string;
+    }) => apiPost<FollowUp>(`/follow-ups/${id}/reschedule`, input, idempotencyHeaders(idempotencyKey)),
     onSuccess: (_result, variables) => refresh(variables.leadId),
   });
 }

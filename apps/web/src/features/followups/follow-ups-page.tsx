@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import type { LeadStatus } from '@leadflow/api-types';
 import { useSearchParams } from 'react-router-dom';
 import { Link } from 'react-router-dom';
 import {
@@ -27,8 +28,23 @@ import {
 } from '../leads/use-lead-mutations';
 import {
   CompleteFollowUpDialog,
+  RecordAttemptDialog,
   RescheduleFollowUpDialog,
 } from '../leads/lead-dialogs';
+
+/** What the queue asks for per bucket. A full page means there may be more. */
+const BUCKET_LIMIT = 200;
+
+/**
+ * The count shown on a tab.
+ *
+ * The tab counted the rows it had fetched, so a bucket of 340 overdue
+ * follow-ups read "200" — understating exactly the number a manager watches.
+ * A full page is shown as "200+" rather than as a total it does not have.
+ */
+function bucketCount(rows: number): string {
+  return rows >= BUCKET_LIMIT ? `${BUCKET_LIMIT}+` : String(rows);
+}
 
 /**
  * Follow-up centre.
@@ -57,6 +73,14 @@ export function FollowUpsPage(): React.JSX.Element {
 
   const [completing, setCompleting] = useState<FollowUp | null>(null);
   const [rescheduling, setRescheduling] = useState<FollowUp | null>(null);
+  /*
+   * "No answer" straight from the queue.
+   *
+   * The queue is where an agent works through calls, but logging a missed one
+   * meant opening the lead, finding the button and coming back. Held as one
+   * object so the dialog receives a stable reference.
+   */
+  const [attempting, setAttempting] = useState<{ id: string; status: LeadStatus } | null>(null);
 
   const overdue = useFollowUps('overdue');
   const today = useFollowUps('today');
@@ -82,7 +106,7 @@ export function FollowUpsPage(): React.JSX.Element {
           overdue.isPending
             ? 'Loading…'
             : overdueCount > 0
-              ? `${overdueCount} overdue — these are the leads at risk of being forgotten`
+              ? `${bucketCount(overdueCount)} overdue — these are the leads at risk of being forgotten`
               : 'Nothing overdue. Every active lead has a future follow-up.'
         }
       />
@@ -111,7 +135,7 @@ export function FollowUpsPage(): React.JSX.Element {
                     : 'bg-slate-100 text-slate-500'
               }`}
             >
-              {entry.query.isPending ? '…' : (entry.query.data?.length ?? 0)}
+              {entry.query.isPending ? '…' : bucketCount(entry.query.data?.length ?? 0)}
             </span>
           </button>
         ))}
@@ -149,8 +173,12 @@ export function FollowUpsPage(): React.JSX.Element {
                 showActions={active.key !== 'completed'}
                 canComplete={can('followup.complete')}
                 canReschedule={can('followup.create')}
+                canLogAttempt={can('lead.update')}
                 onComplete={() => setCompleting(followUp)}
                 onReschedule={() => setRescheduling(followUp)}
+                onNoAnswer={() =>
+                  setAttempting({ id: followUp.leadId, status: followUp.leadStatus as LeadStatus })
+                }
               />
             ))}
           </ul>
@@ -167,6 +195,14 @@ export function FollowUpsPage(): React.JSX.Element {
         open={rescheduling !== null}
         onClose={() => setRescheduling(null)}
       />
+      {attempting && (
+        <RecordAttemptDialog
+          lead={attempting}
+          open
+          initialAttempt="CALL_NOT_ANSWERED"
+          onClose={() => setAttempting(null)}
+        />
+      )}
     </>
   );
 }
@@ -176,15 +212,19 @@ function FollowUpRow({
   showActions,
   canComplete,
   canReschedule,
+  canLogAttempt,
   onComplete,
   onReschedule,
+  onNoAnswer,
 }: {
   followUp: FollowUp;
   showActions: boolean;
   canComplete: boolean;
   canReschedule: boolean;
+  canLogAttempt: boolean;
   onComplete: () => void;
   onReschedule: () => void;
+  onNoAnswer: () => void;
 }): React.JSX.Element {
   const tel = telHref(followUp.mobile);
   const whatsapp = whatsappHref(followUp.mobile);
@@ -243,6 +283,16 @@ function FollowUpRow({
           >
             WhatsApp
           </a>
+          {canLogAttempt && followUp.leadId && (
+            <button
+              type="button"
+              onClick={onNoAnswer}
+              aria-label={`No answer from ${followUp.leadName} — log the attempt and set a retry`}
+              className="rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-xs font-medium text-amber-800 transition hover:bg-amber-100"
+            >
+              No answer
+            </button>
+          )}
           {canComplete && (
             <button
               type="button"

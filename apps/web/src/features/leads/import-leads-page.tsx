@@ -15,6 +15,7 @@ import {
 import { ApiError, apiGet, apiPost } from '../../lib/api-client';
 import { Card, CardHeader, ErrorNotice, PageHeader } from '../../components/ui';
 import { defaultNextFollowUp, Field, inputClass } from './lead-dialogs';
+import { zonedInputToIso } from '../../lib/zoned-input';
 
 /*
  * The field list, its labels and its grouping come from @leadflow/api-types.
@@ -138,7 +139,7 @@ export function ImportLeadsPage(): React.JSX.Element {
       csv,
       fileName,
       mapping: cleanMapping(mapping),
-      defaultNextFollowUpAt: new Date(followUp).toISOString(),
+      defaultNextFollowUpAt: zonedInputToIso(followUp),
       ...(assignedToId ? { assignedToId } : {}),
       duplicateMode,
     });

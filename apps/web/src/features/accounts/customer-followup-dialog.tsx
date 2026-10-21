@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { ApiError } from '../../lib/api-client';
 import { useCreateAccountFollowUp } from './use-retention';
+import { zonedDefault, zonedInputToIso } from '../../lib/zoned-input';
 
 /**
  * Scheduling an action on the CUSTOMER, with no lead involved.
@@ -34,7 +35,7 @@ export function CustomerFollowUpDialog({
     create.mutate(
       {
         accountId,
-        scheduledAt: new Date(scheduledAt).toISOString(),
+        scheduledAt: zonedInputToIso(scheduledAt),
         type,
         ...(title ? { title } : {}),
         ...(notes ? { notes } : {}),
@@ -134,11 +135,6 @@ export function CustomerFollowUpDialog({
 }
 
 function defaultWhen(): string {
-  const date = new Date(Date.now() + 24 * 60 * 60 * 1000);
-  date.setHours(10, 0, 0, 0);
-
-  const pad = (value: number): string => String(value).padStart(2, '0');
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(
-    date.getHours(),
-  )}:${pad(date.getMinutes())}`;
+  // Tomorrow 10:00 for the organization, not for the device's timezone.
+  return zonedDefault(1, 10);
 }
