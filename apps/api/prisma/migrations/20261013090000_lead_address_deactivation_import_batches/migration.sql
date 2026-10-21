@@ -10,6 +10,26 @@
 -- THIS MIGRATION CANNOT FAIL ON EXISTING DATA. Unlike
 -- 20261002090000_lead_email_duplicate_guard, nothing here narrows a constraint,
 -- so there is no preflight to run and no data condition that blocks it.
+--
+-- ONE TRANSACTION, EXPLICITLY. `prisma migrate deploy` does NOT wrap a
+-- migration file in a transaction — verified: a failing second statement left
+-- the first one applied. This file DROPS and RE-CREATES the two duplicate-lead
+-- unique indexes, so an interruption between those statements (a lock timeout,
+-- a dropped connection, a restarted runner) would leave production with NO
+-- duplicate protection and the migration marked failed. Wrapped, it applies
+-- completely or not at all.
+--
+-- The cost is that every lock is held until COMMIT. Measured on PostgreSQL 17
+-- with 200,000 leads (123 MB): 2.2 s with `leads` locked for reads and writes.
+-- `lock_timeout` bounds the WAIT for that lock, so a long-running query cannot
+-- make this migration queue every other query on `leads` behind it; it fails
+-- cleanly instead and can simply be re-run (after `prisma migrate resolve
+-- --rolled-back 20261013090000_lead_address_deactivation_import_batches`).
+--
+-- Not yet applied in production at the time of this change (2026-10-21).
+
+BEGIN;
+SET LOCAL lock_timeout = '5s';
 
 -- =============================================================================
 -- 1. A REAL ADDRESS ON A LEAD
@@ -298,3 +318,5 @@ CREATE TABLE "lead_import_mapping_templates" (
     CONSTRAINT "lead_import_mapping_templates_org_name_key"
         UNIQUE ("organization_id", "name")
 );
+
+COMMIT;
