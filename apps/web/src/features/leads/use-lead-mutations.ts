@@ -4,15 +4,27 @@ import { api, apiGet, apiPatch, apiPost } from '../../lib/api-client';
 import { idempotencyHeaders } from '../../lib/idempotency';
 import type { LeadActivity, LeadSummary } from './use-leads';
 
+/**
+ * One follow-up, as the API returns it.
+ *
+ * A follow-up hangs off a LEAD or a CUSTOMER ACCOUNT, never both. The lead
+ * fields are null for an account follow-up — the API says so explicitly — but
+ * this type used to declare them always present, so the queue rendered a
+ * customer follow-up as a link to `/leads/null` with no name. They are typed
+ * as the API sends them now, so the compiler makes every screen handle both.
+ */
 export interface FollowUp {
   id: string;
-  leadId: string;
-  leadNumber: string;
-  leadName: string;
+  leadId: string | null;
+  leadNumber: string | null;
+  leadName: string | null;
+  /** The customer, for a follow-up owed on the relationship rather than a deal. */
+  accountId: string | null;
+  accountName: string | null;
   companyName: string | null;
   mobile: string | null;
-  leadStatus: string;
-  leadPriority: string;
+  leadStatus: string | null;
+  leadPriority: string | null;
   estimatedValue: string | null;
   scheduledAt: string;
   type: string;

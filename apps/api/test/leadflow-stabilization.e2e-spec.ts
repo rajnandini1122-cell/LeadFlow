@@ -446,6 +446,167 @@ describe('LeadFlow stabilization', () => {
     });
   });
 
+  // ===========================================================================
+  // Customer (account) follow-ups — no lead, so no lead timeline to hold a key
+  // ===========================================================================
+
+  describe('customer follow-ups, submitted twice', () => {
+    /** A follow-up owed on a customer rather than on any lead. */
+    const accountFollowUp = async (): Promise<{ accountId: string; followUpId: string }> => {
+      const account = await ctx
+        .http()
+        .post('/api/v1/accounts')
+        .set(owner())
+        .send({ name: `Stabilization Co ${randomUUID().slice(0, 8)}` })
+        .expect(201);
+      const accountId = account.body.data.account.id as string;
+
+      const followUp = await ctx
+        .http()
+        .post(`/api/v1/accounts/${accountId}/follow-ups`)
+        .set(owner())
+        .send({ scheduledAt: inDays(2), type: 'CALL' })
+        .expect(201);
+
+      return { accountId, followUpId: followUp.body.data.id as string };
+    };
+
+    const auditFor = async (followUpId: string, action: string) =>
+      asSystem('e2e read audit', () =>
+        prisma().auditLog.findMany({ where: { entityId: followUpId, action } }),
+      );
+
+    const openForAccount = async (accountId: string) =>
+      asSystem('e2e read account follow-ups', () =>
+        prisma().followUp.findMany({
+          where: { accountId, status: { in: ['UPCOMING', 'DUE', 'OVERDUE'] } },
+          select: { id: true },
+        }),
+      );
+
+    it('answers a retried completion with the first result instead of 409', async () => {
+      const { accountId, followUpId } = await accountFollowUp();
+      const key = randomUUID();
+      const body = { outcome: 'Interested', nextFollowUpAt: inDays(30) };
+
+      const first = await ctx
+        .http()
+        .post(`/api/v1/follow-ups/${followUpId}/complete`)
+        .set({ ...owner(), 'Idempotency-Key': key })
+        .send(body)
+        .expect(200);
+      const second = await ctx
+        .http()
+        .post(`/api/v1/follow-ups/${followUpId}/complete`)
+        .set({ ...owner(), 'Idempotency-Key': key })
+        .send(body)
+        .expect(200);
+
+      expect(second.body.data.followUp.id).toBe(first.body.data.followUp.id);
+      expect(second.body.data.followUp.status).toBe('COMPLETED');
+      // ONE next action on the customer, not two.
+      expect(await openForAccount(accountId)).toHaveLength(1);
+      // And the action is on record, attributed, once.
+      const audit = await auditFor(followUpId, 'account.follow_up_completed');
+      expect(audit).toHaveLength(1);
+      expect(audit[0]?.actorUserId).toBe(ctx.orgA.owner.id);
+    });
+
+    it('can finish a customer follow-up with nothing scheduled after it', async () => {
+      const { accountId, followUpId } = await accountFollowUp();
+
+      // The lead rule does not apply: there is no pipeline behind a customer
+      // follow-up, so "done" is a legitimate outcome.
+      await ctx
+        .http()
+        .post(`/api/v1/follow-ups/${followUpId}/complete`)
+        .set({ ...owner(), 'Idempotency-Key': randomUUID() })
+        .send({ outcome: 'Order confirmed' })
+        .expect(200);
+
+      expect(await openForAccount(accountId)).toHaveLength(0);
+    });
+
+    it('still answers 409 to a DIFFERENT completion of a finished one', async () => {
+      const { followUpId } = await accountFollowUp();
+
+      await ctx
+        .http()
+        .post(`/api/v1/follow-ups/${followUpId}/complete`)
+        .set({ ...owner(), 'Idempotency-Key': randomUUID() })
+        .send({ outcome: 'Interested' })
+        .expect(200);
+
+      await ctx
+        .http()
+        .post(`/api/v1/follow-ups/${followUpId}/complete`)
+        .set({ ...owner(), 'Idempotency-Key': randomUUID() })
+        .send({ outcome: 'Interested' })
+        .expect(409);
+    });
+
+    it('answers a retried reschedule with the same replacement', async () => {
+      const { accountId, followUpId } = await accountFollowUp();
+      const key = randomUUID();
+      const body = { scheduledAt: inDays(5) };
+
+      const first = await ctx
+        .http()
+        .post(`/api/v1/follow-ups/${followUpId}/reschedule`)
+        .set({ ...owner(), 'Idempotency-Key': key })
+        .send(body)
+        .expect(200);
+      const second = await ctx
+        .http()
+        .post(`/api/v1/follow-ups/${followUpId}/reschedule`)
+        .set({ ...owner(), 'Idempotency-Key': key })
+        .send(body)
+        .expect(200);
+
+      expect(second.body.data.id).toBe(first.body.data.id);
+      expect(await openForAccount(accountId)).toHaveLength(1);
+      expect(await auditFor(followUpId, 'account.follow_up_rescheduled')).toHaveLength(1);
+    });
+
+    it('keeps another organization out of the replay lookup', async () => {
+      const { followUpId } = await accountFollowUp();
+      const key = randomUUID();
+
+      await ctx
+        .http()
+        .post(`/api/v1/follow-ups/${followUpId}/complete`)
+        .set({ ...owner(), 'Idempotency-Key': key })
+        .send({ outcome: 'Interested' })
+        .expect(200);
+
+      // Same key, another tenant: the follow-up is not theirs, so 404 — never
+      // a replay of org A's result.
+      await ctx
+        .http()
+        .post(`/api/v1/follow-ups/${followUpId}/complete`)
+        .set({ ...auth(ctx.orgB.owner.accessToken), 'Idempotency-Key': key })
+        .send({ outcome: 'Interested' })
+        .expect(404);
+    });
+
+    it('lists customer follow-ups with their customer, not as leads', async () => {
+      const { accountId, followUpId } = await accountFollowUp();
+
+      const upcoming = await ctx
+        .http()
+        .get('/api/v1/follow-ups?bucket=upcoming&limit=200')
+        .set(owner())
+        .expect(200);
+      const row = (upcoming.body.data as { id: string; leadId: string | null; accountId: string | null }[]).find(
+        (r) => r.id === followUpId,
+      );
+
+      // The web queue builds its link from these two fields.
+      expect(row?.leadId).toBeNull();
+      expect(row?.accountId).toBe(accountId);
+    });
+  });
+
   describe('Schedule follow-up, submitted twice', () => {
     it('creates ONE row for one Idempotency-Key', async () => {
       const leadId = await createLead();

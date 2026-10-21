@@ -584,7 +584,13 @@ export function CompleteFollowUpDialog({
 
   const [outcome, setOutcome] = useState(OUTCOMES[0] as string);
   const [notes, setNotes] = useState('');
-  const [next, setNext] = useState<'schedule' | 'won' | 'lost'>('schedule');
+  /*
+   * 'done' exists only for a CUSTOMER follow-up. The "no lead left behind" rule
+   * requires an open LEAD to get a next action or be closed; a follow-up owed on
+   * a customer has no pipeline behind it, and the API accepts finishing it
+   * outright. Won and lost are lead outcomes, refused for a customer follow-up.
+   */
+  const [next, setNext] = useState<'schedule' | 'won' | 'lost' | 'done'>('schedule');
   const [nextFollowUpAt, setNextFollowUpAt] = useState(defaultNextFollowUp());
   const [lostReason, setLostReason] = useState('');
   const [wonValue, setWonValue] = useState('');
@@ -610,11 +616,13 @@ export function CompleteFollowUpDialog({
     complete.mutate(
       {
         id: followUp.id,
-        leadId: followUp.leadId,
+        ...(followUp.leadId ? { leadId: followUp.leadId } : {}),
         idempotencyKey,
         outcome,
         ...(notes ? { notes } : {}),
-        ...(next === 'schedule'
+        ...(next === 'done'
+          ? {}
+          : next === 'schedule'
           ? { nextFollowUpAt: zonedInputToIso(nextFollowUpAt) }
           : next === 'won'
             ? { leadStatus: 'WON' as LeadStatus, ...(wonValue ? { wonValue: Number(wonValue) } : {}) }
@@ -625,7 +633,7 @@ export function CompleteFollowUpDialog({
   };
 
   return (
-    <Dialog open={open} title={`Complete follow-up — ${followUp.leadName}`} onClose={onClose}>
+    <Dialog open={open} title={`Complete follow-up — ${followUp.leadName ?? followUp.accountName ?? 'customer'}`} onClose={onClose}>
       <form onSubmit={submit} className="space-y-4 p-5" noValidate>
         <Field label="What happened?" htmlFor="outcome">
           <select id="outcome" value={outcome} onChange={(e) => setOutcome(e.target.value)} className={inputClass}>
@@ -642,11 +650,17 @@ export function CompleteFollowUpDialog({
         <fieldset className="rounded-lg bg-slate-50 p-3">
           <legend className="px-1 text-sm font-medium text-slate-700">What next?</legend>
           <div className="mt-1 space-y-1.5">
-            {([
-              ['schedule', 'Schedule the next follow-up'],
-              ['won', 'Mark the lead won'],
-              ['lost', 'Mark the lead lost'],
-            ] as const).map(([value, label]) => (
+            {(followUp.leadId
+              ? ([
+                  ['schedule', 'Schedule the next follow-up'],
+                  ['won', 'Mark the lead won'],
+                  ['lost', 'Mark the lead lost'],
+                ] as const)
+              : ([
+                  ['schedule', 'Schedule the next follow-up'],
+                  ['done', 'Nothing further for now'],
+                ] as const)
+            ).map(([value, label]) => (
               <label key={value} className="flex items-center gap-2 text-sm text-slate-700">
                 <input
                   type="radio"
@@ -725,7 +739,7 @@ export function RescheduleFollowUpDialog({
     reschedule.mutate(
       {
         id: followUp.id,
-        leadId: followUp.leadId,
+        ...(followUp.leadId ? { leadId: followUp.leadId } : {}),
         idempotencyKey,
         scheduledAt: zonedInputToIso(scheduledAt),
         ...(reason ? { reason } : {}),

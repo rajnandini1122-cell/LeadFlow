@@ -176,9 +176,12 @@ export function FollowUpsPage(): React.JSX.Element {
                 canLogAttempt={can('lead.update')}
                 onComplete={() => setCompleting(followUp)}
                 onReschedule={() => setRescheduling(followUp)}
-                onNoAnswer={() =>
-                  setAttempting({ id: followUp.leadId, status: followUp.leadStatus as LeadStatus })
-                }
+                onNoAnswer={() => {
+                  // Offered only on lead rows; a customer follow-up has no lead.
+                  if (followUp.leadId) {
+                    setAttempting({ id: followUp.leadId, status: followUp.leadStatus as LeadStatus });
+                  }
+                }}
               />
             ))}
           </ul>
@@ -229,26 +232,52 @@ function FollowUpRow({
   const tel = telHref(followUp.mobile);
   const whatsapp = whatsappHref(followUp.mobile);
 
+  /*
+   * A row is a LEAD follow-up or a CUSTOMER follow-up. The second used to be
+   * rendered as a lead: a link to /leads/null, no name and an empty status
+   * badge. It now links to the customer and says that it is one.
+   */
+  const target = followUp.leadId
+    ? `/leads/${followUp.leadId}`
+    : followUp.accountId
+      ? `/customers/${followUp.accountId}`
+      : null;
+  const name = followUp.leadName ?? followUp.accountName ?? followUp.companyName ?? 'Follow-up';
+
+  const summary = (
+    <>
+      <div className="flex flex-wrap items-center gap-2">
+        <p className="truncate text-sm font-medium text-slate-900 group-hover:underline">{name}</p>
+        {followUp.leadStatus ? (
+          <StatusBadge status={followUp.leadStatus as never} />
+        ) : (
+          <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-[11px] font-medium text-indigo-700">
+            Customer
+          </span>
+        )}
+        <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-600">
+          {humanise(followUp.type)}
+        </span>
+      </div>
+      <p className="mt-0.5 truncate text-xs text-slate-500">
+        {followUp.leadId && followUp.companyName ? `${followUp.companyName} · ` : ''}
+        {followUp.assignedTo.fullName}
+        {followUp.title ? ` · ${followUp.title}` : ''}
+      </p>
+    </>
+  );
+
   return (
     <li className="flex flex-wrap items-center gap-3 px-5 py-3.5 transition hover:bg-slate-50">
-      <Avatar name={followUp.leadName} />
+      <Avatar name={name} />
 
-      <Link to={`/leads/${followUp.leadId}`} className="group min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <p className="truncate text-sm font-medium text-slate-900 group-hover:underline">
-            {followUp.leadName}
-          </p>
-          <StatusBadge status={followUp.leadStatus as never} />
-          <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-600">
-            {humanise(followUp.type)}
-          </span>
-        </div>
-        <p className="mt-0.5 truncate text-xs text-slate-500">
-          {followUp.companyName ? `${followUp.companyName} · ` : ''}
-          {followUp.assignedTo.fullName}
-          {followUp.title ? ` · ${followUp.title}` : ''}
-        </p>
-      </Link>
+      {target ? (
+        <Link to={target} className="group min-w-0 flex-1">
+          {summary}
+        </Link>
+      ) : (
+        <div className="min-w-0 flex-1">{summary}</div>
+      )}
 
       <div className="text-right">
         {followUp.completedAt ? (

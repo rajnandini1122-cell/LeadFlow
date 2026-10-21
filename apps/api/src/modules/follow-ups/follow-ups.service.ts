@@ -6,7 +6,8 @@ import type { FollowUpType } from '../../generated/prisma/enums';
 import { LeadsRepository } from '../leads/leads.repository';
 import { visibilityFilter } from '../leads/lead-visibility';
 import { isTerminal } from '../leads/lead-status';
-import { FollowUpsRepository, findReplay } from './follow-ups.repository';
+import { FollowUpsRepository, findReplay, lockFollowUpRow } from './follow-ups.repository';
+import { AUDIT_ACTIONS } from '../../common/audit/audit.repository';
 import { windowFor, type Bucket } from './follow-up-buckets';
 import type {
   CancelFollowUpDto,
@@ -267,6 +268,25 @@ export class FollowUpsService {
             nextFollowUpAt: mirror?.toISOString() ?? null,
           };
         }
+      } else {
+        /*
+         * An account follow-up has no lead to lock and no timeline to hold the
+         * key. Its own row is locked instead, and the key is matched against
+         * the audit entry the first request wrote — so a retried completion of
+         * a customer follow-up is answered like a lead one, not with 409.
+         */
+        await lockFollowUpRow(tx, id);
+        const replay = await this.repository.findAccountReplay(tx, {
+          followUpId: id,
+          action: AUDIT_ACTIONS.ACCOUNT_FOLLOW_UP_COMPLETED,
+          key: idempotencyKey,
+        });
+        if (replay) {
+          const original = await this.repository.findById(id, undefined, tx);
+          // An account follow-up carries no next-action mirror; the first
+          // response said null too.
+          return { followUp: toView(original ?? existing), nextFollowUpAt: null };
+        }
       }
 
       const closed = await this.repository.close({
@@ -332,6 +352,14 @@ export class FollowUpsService {
           actorId: principal.userId,
           idempotencyKey,
           result: { followUpId: id, nextFollowUpId },
+        });
+      } else {
+        await this.repository.recordAccountFollowUpAction(tx, {
+          followUpId: id,
+          action: AUDIT_ACTIONS.ACCOUNT_FOLLOW_UP_COMPLETED,
+          actorId: principal.userId,
+          idempotencyKey,
+          result: { outcome: dto.outcome ?? null, nextFollowUpId },
         });
       }
 

@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { ActivityType, FollowUpStatus, FollowUpType } from '../../generated/prisma/enums';
 import { PrismaService, type PrismaTransaction } from '../../common/prisma/prisma.service';
 import { TenantContextService } from '../../common/tenancy/tenant-context.service';
+import { AUDIT_ACTIONS } from '../../common/audit/audit.repository';
 
 /** Statuses that still represent work owed. */
 export const OPEN_STATUSES: FollowUpStatus[] = ['UPCOMING', 'DUE', 'OVERDUE'];
@@ -72,6 +73,37 @@ export async function lockLeadForFollowUps(
     select: { id: true, status: true, assignedToId: true, nextFollowUpAt: true },
   });
 }
+
+/**
+ * Row lock on ONE follow-up, for an account-level follow-up.
+ *
+ * A lead follow-up serialises on the lead. An account follow-up has no lead,
+ * so its own row is the thing two writers must queue on. Same no-op UPDATE
+ * idiom as `lockLeadForFollowUps`. False when the row is not visible.
+ */
+export async function lockFollowUpRow(tx: PrismaTransaction, followUpId: string): Promise<boolean> {
+  const row = await tx.followUp.findFirst({
+    where: { id: followUpId },
+    select: { updatedAt: true },
+  });
+  if (!row) return false;
+
+  const locked = await tx.followUp.updateMany({
+    where: { id: followUpId },
+    data: { updatedAt: row.updatedAt },
+  });
+  return locked.count > 0;
+}
+
+/**
+ * How far back a replay of an account follow-up action is looked for.
+ *
+ * A replay is a double click or a client retry: seconds, at most minutes. The
+ * bound also keeps the lookup on the (action, created_at) index — audit_logs
+ * has no index on entity_id, and an unbounded search would scan every such
+ * entry the tenant ever wrote.
+ */
+const ACCOUNT_REPLAY_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 /**
  * The timeline entry an earlier request with this Idempotency-Key wrote, if any.
@@ -376,31 +408,40 @@ export class FollowUpsRepository {
     title?: string | undefined;
     reason?: string | undefined;
     actorId: string;
-    /** A replay with the same key returns the first replacement. Lead follow-ups only. */
+    /** A replay with the same key returns the first replacement. */
     idempotencyKey?: string | null | undefined;
   }) {
     const organizationId = this.tenantContext.requireOrganizationId();
 
     return this.prisma.client.$transaction(async (tx) => {
       /*
-       * The lead's lock first, so this serialises with every other follow-up
-       * write on the lead — a "no answer" racing this reschedule included.
-       * Without it the two could each leave a replacement open.
+       * Lock first, so this serialises with every other write that could
+       * touch the same work — for a lead, every follow-up write on that lead (a
+       * "no answer" racing this reschedule included); for an account follow-up,
+       * the follow-up row itself. Then look for a replay of this request.
        */
+      let replay: Record<string, unknown> | null;
       if (input.leadId) {
         await lockLeadForFollowUps(tx, input.leadId);
-
-        const replay = await findReplay(tx, {
+        replay = await findReplay(tx, {
           leadId: input.leadId,
           activityType: 'FOLLOW_UP_RESCHEDULED',
           key: input.idempotencyKey,
         });
-        const replacementId = replay?.['replacementId'];
-        if (typeof replacementId === 'string') {
-          // The same request, again. Answer with what it produced the first
-          // time instead of reporting the original as already cancelled.
-          return tx.followUp.findFirst({ where: { id: replacementId }, include: this.include });
-        }
+      } else {
+        await lockFollowUpRow(tx, input.originalId);
+        replay = await this.findAccountReplay(tx, {
+          followUpId: input.originalId,
+          action: AUDIT_ACTIONS.ACCOUNT_FOLLOW_UP_RESCHEDULED,
+          key: input.idempotencyKey,
+        });
+      }
+
+      const replacementId = replay?.['replacementId'];
+      if (typeof replacementId === 'string') {
+        // The same request, again. Answer with what it produced the first
+        // time instead of reporting the original as already cancelled.
+        return tx.followUp.findFirst({ where: { id: replacementId }, include: this.include });
       }
 
       const closed = await tx.followUp.updateMany({
@@ -440,9 +481,19 @@ export class FollowUpsRepository {
       // The chain of attempts is the signal a manager reads, so the timeline
       // entry commits with the reschedule rather than after it.
       //
-      // Only for a lead: LeadActivity requires a lead, and an account-level
-      // follow-up has none. Its history is the follow-up chain itself, which
-      // rescheduledToId already records.
+      // A lead follow-up is recorded on the lead's timeline. An account-level
+      // follow-up has no timeline, so its record — and the key a retry is
+      // matched against — goes in the audit log, in this same commit.
+      if (!input.leadId) {
+        await this.recordAccountFollowUpAction(tx, {
+          followUpId: input.originalId,
+          action: AUDIT_ACTIONS.ACCOUNT_FOLLOW_UP_RESCHEDULED,
+          actorId: input.actorId,
+          idempotencyKey: input.idempotencyKey,
+          result: { replacementId: replacement.id, scheduledAt: input.scheduledAt.toISOString() },
+        });
+      }
+
       if (input.leadId) {
         await this.recordLeadActivity(tx, {
           leadId: input.leadId,
@@ -481,6 +532,66 @@ export class FollowUpsRepository {
    *
    * Returns the new value so callers can tell whether the lead now has none.
    */
+  /**
+   * The audit entry an earlier request with this key wrote for an ACCOUNT
+   * follow-up, if any. Call with the follow-up row locked.
+   *
+   * `audit_logs` is not tenant-scoped by the Prisma extension, so the
+   * organization is filtered here explicitly.
+   */
+  async findAccountReplay(
+    tx: PrismaTransaction,
+    input: { followUpId: string; action: string; key: string | null | undefined },
+  ): Promise<Record<string, unknown> | null> {
+    if (!input.key) return null;
+
+    const entry = await tx.auditLog.findFirst({
+      where: {
+        organizationId: this.tenantContext.requireOrganizationId(),
+        action: input.action,
+        entityType: 'FollowUp',
+        entityId: input.followUpId,
+        createdAt: { gte: new Date(Date.now() - ACCOUNT_REPLAY_WINDOW_MS) },
+        after: { path: ['idempotencyKey'], equals: input.key },
+      },
+      select: { after: true },
+    });
+
+    return entry ? ((entry.after ?? {}) as Record<string, unknown>) : null;
+  }
+
+  /**
+   * Records an account follow-up being completed or rescheduled, in the
+   * caller's transaction.
+   *
+   * Written whether or not a key was supplied: an account follow-up has no
+   * lead timeline, so without this the action left no record of who did it.
+   */
+  async recordAccountFollowUpAction(
+    tx: PrismaTransaction,
+    input: {
+      followUpId: string;
+      action: string;
+      actorId: string;
+      idempotencyKey?: string | null | undefined;
+      result: Record<string, string | null>;
+    },
+  ): Promise<void> {
+    await tx.auditLog.create({
+      data: {
+        organizationId: this.tenantContext.requireOrganizationId(),
+        actorUserId: input.actorId,
+        action: input.action,
+        entityType: 'FollowUp',
+        entityId: input.followUpId,
+        after: {
+          ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
+          ...input.result,
+        },
+      },
+    });
+  }
+
   /** The lead's current next-action mirror, as committed. */
   async leadNextFollowUpAt(leadId: string, tx?: PrismaTransaction): Promise<Date | null> {
     const lead = await (tx ?? this.prisma.client).lead.findFirst({

@@ -185,6 +185,8 @@ const QUEUE_ROW = {
   leadId: '01a00000-0000-7000-8000-000000000009',
   leadNumber: 'LD-00009',
   leadName: 'Ravi Kulkarni',
+  accountId: null,
+  accountName: null,
   companyName: 'Kulkarni Exports',
   mobile: '+919820011009',
   leadStatus: 'NEW',
@@ -257,5 +259,64 @@ describe('the follow-up queue', () => {
     renderQueue(['lead.update'], rows);
 
     expect(await screen.findByText(/200\+ overdue/)).toBeInTheDocument();
+  });
+});
+
+// =============================================================================
+// Customer (account) follow-ups in the queue
+// =============================================================================
+
+const CUSTOMER_ROW = {
+  ...QUEUE_ROW,
+  id: 'fu-acct-1',
+  leadId: null,
+  leadNumber: null,
+  leadName: null,
+  leadStatus: null,
+  leadPriority: null,
+  accountId: '01a00000-0000-7000-8000-0000000000aa',
+  accountName: 'ABC Foods',
+  companyName: 'ABC Foods',
+};
+
+describe('customer follow-ups in the queue', () => {
+  it('links to the customer, not to /leads/null', async () => {
+    renderQueue(['lead.update', 'followup.complete', 'followup.create'], [CUSTOMER_ROW]);
+
+    const link = await screen.findByRole('link', { name: /ABC Foods/ });
+    expect(link).toHaveAttribute('href', `/customers/${CUSTOMER_ROW.accountId}`);
+    expect(screen.queryByRole('link', { name: /null/ })).not.toBeInTheDocument();
+    expect(screen.getByText('Customer')).toBeInTheDocument();
+  });
+
+  it('offers no "No answer" on a customer row — there is no lead to log it on', async () => {
+    renderQueue(['lead.update', 'followup.complete'], [CUSTOMER_ROW]);
+
+    await screen.findByText('ABC Foods');
+    expect(screen.queryByRole('button', { name: /No answer from/ })).not.toBeInTheDocument();
+  });
+
+  it('completes a customer follow-up without lead outcomes, and can finish it outright', async () => {
+    const apiPost = vi.spyOn(apiClient, 'apiPost').mockResolvedValue({
+      followUp: { ...CUSTOMER_ROW, status: 'COMPLETED' },
+      nextFollowUpAt: null,
+    } as never);
+    renderQueue(['followup.complete'], [CUSTOMER_ROW]);
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Complete' }));
+    const dialog = screen.getByRole('dialog');
+
+    // Won and lost are LEAD outcomes; the API refuses them here.
+    expect(within(dialog).queryByLabelText(/Mark the lead won/)).not.toBeInTheDocument();
+    await userEvent.click(within(dialog).getByLabelText(/Nothing further for now/));
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Complete' }));
+
+    await waitFor(() => expect(apiPost).toHaveBeenCalledTimes(1));
+    const [url, body, options] = apiPost.mock.calls[0] ?? [];
+    expect(url).toBe('/follow-ups/fu-acct-1/complete');
+    expect(body).not.toHaveProperty('leadId');
+    expect(body).not.toHaveProperty('nextFollowUpAt');
+    expect(body).not.toHaveProperty('leadStatus');
+    expect((options as { headers: Record<string, string> }).headers['Idempotency-Key']).toBeTruthy();
   });
 });
