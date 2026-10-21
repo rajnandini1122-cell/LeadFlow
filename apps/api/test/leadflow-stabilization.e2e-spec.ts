@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { Client } from 'pg';
 import { createTestContext, type TestContext } from './helpers/test-app';
 import { fixtureMobile } from './helpers/phone-fixtures';
 import { PrismaService } from '../src/common/prisma/prisma.service';
@@ -661,27 +662,152 @@ describe('LeadFlow stabilization', () => {
   });
 
   describeRaces('simultaneous agents (real Postgres only)', () => {
-    it('leaves exactly one open follow-up when an attempt races a completion', async () => {
+    /*
+     * DETERMINISTIC races. Two HTTP requests fired together from one test
+     * process almost never land inside the window that matters, so a
+     * Promise.all race test passes on the broken code too — it was checked, and
+     * it did. These hold real row locks from a SECOND connection to force the
+     * exact interleaving, every run.
+     */
+    const external = async (): Promise<Client> => {
+      const client = new Client({ connectionString: process.env['DATABASE_URL'] as string, ssl: false });
+      await client.connect();
+      return client;
+    };
+
+    /** Resolves once some OTHER backend is waiting on a row lock. */
+    const untilSomeoneWaitsOnALock = async (client: Client): Promise<void> => {
+      for (let i = 0; i < 200; i++) {
+        const { rows } = await client.query<{ n: string }>(
+          `SELECT count(*) AS n FROM pg_stat_activity
+            WHERE wait_event_type = 'Lock' AND pid <> pg_backend_pid() AND datname = current_database()`,
+        );
+        if (Number(rows[0]?.n) > 0) return;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      throw new Error('The request never waited on the lock this test holds.');
+    };
+
+    it('never overwrites a follow-up completed while "no answer" was in flight', async () => {
       const leadId = await createLead();
       const followUpId = (await openFor(leadId))[0]?.id as string;
+      const db = await external();
 
-      const results = await Promise.all([
-        ctx
-          .http()
-          .post(`/api/v1/follow-ups/${followUpId}/complete`)
-          .set(owner())
-          .send({ outcome: 'Interested', nextFollowUpAt: inDays(4) }),
-        ctx
+      try {
+        // Another agent's completion, in progress: F1 is row-locked.
+        await db.query('BEGIN');
+        await db.query('SELECT id FROM follow_ups WHERE id = $1 FOR UPDATE', [followUpId]);
+
+        // "No answer" reads F1 as open, then has to wait to supersede it.
+        const attempt = ctx
           .http()
           .post(`/api/v1/leads/${leadId}/attempts`)
           .set(owner())
-          .send({ activityType: 'CALL_NOT_ANSWERED', retryAt: inHours(5) }),
-      ]);
+          .send({ activityType: 'CALL_NOT_ANSWERED', retryAt: inHours(5) })
+          .then((response) => response);
+        await untilSomeoneWaitsOnALock(db);
 
-      expect(results.every((r) => r.status === 200 || r.status === 409)).toBe(true);
-      expect(await openFor(leadId)).toHaveLength(1);
+        // The other agent's completion commits first.
+        await db.query(
+          `UPDATE follow_ups SET status = 'COMPLETED', completed_at = now(), outcome = 'Spoke to them'
+            WHERE id = $1`,
+          [followUpId],
+        );
+        await db.query('COMMIT');
+
+        expect((await attempt).status).toBe(200);
+      } finally {
+        await db.end();
+      }
+
+      // THE DEFECT: the late supersede rewrote it as CANCELLED, erasing the
+      // record that the call happened. It must stay COMPLETED.
       const original = (await followUpsFor(leadId)).find((row) => row.id === followUpId);
-      expect(['COMPLETED', 'CANCELLED']).toContain(original?.status);
+      expect(original?.status).toBe('COMPLETED');
+      expect(await openFor(leadId)).toHaveLength(1);
+    });
+
+    /*
+     * The lead lock is a PROTOCOL: it serialises writers only if every writer
+     * takes it BEFORE it reads or writes anything. The observable proof is what
+     * another connection can see while the request is blocked on the lead:
+     * nothing. The old code committed part of its work first — the attempt's
+     * timeline entry, or the completion itself — and only then blocked updating
+     * the lead's mirror, which is exactly the window two agents raced through.
+     */
+    const holdingTheLead = async <T>(
+      leadId: string,
+      send: () => Promise<T>,
+      whileBlocked: (db: Client) => Promise<void>,
+    ): Promise<T> => {
+      const db = await external();
+      try {
+        await db.query('BEGIN');
+        await db.query('UPDATE leads SET updated_at = updated_at WHERE id = $1', [leadId]);
+        const pending = send();
+        await untilSomeoneWaitsOnALock(db);
+        await whileBlocked(db);
+        await db.query('COMMIT');
+        return await pending;
+      } finally {
+        await db.end();
+      }
+    };
+
+    it('logs "no answer" only once it holds the lead — nothing is written before', async () => {
+      const leadId = await createLead();
+
+      const response = await holdingTheLead(
+        leadId,
+        () =>
+          ctx
+            .http()
+            .post(`/api/v1/leads/${leadId}/attempts`)
+            .set(owner())
+            .send({ activityType: 'CALL_NOT_ANSWERED', retryAt: inHours(5) })
+            .then((r) => r),
+        async (db) => {
+          const { rows } = await db.query<{ n: string }>(
+            `SELECT count(*) AS n FROM lead_activities WHERE lead_id = $1 AND activity_type = 'CALL_NOT_ANSWERED'`,
+            [leadId],
+          );
+          // The old code had already committed the attempt here.
+          expect(Number(rows[0]?.n)).toBe(0);
+        },
+      );
+
+      expect(response.status).toBe(200);
+      expect(await activitiesFor(leadId, 'CALL_NOT_ANSWERED')).toHaveLength(1);
+      expect(await openFor(leadId)).toHaveLength(1);
+    });
+
+    it('completes a follow-up only once it holds the lead — nothing is written before', async () => {
+      const leadId = await createLead();
+      const followUpId = (await openFor(leadId))[0]?.id as string;
+
+      const response = await holdingTheLead(
+        leadId,
+        () =>
+          ctx
+            .http()
+            .post(`/api/v1/follow-ups/${followUpId}/complete`)
+            .set(owner())
+            .send({ outcome: 'Interested', nextFollowUpAt: inDays(4) })
+            .then((r) => r),
+        async (db) => {
+          const { rows } = await db.query<{ status: string }>(
+            'SELECT status FROM follow_ups WHERE id = $1',
+            [followUpId],
+          );
+          // The old code had already committed the completion here, with its
+          // next action still to come — the half-done state a racing "no
+          // answer" then acted on.
+          expect(rows[0]?.status).not.toBe('COMPLETED');
+        },
+      );
+
+      expect(response.status).toBe(200);
+      expect(await openFor(leadId)).toHaveLength(1);
     });
 
     it('records ONE attempt when the same key arrives twice at once', async () => {
