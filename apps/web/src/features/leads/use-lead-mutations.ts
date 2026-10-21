@@ -203,7 +203,16 @@ export function useCompleteFollowUp() {
   const refresh = useRefreshLeadData();
 
   return useMutation({
-    mutationFn: ({ id, ...input }: CompleteFollowUpInput & { id: string; leadId?: string }) =>
+    /*
+     * `leadId` is taken OUT of the body. It is here only so onSuccess knows
+     * which lead's caches to refresh. The API whitelists DTO fields and refuses
+     * anything else, so sending it rejected every completion from a dialog.
+     */
+    mutationFn: ({
+      id,
+      leadId: _leadId,
+      ...input
+    }: CompleteFollowUpInput & { id: string; leadId?: string }) =>
       apiPost<{ followUp: FollowUp; nextFollowUpAt: string | null }>(
         `/follow-ups/${id}/complete`,
         input,
@@ -216,8 +225,10 @@ export function useRescheduleFollowUp() {
   const refresh = useRefreshLeadData();
 
   return useMutation({
+    // `leadId` stays client-side for the same reason as in useCompleteFollowUp.
     mutationFn: ({
       id,
+      leadId: _leadId,
       ...input
     }: {
       id: string;
