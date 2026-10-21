@@ -42,10 +42,12 @@ describe('follow-up request bodies', () => {
     });
 
     await waitFor(() => expect(apiPost).toHaveBeenCalled());
-    expect(apiPost).toHaveBeenCalledWith('/follow-ups/fu-1/complete', {
-      outcome: 'Interested',
-      nextFollowUpAt: '2026-11-01T05:30:00.000Z',
-    });
+    // URL and body only: a later change adds request options (an
+    // Idempotency-Key header) as a third argument, which is not this test's
+    // concern.
+    const [url, body] = apiPost.mock.calls[0] ?? [];
+    expect(url).toBe('/follow-ups/fu-1/complete');
+    expect(body).toEqual({ outcome: 'Interested', nextFollowUpAt: '2026-11-01T05:30:00.000Z' });
   });
 
   it('reschedules without leadId in the body', async () => {
@@ -55,9 +57,9 @@ describe('follow-up request bodies', () => {
     result.current.mutate({ id: 'fu-2', leadId: 'lead-2', scheduledAt: '2026-11-02T05:30:00.000Z' });
 
     await waitFor(() => expect(apiPost).toHaveBeenCalled());
-    expect(apiPost).toHaveBeenCalledWith('/follow-ups/fu-2/reschedule', {
-      scheduledAt: '2026-11-02T05:30:00.000Z',
-    });
+    const [url, body] = apiPost.mock.calls[0] ?? [];
+    expect(url).toBe('/follow-ups/fu-2/reschedule');
+    expect(body).toEqual({ scheduledAt: '2026-11-02T05:30:00.000Z' });
   });
 
   it('still refreshes the lead it was told about', async () => {
