@@ -1,6 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import type { LeadPriority, LeadStatus } from '@leadflow/api-types';
+import { AWAITING_RESPONSE_OUTCOMES } from '@leadflow/api-types';
 import type { ActivityType } from '../../generated/prisma/enums';
+import type { Prisma } from '../../generated/prisma/client';
 import { sideEffectsFor } from './lead-status';
 import { PrismaService, type PrismaTransaction } from '../../common/prisma/prisma.service';
 import { initialFollowUpStatus } from '../follow-ups/follow-ups.repository';
@@ -72,7 +74,45 @@ export interface LeadListFilters {
    * it is in.
    */
   lifecycle?: 'ACTIVE' | 'INACTIVE' | 'ALL' | undefined;
+  /**
+   * Leads nobody has worked yet: still NEW and never reached. The "New leads"
+   * tile on the sales workspace — distinct from status NEW alone, which also
+   * matches a lead three calls deep where nobody has answered.
+   */
+  fresh?: boolean | undefined;
+  /** Waiting on the CUSTOMER: last outcome was "awaiting response", or a quotation is out. */
+  awaiting?: boolean | undefined;
+  /** Exactly this last outcome (a CALL_OUTCOMES code). */
+  lastOutcome?: string | undefined;
 }
+
+/**
+ * What a summary row carries beyond the lead's own columns: the open follow-up
+ * that is its next action, and its latest timeline entry.
+ *
+ * Each is `take: 1` per lead, which Prisma resolves in ONE extra query for the
+ * whole page (not one per row), so a 25-row list stays three round trips.
+ */
+export const LEAD_SUMMARY_INCLUDE = {
+  assignedTo: { select: { id: true, fullName: true } },
+  followUps: {
+    where: { status: { in: ['UPCOMING', 'DUE', 'OVERDUE'] } },
+    orderBy: { scheduledAt: 'asc' },
+    take: 1,
+    select: {
+      id: true,
+      type: true,
+      title: true,
+      scheduledAt: true,
+      assignedUser: { select: { id: true, fullName: true } },
+    },
+  },
+  activities: {
+    orderBy: { createdAt: 'desc' },
+    take: 1,
+    select: { activityType: true, description: true, createdAt: true },
+  },
+} satisfies Prisma.LeadInclude;
 
 @Injectable()
 export class LeadsRepository {
@@ -110,7 +150,17 @@ export class LeadsRepository {
     // below INTERSECTS with it instead of overwriting it. A rep who may see only
     // their own leads gets an empty list here — never their own leads mislabelled
     // as unassigned.
-    if (filters.unassigned) where['AND'] = [{ assignedToId: null }];
+    const and: Record<string, unknown>[] = [];
+    if (filters.unassigned) and.push({ assignedToId: null });
+    if (filters.fresh) and.push({ status: 'NEW', lastContactedAt: null });
+    if (filters.awaiting) {
+      and.push({
+        status: { notIn: ['WON', 'LOST'] },
+        OR: [{ lastOutcome: { in: [...AWAITING_RESPONSE_OUTCOMES] } }, { status: 'QUOTATION_SENT' }],
+      });
+    }
+    if (filters.lastOutcome) and.push({ lastOutcome: filters.lastOutcome });
+    if (and.length > 0) where['AND'] = and;
     if (filters.productId) where['productId'] = filters.productId;
     if (filters.accountId) where['accountId'] = filters.accountId;
     if (filters.restrictToUserId) where['assignedToId'] = filters.restrictToUserId;
@@ -144,9 +194,7 @@ export class LeadsRepository {
       take: filters.limit + 1,
       ...(filters.cursor ? { cursor: { id: filters.cursor }, skip: 1 } : {}),
       orderBy: { createdAt: 'desc' },
-      include: {
-        assignedTo: { select: { id: true, fullName: true } },
-      },
+      include: LEAD_SUMMARY_INCLUDE,
     });
   }
 
@@ -172,6 +220,29 @@ export class LeadsRepository {
         product: { select: { id: true, name: true, sku: true, active: true } },
         // Name and status only. Whether this is an existing customer is the
         // single most useful thing to know when opening a lead.
+        account: { select: { id: true, name: true, status: true } },
+      },
+    });
+  }
+
+  /**
+   * The lead for its DETAIL page: findById plus the next action and latest
+   * timeline entry the summary carries.
+   *
+   * Separate from findById on purpose. findById is also every mutation's
+   * visibility check, and those must not pay for two extra subqueries.
+   */
+  async findDetailById(id: string, restrictToUserId?: string) {
+    return this.prisma.client.lead.findFirst({
+      where: {
+        id,
+        deletedAt: null,
+        ...(restrictToUserId ? { assignedToId: restrictToUserId } : {}),
+      },
+      include: {
+        ...LEAD_SUMMARY_INCLUDE,
+        assignedBy: { select: { id: true, fullName: true } },
+        product: { select: { id: true, name: true, sku: true, active: true } },
         account: { select: { id: true, name: true, status: true } },
       },
     });

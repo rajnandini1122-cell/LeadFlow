@@ -11,6 +11,7 @@ import {
   Min,
 } from 'class-validator';
 import { LEAD_STATUSES, type LeadStatus } from '@leadflow/api-types';
+import { BUCKETS, type Bucket } from '../follow-up-buckets';
 
 const FOLLOW_UP_TYPES = ['CALL', 'WHATSAPP', 'EMAIL', 'MEETING', 'OTHER'] as const;
 type FollowUpTypeValue = (typeof FOLLOW_UP_TYPES)[number];
@@ -108,8 +109,8 @@ export class CancelFollowUpDto {
 
 export class ListFollowUpsDto {
   @IsOptional()
-  @IsIn(['today', 'upcoming', 'overdue', 'completed'])
-  bucket?: 'today' | 'upcoming' | 'overdue' | 'completed';
+  @IsIn(BUCKETS, { message: `must be one of: ${BUCKETS.join(', ')}` })
+  bucket?: Bucket;
 
   /**
    * Narrows to one person. Can only ever NARROW: a caller without team

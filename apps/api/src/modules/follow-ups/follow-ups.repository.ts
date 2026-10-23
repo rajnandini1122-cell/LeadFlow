@@ -2,6 +2,8 @@ import { Injectable } from '@nestjs/common';
 import type { ActivityType, FollowUpStatus, FollowUpType } from '../../generated/prisma/enums';
 import { PrismaService, type PrismaTransaction } from '../../common/prisma/prisma.service';
 import { TenantContextService } from '../../common/tenancy/tenant-context.service';
+import { formatZonedDateTime } from '../../common/utils/zoned-time';
+import { bucketOrder, bucketWhere, type BucketWindow } from './follow-up-buckets';
 import { AUDIT_ACTIONS } from '../../common/audit/audit.repository';
 
 /** Statuses that still represent work owed. */
@@ -250,32 +252,26 @@ export class FollowUpsRepository {
    * string, so a rep cannot widen their own view by asking for someone else's.
    */
   async list(filters: {
-    statuses: FollowUpStatus[];
+    window: BucketWindow;
     restrictToUserId?: string | undefined;
     assignedUserId?: string | undefined;
-    from?: Date | undefined;
-    to?: Date | undefined;
     limit: number;
   }) {
-    const where: Record<string, unknown> = { status: { in: filters.statuses } };
-
-    if (filters.assignedUserId) where['assignedUserId'] = filters.assignedUserId;
-    // Applied last so it always wins over a caller-supplied filter.
-    if (filters.restrictToUserId) where['assignedUserId'] = filters.restrictToUserId;
-
-    if (filters.from || filters.to) {
-      where['scheduledAt'] = {
-        ...(filters.from ? { gte: filters.from } : {}),
-        ...(filters.to ? { lt: filters.to } : {}),
-      };
-    }
-
     return this.prisma.client.followUp.findMany({
-      where,
+      where: bucketWhere(filters.window, filters),
       include: this.include,
-      orderBy: { scheduledAt: 'asc' },
+      orderBy: bucketOrder(filters.window),
       take: filters.limit,
     });
+  }
+
+  /** The count for exactly the rows list() would return, without the limit. */
+  async count(filters: {
+    window: BucketWindow;
+    restrictToUserId?: string | undefined;
+    assignedUserId?: string | undefined;
+  }): Promise<number> {
+    return this.prisma.client.followUp.count({ where: bucketWhere(filters.window, filters) });
   }
 
   async listForLead(leadId: string) {
@@ -444,6 +440,12 @@ export class FollowUpsRepository {
         return tx.followUp.findFirst({ where: { id: replacementId }, include: this.include });
       }
 
+      // Read before closing: the timeline records the schedule it moved FROM.
+      const original = await tx.followUp.findFirst({
+        where: { id: input.originalId },
+        select: { scheduledAt: true },
+      });
+
       const closed = await tx.followUp.updateMany({
         where: { id: input.originalId, status: { in: OPEN_STATUSES } },
         data: {
@@ -495,13 +497,23 @@ export class FollowUpsRepository {
       }
 
       if (input.leadId) {
+        const timezone = await this.organizationTimezone(tx);
         await this.recordLeadActivity(tx, {
           leadId: input.leadId,
           activityType: 'FOLLOW_UP_RESCHEDULED',
-          description: `Rescheduled to ${input.scheduledAt.toISOString()}`,
+          // Both ends, in the ORGANIZATION's time. It said only "Rescheduled to
+          // 2026-10-24T05:30:00.000Z" — a UTC string with no starting point, so
+          // the timeline could not show what moved, or from when.
+          description: original
+            ? `Rescheduled from ${formatZonedDateTime(original.scheduledAt, timezone)} to ${formatZonedDateTime(input.scheduledAt, timezone)}${input.reason && input.reason !== 'Rescheduled' ? ` — ${input.reason}` : ''}`
+            : `Rescheduled to ${formatZonedDateTime(input.scheduledAt, timezone)}`,
           actorId: input.actorId,
           idempotencyKey: input.idempotencyKey,
-          result: { replacementId: replacement.id },
+          result: {
+            replacementId: replacement.id,
+            from: original?.scheduledAt.toISOString() ?? null,
+            to: input.scheduledAt.toISOString(),
+          },
         });
 
         // The mirror moves in the SAME commit. It used to be re-derived after
@@ -590,6 +602,89 @@ export class FollowUpsRepository {
         },
       },
     });
+  }
+
+  /**
+   * The open follow-up a call was working: the named one if given (and still
+   * open, and on this lead), otherwise the lead's earliest open follow-up.
+   * Null when nothing is open — a call can be logged on a lead with no queued
+   * work, e.g. an unassigned one.
+   */
+  async findWorkedFollowUp(
+    tx: PrismaTransaction,
+    leadId: string,
+    followUpId?: string | undefined,
+  ): Promise<{ id: string; scheduledAt: Date } | null> {
+    return tx.followUp.findFirst({
+      where: {
+        leadId,
+        status: { in: OPEN_STATUSES },
+        ...(followUpId ? { id: followUpId } : {}),
+      },
+      orderBy: { scheduledAt: 'asc' },
+      select: { id: true, scheduledAt: true },
+    });
+  }
+
+  /**
+   * Writes what a call established onto the lead: the outcome, when it was
+   * logged, whether anybody was actually spoken to, and any requirement stated.
+   *
+   * `lastContactedAt` moves ONLY on a reached outcome. That is the column
+   * "which customers have been contacted?" reads, and three missed calls are
+   * not contact.
+   */
+  async recordLeadOutcomeFacts(
+    tx: PrismaTransaction,
+    input: {
+      leadId: string;
+      outcome: string;
+      at: Date;
+      reached: boolean;
+      actorId: string;
+      requirement?:
+        | {
+            productId?: string | undefined;
+            productInterest?: string | undefined;
+            quantity?: string | undefined;
+            expectedPurchaseDate?: string | undefined;
+          }
+        | undefined;
+    },
+  ): Promise<void> {
+    const requirement = input.requirement ?? {};
+    await tx.lead.updateMany({
+      where: { id: input.leadId },
+      data: {
+        lastOutcome: input.outcome,
+        lastOutcomeAt: input.at,
+        ...(input.reached ? { lastContactedAt: input.at } : {}),
+        ...(requirement.productId ? { productId: requirement.productId } : {}),
+        ...(requirement.productInterest ? { productInterest: requirement.productInterest } : {}),
+        ...(requirement.quantity ? { requirementQuantity: requirement.quantity } : {}),
+        ...(requirement.expectedPurchaseDate
+          ? { expectedPurchaseDate: new Date(`${requirement.expectedPurchaseDate}T00:00:00Z`) }
+          : {}),
+        updatedBy: input.actorId,
+      },
+    });
+  }
+
+  /** The organization's IANA timezone — the clock every stored sentence uses. */
+  async organizationTimezone(tx?: PrismaTransaction): Promise<string> {
+    const organization = await (tx ?? this.prisma.client).organization.findFirst({
+      select: { timezone: true },
+    });
+    return organization?.timezone ?? 'UTC';
+  }
+
+  /** The lead's current stage, as committed (inside the caller's transaction). */
+  async leadStatus(leadId: string, tx?: PrismaTransaction): Promise<string | null> {
+    const lead = await (tx ?? this.prisma.client).lead.findFirst({
+      where: { id: leadId },
+      select: { status: true },
+    });
+    return lead?.status ?? null;
   }
 
   /** The lead's current next-action mirror, as committed. */

@@ -1,5 +1,11 @@
 import { Injectable } from '@nestjs/common';
-import { ERROR_CODES, PERMISSIONS, type LeadStatus } from '@leadflow/api-types';
+import {
+  CALL_OUTCOME_RULES,
+  ERROR_CODES,
+  PERMISSIONS,
+  type CallOutcome,
+  type LeadStatus,
+} from '@leadflow/api-types';
 import { AppException } from '../../common/errors/app.exception';
 import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
 import type { FollowUpType } from '../../generated/prisma/enums';
@@ -8,7 +14,9 @@ import { visibilityFilter } from '../leads/lead-visibility';
 import { isTerminal } from '../leads/lead-status';
 import { FollowUpsRepository, findReplay, lockFollowUpRow } from './follow-ups.repository';
 import { AUDIT_ACTIONS } from '../../common/audit/audit.repository';
-import { windowFor, type Bucket } from './follow-up-buckets';
+import { formatZonedDateTime } from '../../common/utils/zoned-time';
+import { BUCKETS, windowFor, type Bucket } from './follow-up-buckets';
+import type { RecordOutcomeDto } from './dto/record-outcome.dto';
 import type {
   CancelFollowUpDto,
   CompleteFollowUpDto,
@@ -16,6 +24,38 @@ import type {
   RecordAttemptDto,
   RescheduleFollowUpDto,
 } from './dto/follow-ups.dto';
+
+/** The sales workspace's numbers. See FollowUpsService.workspaceSummary. */
+export interface WorkspaceSummary {
+  /** The IANA timezone every day boundary was computed in. */
+  timezone: string;
+  /** Whose work these numbers describe. */
+  scope: 'OWN' | 'TEAM';
+  followUps: Record<Bucket, number>;
+  leads: {
+    /** Still NEW and never reached. */
+    fresh: number;
+    /** Waiting on the customer — last outcome, or a quotation out. */
+    awaiting: number;
+    /** Nobody owns them. Null when the caller cannot see the whole team. */
+    unassigned: number | null;
+  };
+}
+
+/** What logging one call produced. */
+export interface RecordOutcomeResult {
+  leadId: string;
+  outcome: CallOutcome;
+  /** The stage after the call — returned so the caller can SEE whether it moved. */
+  leadStatus: LeadStatus;
+  /** The follow-up this call completed, or null (a missed call completes nothing). */
+  completedFollowUpId: string | null;
+  /** The next action now queued, or null (closed, or nobody owns the lead). */
+  followUp: FollowUpView | null;
+  nextFollowUpAt: string | null;
+  /** True when this answered a repeat of an earlier request with the same key. */
+  replayed: boolean;
+}
 
 export interface FollowUpView {
   id: string;
@@ -69,15 +109,66 @@ export class FollowUpsService {
     const window = windowFor(bucket, timezone);
 
     const rows = await this.repository.list({
-      statuses: window.statuses,
-      from: window.from,
-      to: window.to,
+      window,
       assignedUserId: options.assignedUserId,
       restrictToUserId: this.restriction(principal),
       limit: options.limit ?? 100,
     });
 
     return rows.map(toView);
+  }
+
+  /**
+   * Everything the sales workspace counts, in one response.
+   *
+   * Lead counts use the lead list's own filters (`fresh`, `awaiting`,
+   * `unassigned`) and the caller's lead visibility, exactly as the list they
+   * open does. Unassigned is null for someone who cannot see the whole team —
+   * for them it would always be zero, which reads as "nothing to assign".
+   */
+  async workspaceSummary(
+    principal: TenantPrincipal,
+    options: { assignedUserId?: string | undefined } = {},
+  ): Promise<WorkspaceSummary> {
+    const timezone = await this.leads.organizationTimezone();
+    const leadScope = visibilityFilter(principal)?.assignedToId;
+    const owner = leadScope ?? options.assignedUserId;
+    const seesTeam = leadScope === undefined;
+
+    const [followUps, fresh, awaiting, unassigned] = await Promise.all([
+      this.bucketCounts(principal, options),
+      this.leads.countMatching({ fresh: true, lifecycle: 'ACTIVE', ...(owner ? { restrictToUserId: owner } : {}) }),
+      this.leads.countMatching({ awaiting: true, lifecycle: 'ACTIVE', ...(owner ? { restrictToUserId: owner } : {}) }),
+      seesTeam ? this.leads.countMatching({ unassigned: true, lifecycle: 'ACTIVE' }) : Promise.resolve(null),
+    ]);
+
+    return {
+      timezone,
+      scope: seesTeam && !options.assignedUserId ? 'TEAM' : 'OWN',
+      followUps,
+      leads: { fresh, awaiting, unassigned },
+    };
+  }
+
+  /**
+   * The true size of every bucket, from the same predicate as the lists.
+   *
+   * The tabs used to count the rows a 200-row page had fetched, so a bucket of
+   * 340 read "200". These are real totals, computed with ONE `now` so the
+   * buckets partition the same instant rather than drifting between queries.
+   */
+  async bucketCounts(
+    principal: TenantPrincipal,
+    options: { assignedUserId?: string | undefined } = {},
+  ): Promise<Record<Bucket, number>> {
+    const timezone = await this.leads.organizationTimezone();
+    const now = new Date();
+    const scope = { assignedUserId: options.assignedUserId, restrictToUserId: this.restriction(principal) };
+
+    const counts = await Promise.all(
+      BUCKETS.map((bucket) => this.repository.count({ window: windowFor(bucket, timezone, now), ...scope })),
+    );
+    return Object.fromEntries(BUCKETS.map((bucket, i) => [bucket, counts[i] ?? 0])) as Record<Bucket, number>;
   }
 
   /**
@@ -183,7 +274,8 @@ export class FollowUpsService {
       await this.repository.recordLeadActivity(tx, {
         leadId,
         activityType: 'FOLLOW_UP_CREATED',
-        description: `Follow-up scheduled for ${scheduledAt.toISOString()}`,
+        // In the organization's time, not a UTC ISO string nobody can read.
+        description: `Follow-up scheduled for ${formatZonedDateTime(scheduledAt, await this.repository.organizationTimezone(tx))}`,
         actorId: principal.userId,
         idempotencyKey,
         result: { followUpId: followUp.id },
@@ -473,6 +565,22 @@ export class FollowUpsService {
         tx,
       });
 
+      /*
+       * The same facts the outcome endpoint records, so a missed call logged
+       * through this older endpoint still shows as the lead's last outcome.
+       * WhatsApp has no call outcome, so it leaves them untouched.
+       */
+      const legacyOutcome = LEGACY_ATTEMPT_OUTCOMES[dto.activityType];
+      if (legacyOutcome) {
+        await this.repository.recordLeadOutcomeFacts(tx, {
+          leadId,
+          outcome: legacyOutcome,
+          at: new Date(),
+          reached: CALL_OUTCOME_RULES[legacyOutcome].reached,
+          actorId: principal.userId,
+        });
+      }
+
       await this.repository.recordLeadActivity(tx, {
         leadId,
         activityType: dto.activityType,
@@ -492,6 +600,212 @@ export class FollowUpsService {
         // Returned so the caller can SEE the stage did not move, rather than
         // taking it on trust.
         leadStatus: lead.status as LeadStatus,
+      };
+    });
+  }
+
+  /**
+   * Records the outcome of one call, and everything it decides, in ONE commit.
+   *
+   * The outcome's rule (CALL_OUTCOME_RULES) decides the behaviour:
+   *
+   *   reached       the follow-up being worked is COMPLETED with the outcome;
+   *                 a NEW lead becomes CONTACTED; lastContactedAt moves.
+   *   not reached   the follow-up is NOT completed — it is superseded by the
+   *                 retry, so the work stays owed and stays in the queue.
+   *
+   * Either way exactly one open follow-up remains (the next action), unless the
+   * lead is closed as LOST, which the outcome must offer. The stage never moves
+   * backwards, and a missed call or a reschedule never moves it at all.
+   *
+   * Idempotent on the Idempotency-Key, under the lead's row lock — a double
+   * click is answered with the first result, never a second call on the record.
+   */
+  async recordOutcome(
+    leadId: string,
+    dto: RecordOutcomeDto,
+    principal: TenantPrincipal,
+    idempotencyKey: string | null = null,
+  ): Promise<RecordOutcomeResult> {
+    await this.requireVisibleLead(leadId, principal);
+    const rule = CALL_OUTCOME_RULES[dto.outcome];
+
+    // --- shape checks that depend on the outcome ------------------------------
+    const requirementGiven =
+      dto.productId !== undefined ||
+      dto.productInterest !== undefined ||
+      dto.quantity !== undefined ||
+      dto.expectedPurchaseDate !== undefined;
+    if (requirementGiven && !rule.capturesRequirement) {
+      throw AppException.validation(`"${rule.label}" does not record a requirement.`, {
+        outcome: ['requirement fields are only accepted with a requirement outcome'],
+      });
+    }
+    if (dto.close && !rule.offersClose) {
+      throw AppException.validation(`"${rule.label}" cannot close the lead.`, {
+        close: ['not offered for this outcome — schedule the next action instead'],
+      });
+    }
+    if (dto.markQualified && !rule.suggestsQualified) {
+      throw AppException.validation(`"${rule.label}" does not qualify the lead.`, {
+        markQualified: ['not offered for this outcome'],
+      });
+    }
+    if (!dto.close && !dto.nextFollowUpAt) {
+      // The "no lead left behind" rule: an open lead keeps a next action.
+      throw AppException.validation('Schedule the next action, or close the lead.', {
+        nextFollowUpAt: ['is required unless the lead is being closed'],
+      });
+    }
+    if (dto.expectedPurchaseDate && Number.isNaN(Date.parse(`${dto.expectedPurchaseDate}T00:00:00Z`))) {
+      throw AppException.validation('Invalid date.', { expectedPurchaseDate: ['is not a real date'] });
+    }
+    if (dto.productId && !(await this.leads.productExists(dto.productId))) {
+      throw AppException.validation('That product does not exist.', { productId: ['not found'] });
+    }
+    const nextAt = dto.nextFollowUpAt ? parseWhen(dto.nextFollowUpAt) : null;
+
+    return this.repository.inLeadTransaction(leadId, async (tx, lead) => {
+      if (!lead) throw AppException.leadNotFound();
+
+      // --- a replay of this exact request --------------------------------------
+      const replay = await findReplay(tx, {
+        leadId,
+        activityType: rule.activityType,
+        key: idempotencyKey,
+      });
+      if (replay) {
+        const nextId = typeof replay['nextFollowUpId'] === 'string' ? replay['nextFollowUpId'] : null;
+        const next = nextId ? await this.repository.findById(nextId, undefined, tx) : null;
+        const currentStatus = await this.repository.leadStatus(leadId, tx);
+        return {
+          leadId,
+          outcome: (replay['outcome'] as CallOutcome | undefined) ?? dto.outcome,
+          leadStatus: (currentStatus ?? lead.status) as LeadStatus,
+          completedFollowUpId:
+            typeof replay['completedFollowUpId'] === 'string' ? replay['completedFollowUpId'] : null,
+          followUp: next ? toView(next) : null,
+          nextFollowUpAt: (await this.repository.leadNextFollowUpAt(leadId, tx))?.toISOString() ?? null,
+          replayed: true,
+        };
+      }
+
+      // Checked under the lock, so a lead closed a moment ago is seen closed.
+      if (isTerminal(lead.status as LeadStatus)) {
+        throw AppException.validation(
+          'This lead is closed. Reopen it before logging another call.',
+          { leadId: ['lead is won or lost'] },
+        );
+      }
+
+      const now = new Date();
+      const worked = await this.repository.findWorkedFollowUp(tx, leadId, dto.followUpId);
+      if (dto.followUpId && !worked) {
+        throw AppException.conflict(
+          ERROR_CODES.CONFLICT,
+          'That follow-up is no longer open — somebody may have completed or rescheduled it.',
+        );
+      }
+
+      // 1. The follow-up being worked. Completed only if the call happened.
+      let completedFollowUpId: string | null = null;
+      if (rule.followUp === 'complete' && worked) {
+        const closed = await this.repository.close({
+          id: worked.id,
+          status: 'COMPLETED',
+          outcome: rule.label.slice(0, 60),
+          notes: dto.note,
+          actorId: principal.userId,
+          tx,
+        });
+        if (closed > 0) completedFollowUpId = worked.id;
+      }
+
+      // 2. The stage — forward only, and only by rule.
+      const current = lead.status as LeadStatus;
+      let target: LeadStatus = current;
+      if (dto.close) {
+        target = 'LOST';
+      } else {
+        if (rule.reached && current === 'NEW') target = 'CONTACTED';
+        if (dto.markQualified && ['NEW', 'CONTACTED', 'FOLLOW_UP'].includes(current)) {
+          target = 'QUALIFIED';
+        }
+      }
+      if (target !== current) {
+        await this.leads.applyStatusChange({
+          leadId,
+          status: target,
+          lostReason: target === 'LOST' ? (dto.lostReason ?? rule.defaultLostReason ?? rule.label) : undefined,
+          actorId: principal.userId,
+          tx,
+        });
+      }
+
+      // 3. The next action — exactly one open follow-up afterwards.
+      let nextFollowUpId: string | null = null;
+      if (!dto.close && nextAt) {
+        const result = await this.repository.setNextForLead({
+          leadId,
+          scheduledAt: nextAt,
+          // Null when nobody owns the lead: the mirror alone carries the date.
+          assignedUserId: lead.assignedToId ?? null,
+          type: (dto.nextType ?? 'CALL') as FollowUpType,
+          title: rule.nextTitle,
+          reason: rule.followUp === 'retry' ? `Retry after: ${rule.label}` : `Superseded by: ${rule.label}`,
+          actorId: principal.userId,
+          tx,
+        });
+        nextFollowUpId = result.followUpId;
+      }
+
+      // 4. What the call established, on the lead itself.
+      await this.repository.recordLeadOutcomeFacts(tx, {
+        leadId,
+        outcome: dto.outcome,
+        at: now,
+        reached: rule.reached,
+        actorId: principal.userId,
+        requirement: rule.capturesRequirement
+          ? {
+              productId: dto.productId,
+              productInterest: dto.productInterest,
+              quantity: dto.quantity,
+              expectedPurchaseDate: dto.expectedPurchaseDate,
+            }
+          : undefined,
+      });
+
+      // 5. The timeline: one entry for one call, carrying the key and the result.
+      await this.repository.recordLeadActivity(tx, {
+        leadId,
+        activityType: rule.activityType,
+        description: outcomeDescription(rule.label, dto),
+        actorId: principal.userId,
+        idempotencyKey,
+        result: {
+          outcome: dto.outcome,
+          completedFollowUpId,
+          nextFollowUpId,
+          ...(rule.capturesRequirement
+            ? {
+                quantity: dto.quantity ?? null,
+                expectedPurchaseDate: dto.expectedPurchaseDate ?? null,
+              }
+            : {}),
+        },
+      });
+
+      const next = nextFollowUpId ? await this.repository.findById(nextFollowUpId, undefined, tx) : null;
+
+      return {
+        leadId,
+        outcome: dto.outcome,
+        leadStatus: target,
+        completedFollowUpId,
+        followUp: next ? toView(next) : null,
+        nextFollowUpAt: (await this.repository.leadNextFollowUpAt(leadId, tx))?.toISOString() ?? null,
+        replayed: false,
       };
     });
   }
@@ -668,6 +982,15 @@ export class FollowUpsService {
  * Only the types that mean "I tried and did not get through" are here; the
  * DTO's own `@IsIn` is what restricts the input to them.
  */
+/**
+ * How the older /attempts types map onto structured outcomes. "They asked me
+ * to call back" means somebody answered, so it is a reached outcome.
+ */
+const LEGACY_ATTEMPT_OUTCOMES: Partial<Record<string, CallOutcome>> = {
+  CALL_NOT_ANSWERED: 'NOT_ANSWERED',
+  CALL_BACK_LATER: 'CONNECTED_CALL_BACK',
+};
+
 const ATTEMPT_LABELS: Record<string, string> = {
   CALL_NOT_ANSWERED: 'no answer',
   CALL_BACK_LATER: 'a call-back request',
@@ -686,6 +1009,15 @@ function attemptDescription(dto: { activityType: string; note?: string | undefin
   const base = `Tried to reach the customer — ${label}`;
 
   return dto.note ? `${base}: ${dto.note}` : base;
+}
+
+/** The timeline entry for one call: what happened, then the rep's own note. */
+function outcomeDescription(label: string, dto: RecordOutcomeDto): string {
+  const parts = [label];
+  if (dto.quantity) parts.push(`quantity: ${dto.quantity}`);
+  if (dto.expectedPurchaseDate) parts.push(`expected purchase: ${dto.expectedPurchaseDate}`);
+  const base = parts.join(' · ');
+  return (dto.note ? `${base} — ${dto.note}` : base).slice(0, 1000);
 }
 
 function parseWhen(value: string): Date {
