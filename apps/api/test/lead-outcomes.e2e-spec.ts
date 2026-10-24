@@ -428,6 +428,14 @@ describe('Call outcomes', () => {
       const meta = entry?.metadata as Record<string, string>;
       expect(meta['from']).toBe(original?.scheduledAt.toISOString());
       expect(meta['to']).toBe(new Date(movedTo).toISOString());
+
+      // The lead's follow-up list marks the old row as moved, not abandoned.
+      const list = await ctx.http().get(`/api/v1/leads/${leadId}/follow-ups`).set(owner()).expect(200);
+      const old = (list.body.data as { id: string; status: string; rescheduledToId: string | null }[]).find(
+        (f) => f.id === original?.id,
+      );
+      expect(old?.status).toBe('CANCELLED');
+      expect(old?.rescheduledToId).toEqual(expect.any(String));
     });
   });
 

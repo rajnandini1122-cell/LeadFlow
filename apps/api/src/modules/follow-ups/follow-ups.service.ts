@@ -88,6 +88,12 @@ export interface FollowUpView {
   notes: string | null;
   outcome: string | null;
   completedAt: string | null;
+  /**
+   * Set when this follow-up was moved: it points at its replacement. A
+   * CANCELLED row with this set was RESCHEDULED, not abandoned — the queue
+   * history shows the two differently.
+   */
+  rescheduledToId: string | null;
   assignedTo: { id: string; fullName: string };
   isOverdue: boolean;
 }
@@ -1043,6 +1049,7 @@ type FollowUpRow = {
   notes: string | null;
   outcome: string | null;
   completedAt: Date | null;
+  rescheduledToId: string | null;
   assignedUserId: string;
   lead: {
     leadNumber: string;
@@ -1097,6 +1104,7 @@ function toView(row: FollowUpRow): FollowUpView {
     notes: row.notes,
     outcome: row.outcome,
     completedAt: row.completedAt?.toISOString() ?? null,
+    rescheduledToId: row.rescheduledToId,
     assignedTo: row.assignedUser,
     // Derived rather than read from `status`, because the Phase 6 worker that
     // flips UPCOMING → DUE → OVERDUE does not exist yet. Computing it here

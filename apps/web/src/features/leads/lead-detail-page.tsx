@@ -364,7 +364,9 @@ export function LeadDetailPage(): React.JSX.Element {
                         }`}
                       >
                         {followUp.status === 'CANCELLED'
-                          ? 'Cancelled'
+                          ? followUp.rescheduledToId
+                            ? 'Rescheduled'
+                            : 'Cancelled'
                           : followUp.status === 'COMPLETED'
                             ? 'Done'
                             : followUp.isOverdue

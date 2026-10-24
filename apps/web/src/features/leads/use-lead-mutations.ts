@@ -36,6 +36,8 @@ export interface FollowUp {
   notes: string | null;
   outcome: string | null;
   completedAt: string | null;
+  /** Set when this follow-up was moved — it is then "Rescheduled", not "Cancelled". */
+  rescheduledToId?: string | null;
   assignedTo: { id: string; fullName: string };
   isOverdue: boolean;
 }

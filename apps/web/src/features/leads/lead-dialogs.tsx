@@ -729,6 +729,18 @@ export function CompleteFollowUpDialog({
 // Reschedule
 // -----------------------------------------------------------------------------
 
+/**
+ * Calendar-aware choices, the same as the call-outcome dialog's: "Tomorrow"
+ * means tomorrow at 11:00 on the organization's calendar, not "24 hours from
+ * now", which put a 7 am call in the queue.
+ */
+const RESCHEDULE_PRESETS = [
+  { label: 'In 2 hours', value: () => zonedFromNow(2) },
+  { label: 'Tomorrow 11 am', value: () => zonedDefault(1, 11) },
+  { label: 'In 3 days', value: () => zonedDefault(3, 11) },
+  { label: 'Next week', value: () => zonedDefault(7, 11) },
+] as const;
+
 export function RescheduleFollowUpDialog({
   followUp,
   open,
@@ -796,11 +808,11 @@ export function RescheduleFollowUpDialog({
         </Field>
 
         <div className="flex flex-wrap gap-2">
-          {RETRY_PRESETS.map((preset) => (
+          {RESCHEDULE_PRESETS.map((preset) => (
             <button
               key={preset.label}
               type="button"
-              onClick={() => setScheduledAt(zonedFromNow(preset.hours))}
+              onClick={() => setScheduledAt(preset.value())}
               className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
             >
               {preset.label}
