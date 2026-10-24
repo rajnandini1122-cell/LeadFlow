@@ -349,3 +349,32 @@ describe('the reschedule dialog', () => {
     expect(await screen.findByRole('status')).toHaveTextContent(/Rescheduled to .*11:00\s?am/i);
   });
 });
+
+// =============================================================================
+// Lead export carries what happened and what is next
+// =============================================================================
+
+describe('lead export', () => {
+  it('includes last call, last spoke and next action columns', async () => {
+    const { LeadsPage } = await import('../features/leads/leads-page');
+    const csvModule = await import('../lib/export-csv');
+    const download = vi.spyOn(csvModule, 'downloadCsv').mockImplementation(() => undefined);
+    vi.spyOn(authContext, 'useAuth').mockReturnValue({
+      can: () => true,
+      user: { id: 'user-1', fullName: 'Asha Rep', organization: { slug: 'demo' } },
+    } as never);
+    vi.spyOn(apiClient, 'apiGet').mockResolvedValue({ items: [LEAD], hasMore: false, nextCursor: null, total: 1 } as never);
+
+    wrap(<LeadsPage />, '/leads');
+    await screen.findByText('Kavya Iyer');
+    await userEvent.click(screen.getByRole('button', { name: 'Export loaded' }));
+
+    const csv = download.mock.calls[0]?.[1] ?? '';
+    // Line 1 is Excel's "sep=," hint; then the header row and the data.
+    const [, header, row] = csv.split(/\r?\n/);
+    expect(header).toContain('Last call outcome');
+    expect(header).toContain('Next action due');
+    expect(row).toContain('Not answered');
+    expect(row).toContain('Retry call — no answer');
+  });
+});

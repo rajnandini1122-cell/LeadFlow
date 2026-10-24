@@ -4,12 +4,14 @@ import {
   CALL_OUTCOMES,
   CALL_OUTCOME_RULES,
   LEAD_STATUSES,
+  isCallOutcome,
   type LeadLifecycleFilter,
   type LeadStatus,
 } from '@leadflow/api-types';
 import {
   formatCurrency,
   formatDate,
+  formatDateTime,
   formatDueDate,
   humanise,
 } from '../../lib/format';
@@ -21,7 +23,7 @@ import {
   SkeletonRows,
 } from '../../components/ui';
 import { useLeadsPage } from './use-leads';
-import { ActionableLeadList } from './actionable-lead-list';
+import { ActionableLeadList, nextActionText } from './actionable-lead-list';
 import { NewLeadDialog } from './new-lead-dialog';
 import { downloadCsv, exportFilename, toCsv } from '../../lib/export-csv';
 import { useAuth } from '../auth/auth-context';
@@ -135,6 +137,20 @@ export function LeadsPage(): React.JSX.Element {
       { header: 'Next follow-up', value: (lead) => formatDate(lead.nextFollowUpAt) },
       { header: 'Follow-up status', value: (lead) => formatDueDate(lead.nextFollowUpAt) },
       { header: 'Owner', value: (lead) => lead.assignedTo?.fullName ?? 'Unassigned' },
+      // What happened last and what is next — the columns a manager exports a
+      // list FOR. They were on screen but not in the file.
+      {
+        header: 'Last call outcome',
+        value: (lead) =>
+          lead.lastOutcome && isCallOutcome(lead.lastOutcome) ? CALL_OUTCOME_RULES[lead.lastOutcome].label : '',
+      },
+      { header: 'Last call at', value: (lead) => (lead.lastOutcomeAt ? formatDateTime(lead.lastOutcomeAt) : '') },
+      { header: 'Last spoke', value: (lead) => (lead.lastContactedAt ? formatDateTime(lead.lastContactedAt) : '') },
+      { header: 'Next action', value: (lead) => nextActionText(lead).text },
+      {
+        header: 'Next action due',
+        value: (lead) => (lead.nextAction ? formatDateTime(lead.nextAction.scheduledAt) : ''),
+      },
       { header: 'Created', value: (lead) => formatDate(lead.createdAt) },
     ]);
 

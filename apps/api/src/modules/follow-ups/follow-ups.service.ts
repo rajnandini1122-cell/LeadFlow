@@ -244,6 +244,37 @@ export class FollowUpsService {
     await this.requireVisibleLead(leadId, principal);
     const scheduledAt = parseWhen(dto.scheduledAt);
 
+    /*
+     * A named assignee is checked BEFORE the transaction opens.
+     *
+     * The membership query runs on the shared client, i.e. another pooled
+     * connection. Inside the transaction it held the lead's row lock while
+     * waiting for a second connection — on a one-connection pool it waited on
+     * itself until the transaction expired (HTTP 500), and on a busy production
+     * pool it is the shape of a pool deadlock. Found by the release audit.
+     */
+    if (dto.assignedUserId) await this.resolveAssignee(dto.assignedUserId, { assignedToId: null }, principal);
+
+    /*
+     * Never hand somebody work they cannot do (release audit). A follow-up sits
+     * in its ASSIGNEE's queue; if that person sees only their own leads and does
+     * not own this one, they could not open it or log the call — every action
+     * on the row would answer 404. Reassigning the lead is the way to give them
+     * its work, and it moves the follow-ups with it.
+     */
+    if (dto.assignedUserId) {
+      const lead = await this.leads.findById(leadId);
+      if (
+        lead &&
+        dto.assignedUserId !== lead.assignedToId &&
+        !(await this.leads.memberSeesOthersLeads(dto.assignedUserId))
+      ) {
+        throw AppException.validation('That person cannot see this lead, so they could not act on the follow-up.', {
+          assignedUserId: ['reassign the lead to them instead — its follow-ups move with it'],
+        });
+      }
+    }
+
     // Row, mirror and timeline in one commit, under the lead's lock.
     return this.repository.inLeadTransaction(leadId, async (tx, lead) => {
       if (!lead) throw AppException.leadNotFound();
@@ -266,7 +297,8 @@ export class FollowUpsService {
         );
       }
 
-      const assignedUserId = await this.resolveAssignee(dto.assignedUserId, lead, principal);
+      // Validated above; the default owner is read under the lock.
+      const assignedUserId = dto.assignedUserId ?? lead.assignedToId ?? principal.userId;
 
       const followUp = await this.repository.create({
         leadId,

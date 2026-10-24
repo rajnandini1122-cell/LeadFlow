@@ -1,9 +1,10 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable, forwardRef } from '@nestjs/common';
 import { ERROR_CODES } from '@leadflow/api-types';
 import { AuditRepository } from '../../common/audit/audit.repository';
 import { AppException } from '../../common/errors/app.exception';
 import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
 import { LeadsRepository } from './leads.repository';
+import { FollowUpsRepository } from '../follow-ups/follow-ups.repository';
 import type { DeactivateLeadDto, ReactivateLeadDto } from './dto/lead-lifecycle.dto';
 
 /**
@@ -34,6 +35,13 @@ export class LeadLifecycleService {
   constructor(
     private readonly repository: LeadsRepository,
     private readonly audit: AuditRepository,
+    /*
+     * forwardRef for the same reason as LeadMutationsService: leads and
+     * follow-ups reference each other. Reactivation needs the follow-up
+     * repository so the next action becomes a queue row in the same commit.
+     */
+    @Inject(forwardRef(() => FollowUpsRepository))
+    private readonly followUps: FollowUpsRepository,
   ) {}
 
   /**
@@ -142,7 +150,19 @@ export class LeadLifecycleService {
       });
     }
 
-    const { leadsChanged } = await this.repository.applyLifecycleChange({
+    /*
+     * THE DEFECT THIS FIXES (release audit). Reactivation wrote the date onto
+     * the lead and nothing else. Deactivation had cancelled every open
+     * follow-up, so a reactivated lead carried "next action: <date>" with no
+     * follow-up row — in nobody's queue, the exact way a lead disappears.
+     *
+     * Now one transaction under the lead's row lock: the lead comes back AND
+     * its next action is queued for its owner (the mirror alone for an
+     * unassigned lead, which no queue can hold).
+     */
+    const { leadsChanged } = await this.followUps.inLeadTransaction(id, async (tx, locked) => {
+      const changed = await this.repository.applyLifecycleChange({
+      tx,
       leadId: id,
       data: {
         deactivatedAt: null,
@@ -163,6 +183,22 @@ export class LeadLifecycleService {
       activityType: 'LEAD_UPDATED',
       description: dto.reason ? `Lead reactivated: ${dto.reason}` : 'Lead reactivated',
       actorId: principal.userId,
+    });
+
+      if (changed.leadsChanged > 0 && !isClosed) {
+        await this.followUps.setNextForLead({
+          leadId: id,
+          scheduledAt: new Date(dto.nextFollowUpAt as string),
+          // The owner as read under the lock, not before it.
+          assignedUserId: locked?.assignedToId ?? null,
+          title: 'Next action',
+          reason: 'Lead reactivated',
+          actorId: principal.userId,
+          tx,
+        });
+      }
+
+      return changed;
     });
 
     if (leadsChanged === 0) throw AppException.leadNotFound();

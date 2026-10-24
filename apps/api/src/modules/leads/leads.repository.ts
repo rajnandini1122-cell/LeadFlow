@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import type { LeadPriority, LeadStatus } from '@leadflow/api-types';
-import { AWAITING_RESPONSE_OUTCOMES } from '@leadflow/api-types';
+import { AWAITING_RESPONSE_OUTCOMES, PERMISSIONS } from '@leadflow/api-types';
 import type { ActivityType } from '../../generated/prisma/enums';
 import type { Prisma } from '../../generated/prisma/client';
 import { sideEffectsFor } from './lead-status';
@@ -688,6 +688,28 @@ export class LeadsRepository {
   async isActiveMember(userId: string): Promise<boolean> {
     const count = await this.prisma.client.organizationUser.count({
       where: { userId, status: 'ACTIVE' },
+    });
+    return count > 0;
+  }
+
+  /**
+   * Whether an active member can see leads they do not own (team or all).
+   *
+   * A follow-up assigned to someone lands in THEIR queue; if they can only see
+   * their own leads, they could not open the lead or log the call. Used to
+   * refuse handing somebody work they cannot do.
+   */
+  async memberSeesOthersLeads(userId: string): Promise<boolean> {
+    const count = await this.prisma.client.organizationUser.count({
+      where: {
+        userId,
+        status: 'ACTIVE',
+        role: {
+          permissions: {
+            some: { permission: { key: { in: [PERMISSIONS.LEAD_VIEW_ALL, PERMISSIONS.LEAD_VIEW_TEAM] } } },
+          },
+        },
+      },
     });
     return count > 0;
   }
