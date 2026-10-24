@@ -524,3 +524,41 @@ describe('lead market', () => {
     expect(screen.getByRole('link', { name: /India \(domestic\)\s*14/ })).toHaveAttribute('href', '/leads?market=DOMESTIC');
   });
 });
+
+// =============================================================================
+// Due-date labels agree with the queues
+// =============================================================================
+
+describe('due-date labels', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('calls work earlier today "Overdue today", not "Due today"', async () => {
+    const { formatDueDate } = await import('../lib/format');
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-24T14:30:00.000Z')); // 20:00 IST
+
+    // Due 11:00 IST today — already in the Overdue queue.
+    expect(formatDueDate('2026-10-24T05:30:00.000Z')).toBe('Overdue today');
+    // Due 22:00 IST today — still ahead.
+    expect(formatDueDate('2026-10-24T16:30:00.000Z')).toBe('Due today');
+  });
+
+  it('cuts the day on the ORGANIZATION’s calendar, not the device’s', async () => {
+    const { formatDueDate } = await import('../lib/format');
+    vi.useFakeTimers();
+    // 23:00 IST on the 24th = 17:30 UTC — still the 24th in IST.
+    vi.setSystemTime(new Date('2026-10-24T17:30:00.000Z'));
+
+    // 01:00 IST on the 25th is TOMORROW in IST (it is still the 24th in UTC).
+    expect(formatDueDate('2026-10-24T19:30:00.000Z')).toBe('Due tomorrow');
+  });
+
+  it('paints anything past due red, as the Overdue queue counts it', () => {
+    signedInAs(['lead.update']);
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-24T14:30:00.000Z'));
+    wrap(<ActionableLeadList leads={[{ ...LEAD, nextAction: { ...LEAD.nextAction!, scheduledAt: '2026-10-24T05:30:00.000Z', isOverdue: true } }]} />);
+
+    expect(screen.getByText('Overdue today').className).toContain('text-red-700');
+  });
+});

@@ -80,14 +80,34 @@ export function currencySymbol(): string {
   return parts.find((part) => part.type === 'currency')?.value ?? context.currency;
 }
 
-const startOfDay = (date: Date): number =>
-  new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+/**
+ * The calendar day of an instant in the ORGANIZATION's timezone, as a UTC
+ * midnight — so day arithmetic follows the same calendar as the server's
+ * queues. It used the DEVICE's calendar, so a label could say "today" for work
+ * the Today tab (computed in the organization's zone) did not contain.
+ */
+const orgDay = (date: Date): number => {
+  const [y, m, d] = new Intl.DateTimeFormat('en-CA', {
+    timeZone: context.timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  })
+    .format(date)
+    .split('-')
+    .map(Number) as [number, number, number];
+  return Date.UTC(y, m - 1, d);
+};
 
-/** Whole days between today and `iso`. Negative means the past. */
+/** Whole organization-calendar days between today and `iso`. Negative means the past. */
 export function daysUntil(iso: string | null): number | null {
   if (!iso) return null;
-  const diff = startOfDay(new Date(iso)) - startOfDay(new Date());
-  return Math.round(diff / 86_400_000);
+  return Math.round((orgDay(new Date(iso)) - orgDay(new Date())) / 86_400_000);
+}
+
+/** True once the moment has passed — the same test the Overdue queue uses. */
+export function isPastDue(iso: string | null): boolean {
+  return iso !== null && new Date(iso).getTime() < Date.now();
 }
 
 /**
@@ -102,7 +122,8 @@ export function formatDueDate(iso: string | null): string {
 
   if (days < -1) return `${Math.abs(days)} days overdue`;
   if (days === -1) return 'Overdue since yesterday';
-  if (days === 0) return 'Due today';
+  // Earlier today is LATE, not "due today": it is in the Overdue queue.
+  if (days === 0) return isPastDue(iso) ? 'Overdue today' : 'Due today';
   if (days === 1) return 'Due tomorrow';
   if (days <= 7) return `Due in ${days} days`;
   return `Due ${formatDate(iso)}`;
