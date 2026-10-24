@@ -378,3 +378,87 @@ describe('lead export', () => {
     expect(row).toContain('Retry call — no answer');
   });
 });
+
+// =============================================================================
+// Dashboard
+// =============================================================================
+
+describe('the dashboard', () => {
+  const DASH = {
+    scope: 'ALL',
+    timezone: 'Asia/Kolkata',
+    followUps: { overdue: 3, dueToday: 5, upcoming: 9 },
+    pipeline: {
+      activeCount: 12,
+      activeValue: '1250000',
+      byStage: [
+        { status: 'NEW', count: 4, value: '200000' },
+        { status: 'QUALIFIED', count: 6, value: '800000' },
+        { status: 'NEGOTIATION', count: 2, value: '250000' },
+      ],
+    },
+    outcomes: { won: 3, lost: 1, wonValue: '400000', conversionRate: 75, newThisWeek: 4 },
+    contacts: 20,
+    nextActions: [],
+    recent: [],
+  };
+
+  const render = async (workspace: unknown = { ...SUMMARY, scope: 'TEAM', leads: { ...SUMMARY.leads, unassigned: 2 } }) => {
+    const { DashboardPage } = await import('../features/dashboard/dashboard-page');
+    vi.spyOn(apiClient, 'apiGet').mockImplementation((url: string) => {
+      if (url === '/dashboard') return Promise.resolve(DASH as never);
+      if (url === '/workspace/summary') return Promise.resolve(workspace as never);
+      if (url === '/leads') return Promise.resolve({ items: [LEAD], hasMore: false, nextCursor: null, total: 1 } as never);
+      return Promise.resolve([] as never);
+    });
+    wrap(<DashboardPage />);
+    await screen.findByRole('region', { name: 'Key numbers' });
+  };
+
+  it('shows the key numbers, each linking to the list it counts', async () => {
+    signedInAs(['lead.view.all', 'lead.create', 'lead.import', 'lead.update']);
+    await render();
+
+    const tiles = within(screen.getByRole('region', { name: 'Key numbers' }));
+    expect(tiles.getByRole('link', { name: /Overdue\s*3/ })).toHaveAttribute('href', '/today?view=overdue');
+    expect(tiles.getByRole('link', { name: /Due today\s*5/ })).toHaveAttribute('href', '/today?view=today');
+    expect(await tiles.findByRole('link', { name: /Awaiting response\s*2/ })).toHaveAttribute('href', '/today?view=awaiting');
+    expect(tiles.getByRole('link', { name: /Completed today\s*6/ })).toBeInTheDocument();
+    expect(tiles.getByRole('link', { name: /Win rate\s*75%/ })).toHaveAttribute('href', '/leads?status=WON');
+  });
+
+  it('draws the pipeline as one bar per stage that opens that stage', async () => {
+    signedInAs(['lead.view.all']);
+    await render();
+
+    const qualified = screen.getByRole('link', { name: /^Qualified: 6 leads/ });
+    expect(qualified).toHaveAttribute('href', '/leads?status=QUALIFIED');
+    // Count and value are written, not only drawn.
+    expect(within(qualified).getByText('6')).toBeInTheDocument();
+  });
+
+  it('offers the primary actions in the header', async () => {
+    signedInAs(['lead.view.all', 'lead.create', 'lead.import']);
+    await render();
+
+    expect(screen.getByRole('button', { name: '+ New lead' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Import CSV' })).toHaveAttribute('href', '/leads/import');
+    expect(screen.getByRole('link', { name: 'My work today' })).toHaveAttribute('href', '/today');
+  });
+
+  it('puts the work on the dashboard with its actions', async () => {
+    signedInAs(['lead.view.all', 'lead.update', 'followup.create']);
+    await render();
+
+    expect(screen.getByRole('heading', { name: 'Today’s priorities' })).toBeInTheDocument();
+    // Recent leads are actionable rows, not bare links.
+    expect(await screen.findByRole('button', { name: /Log call outcome for Kavya Iyer/ })).toBeInTheDocument();
+  });
+
+  it('survives missing secondary numbers instead of crashing', async () => {
+    signedInAs(['lead.view.all']);
+    await render({});
+
+    expect(within(screen.getByRole('region', { name: 'Key numbers' })).getByRole('link', { name: /Awaiting response\s*…/ })).toBeInTheDocument();
+  });
+});

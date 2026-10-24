@@ -40,7 +40,12 @@ const PAGE_SIZE = 25;
 export function LeadsPage(): React.JSX.Element {
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
-  const [status, setStatus] = useState<LeadStatus | 'ALL'>('ALL');
+  // The stage can arrive in the URL (a dashboard pipeline bar links to it).
+  const [initialParams] = useSearchParams();
+  const requestedStatus = initialParams.get('status');
+  const [status, setStatus] = useState<LeadStatus | 'ALL'>(
+    requestedStatus && (LEAD_STATUSES as readonly string[]).includes(requestedStatus) ? (requestedStatus as LeadStatus) : 'ALL',
+  );
   const [dialogOpen, setDialogOpen] = useState(false);
   const [lifecycle, setLifecycle] = useState<LeadLifecycleFilter>('ACTIVE');
   /*

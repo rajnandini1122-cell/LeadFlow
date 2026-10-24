@@ -53,7 +53,8 @@ export function PageHeader({
   action,
 }: {
   title: string;
-  subtitle?: string | undefined;
+  /** Text, or text with an inline element (e.g. a scope note). */
+  subtitle?: ReactNode | undefined;
   action?: ReactNode | undefined;
 }): React.JSX.Element {
   return (

@@ -111,7 +111,7 @@ export function NewLeadDialog({
   });
 
   const sources =
-    organization.data?.settings.leadSources.length
+    organization.data?.settings?.leadSources?.length
       ? organization.data.settings.leadSources
       : FALLBACK_SOURCES;
 
