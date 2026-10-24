@@ -37,6 +37,8 @@ interface NavItem {
 /** Navigation from spec §25. */
 /** Exported so a test can assert what each entry requires to be visible. */
 export const NAV_ITEMS: NavItem[] = [
+  // First: what to do now. The dashboard below it is the overview.
+  { to: '/today', label: 'My work', icon: '✦' },
   { to: '/dashboard', label: 'Dashboard', icon: '◆' },
   { to: '/inbox', label: 'Inbox', icon: '✉', badge: 'inbox', requiresOmnichannel: true },
   { to: '/leads', label: 'Leads', icon: '☰' },

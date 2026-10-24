@@ -1,29 +1,27 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import {
+  CALL_OUTCOMES,
+  CALL_OUTCOME_RULES,
   LEAD_STATUSES,
   type LeadLifecycleFilter,
   type LeadStatus,
 } from '@leadflow/api-types';
 import {
   formatCurrency,
-  formatCurrencyCompact,
   formatDate,
   formatDueDate,
   humanise,
 } from '../../lib/format';
 import {
-  Avatar,
   Card,
-  DueBadge,
   EmptyState,
   ErrorNotice,
   PageHeader,
-  PriorityBadge,
   SkeletonRows,
-  StatusBadge,
 } from '../../components/ui';
-import { useLeadsPage, type LeadSummary } from './use-leads';
+import { useLeadsPage } from './use-leads';
+import { ActionableLeadList } from './actionable-lead-list';
 import { NewLeadDialog } from './new-lead-dialog';
 import { downloadCsv, exportFilename, toCsv } from '../../lib/export-csv';
 import { useAuth } from '../auth/auth-context';
@@ -47,9 +45,31 @@ export function LeadsPage(): React.JSX.Element {
    * Leads nobody owns. They cannot carry a follow-up row, so they appear in no
    * follow-up queue — this is the one place a manager can find them to assign.
    */
-  const [unassignedOnly, setUnassignedOnly] = useState(false);
   const { user, can } = useAuth();
   const canSeeTeam = can('lead.view.all');
+
+  /*
+   * The import batch and the work filters come from the URL, not only from
+   * controls on this page: they are arrived at by following a link (the import
+   * result, the Follow-ups "Unassigned" button, a workspace tile), so the link
+   * can be shared and the filter survives a refresh.
+   */
+  const [params, setParams] = useSearchParams();
+  const importBatchId = params.get('importBatchId') ?? undefined;
+  /*
+   * Leads nobody owns. They cannot carry a follow-up row, so they appear in no
+   * follow-up queue — this is the one place a manager can find them to assign.
+   */
+  const unassignedOnly = params.get('unassigned') === 'true';
+  const freshOnly = params.get('fresh') === 'true';
+  const awaitingOnly = params.get('awaiting') === 'true';
+  const lastOutcome = params.get('lastOutcome') ?? '';
+  const setFilter = (key: string, value: string | null): void => {
+    const next = new URLSearchParams(params);
+    if (value) next.set(key, value);
+    else next.delete(key);
+    setParams(next, { replace: true });
+  };
 
   /*
    * The import batch comes from the URL, not from a control on this page.
@@ -59,9 +79,6 @@ export function LeadsPage(): React.JSX.Element {
    * fixes a bad import keeps working after a refresh. A piece of state only
    * this component knew would lose that.
    */
-  const [params] = useSearchParams();
-  const importBatchId = params.get('importBatchId') ?? undefined;
-
   // Debounced, because the search box now hits the API on every keystroke.
   useEffect(() => {
     const timer = setTimeout(() => setSearch(searchInput.trim()), 300);
@@ -73,6 +90,9 @@ export function LeadsPage(): React.JSX.Element {
       search: search || undefined,
       status: status === 'ALL' ? undefined : status,
       ...(canSeeTeam && unassignedOnly ? { unassigned: true } : {}),
+      ...(freshOnly ? { fresh: true } : {}),
+      ...(awaitingOnly ? { awaiting: true } : {}),
+      ...(lastOutcome ? { lastOutcome } : {}),
       /*
        * Filtering by batch shows ALL of it, deactivated rows included.
        *
@@ -220,10 +240,46 @@ export function LeadsPage(): React.JSX.Element {
                 <FilterChip
                   label="Unassigned only"
                   active={unassignedOnly}
-                  onClick={() => setUnassignedOnly((value) => !value)}
+                  onClick={() => setFilter('unassigned', unassignedOnly ? null : 'true')}
                 />
               </>
             )}
+          </div>
+        )}
+
+        {/*
+          WORK filters — what happened on the phone, not where the deal is. A
+          separate row from the stage chips so a call outcome is never mistaken
+          for a sales stage.
+        */}
+        {!importBatchId && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="mr-1 text-xs text-slate-500">Work</span>
+            <FilterChip
+              label="New — not reached yet"
+              active={freshOnly}
+              onClick={() => setFilter('fresh', freshOnly ? null : 'true')}
+            />
+            <FilterChip
+              label="Awaiting response"
+              active={awaitingOnly}
+              onClick={() => setFilter('awaiting', awaitingOnly ? null : 'true')}
+            />
+            <label className="ml-1 flex items-center gap-1.5 text-xs text-slate-500">
+              Last call
+              <select
+                value={lastOutcome}
+                onChange={(event) => setFilter('lastOutcome', event.target.value || null)}
+                className="rounded-full border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700"
+              >
+                <option value="">Any</option>
+                {CALL_OUTCOMES.map((code) => (
+                  <option key={code} value={code}>
+                    {CALL_OUTCOME_RULES[code].label}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
         )}
 
@@ -247,18 +303,14 @@ export function LeadsPage(): React.JSX.Element {
             icon="⌕"
             title="No leads match"
             description={
-              search || status !== 'ALL'
-                ? 'Try clearing the search box or choosing a different status.'
+              search || status !== 'ALL' || freshOnly || awaitingOnly || lastOutcome || unassignedOnly
+                ? 'Try clearing the search box or the filters above.'
                 : 'Add your first lead, or import a CSV file.'
             }
           />
         ) : (
           <>
-            <ul className="divide-y divide-slate-100">
-              {rows.map((lead) => (
-                <LeadListItem key={lead.id} lead={lead} />
-              ))}
-            </ul>
+            <ActionableLeadList leads={rows} />
 
             {leads.hasNextPage && (
               <div className="border-t border-slate-100 p-4 text-center">
@@ -303,50 +355,3 @@ function FilterChip({
   );
 }
 
-function LeadListItem({ lead }: { lead: LeadSummary }): React.JSX.Element {
-  return (
-    <li>
-      <Link
-        to={`/leads/${lead.id}`}
-        className="flex items-center gap-3 px-5 py-3.5 transition hover:bg-slate-50"
-      >
-        <Avatar name={lead.name} />
-
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <p className="truncate text-sm font-medium text-slate-900">{lead.name}</p>
-            <StatusBadge status={lead.status} />
-            <PriorityBadge priority={lead.priority} />
-          </div>
-          <p className="mt-1 truncate text-xs text-slate-500">
-            <span className="font-mono text-slate-400">{lead.leadNumber}</span>
-            {lead.companyName ? ` · ${lead.companyName}` : ''}
-            {lead.mobile ? ` · ${lead.mobile}` : ''}
-          </p>
-        </div>
-
-        <div className="shrink-0 text-right">
-          <p className="text-sm font-semibold tabular-nums text-slate-900">
-            {formatCurrencyCompact(lead.estimatedValue)}
-          </p>
-          <div className="mt-1">
-            <DueBadge iso={lead.nextFollowUpAt} label={formatDueDate(lead.nextFollowUpAt)} />
-          </div>
-        </div>
-
-        <div className="hidden w-32 shrink-0 items-center gap-2 md:flex">
-          {lead.assignedTo ? (
-            <>
-              <Avatar name={lead.assignedTo.fullName} size="sm" />
-              <span className="truncate text-xs text-slate-500">
-                {lead.assignedTo.fullName.split(' ')[0]}
-              </span>
-            </>
-          ) : (
-            <span className="text-xs text-slate-400">Unassigned</span>
-          )}
-        </div>
-      </Link>
-    </li>
-  );
-}

@@ -16,6 +16,7 @@ import type { TenantPrincipal } from '../../common/tenancy/tenant-context.servic
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { IdempotencyKey } from '../../common/web/idempotency-key.decorator';
+import { WorkspaceSummaryDto } from './workspace.controller';
 import { FollowUpsService, type FollowUpView } from './follow-ups.service';
 import {
   CancelFollowUpDto,
@@ -53,6 +54,21 @@ export class FollowUpsController {
       assignedUserId: dto.assignedUserId,
       limit: dto.limit,
     });
+  }
+
+  /**
+   * The true size of every bucket — what the queue tabs show.
+   *
+   * Declared BEFORE ':id' routes so "counts" is never parsed as an id.
+   */
+  @Get('counts')
+  @RequirePermissions(PERMISSIONS.LEAD_VIEW_OWN)
+  @ApiOperation({ summary: 'Follow-up count per bucket, in the organization timezone' })
+  async counts(
+    @Query() dto: WorkspaceSummaryDto,
+    @CurrentUser() principal: TenantPrincipal,
+  ) {
+    return this.followUps.bucketCounts(principal, { assignedUserId: dto.assignedUserId });
   }
 
   @Post(':id/complete')

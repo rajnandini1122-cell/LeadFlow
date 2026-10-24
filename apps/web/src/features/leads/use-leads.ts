@@ -27,6 +27,21 @@ export interface LeadSummary {
   createdAt: string;
   /** Null for a live lead. On the summary so the inactive list can show it. */
   deactivatedAt: string | null;
+  /** The last structured call outcome (CALL_OUTCOMES code), null if none logged. */
+  lastOutcome: string | null;
+  lastOutcomeAt: string | null;
+  /** When somebody last actually spoke to the customer. Missed calls do not move it. */
+  lastContactedAt: string | null;
+  latestActivity: { type: string; description: string | null; at: string } | null;
+  /** The open follow-up that IS the next action. Null when nothing is queued. */
+  nextAction: {
+    followUpId: string;
+    type: string;
+    title: string | null;
+    scheduledAt: string;
+    assignedTo: { id: string; fullName: string };
+    isOverdue: boolean;
+  } | null;
 }
 
 export interface LeadActivity {
@@ -57,6 +72,16 @@ export type LeadDetail = LeadSummary & {
   deactivatedBy: string | null;
   /** The import run that created it, or null if a person typed it in. */
   importBatchId: string | null;
+  /** The standardised product this enquiry is for, when one is mapped. */
+  product?: { id: string; name: string; sku: string; active: boolean } | null;
+  /** What the customer asked for, in their words. */
+  productInterest?: string | null;
+  account?: { id: string; name: string; status: string } | null;
+  source?: string | null;
+  /** The requirement as stated on a call. */
+  requirementQuantity?: string | null;
+  /** YYYY-MM-DD, a calendar date. */
+  expectedPurchaseDate?: string | null;
 };
 
 export interface LeadFilters {
@@ -65,6 +90,12 @@ export interface LeadFilters {
   assignedToId?: string | undefined;
   /** Only leads nobody owns — the ones no follow-up queue can show. */
   unassigned?: boolean | undefined;
+  /** Still NEW and never reached. */
+  fresh?: boolean | undefined;
+  /** Waiting on the customer. */
+  awaiting?: boolean | undefined;
+  /** Last call had exactly this outcome. */
+  lastOutcome?: string | undefined;
   /** Every lead from one CSV import, for correcting a bad run. */
   importBatchId?: string | undefined;
   /** Omitted means ACTIVE, which is what keeps deactivated leads out. */
@@ -89,6 +120,9 @@ export function useLeadsPage(
   if (filters.search) params['search'] = filters.search;
   if (filters.assignedToId) params['assignedToId'] = filters.assignedToId;
   if (filters.unassigned) params['unassigned'] = 'true';
+  if (filters.fresh) params['fresh'] = 'true';
+  if (filters.awaiting) params['awaiting'] = 'true';
+  if (filters.lastOutcome) params['lastOutcome'] = filters.lastOutcome;
   if (filters.importBatchId) params['importBatchId'] = filters.importBatchId;
   if (filters.lifecycle) params['lifecycle'] = filters.lifecycle;
 

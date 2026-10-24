@@ -37,6 +37,32 @@ export interface LeadSummary {
    * nobody scans a list by street name.
    */
   deactivatedAt: string | null;
+
+  // --- what happened last, and what happens next --------------------------
+  //
+  // On the SUMMARY because they are what a sales list is FOR: a row that shows
+  // only a name and a stage forces the agent to open every lead to learn
+  // whether anybody has called it. Fetched in the same round trip as the page.
+
+  /** The last structured call outcome (CALL_OUTCOMES code), or null if none logged. */
+  lastOutcome: string | null;
+  lastOutcomeAt: string | null;
+  /** When somebody last actually spoke to the customer. Missed calls do not move it. */
+  lastContactedAt: string | null;
+  /** The most recent timeline entry, for the "latest interaction" column. */
+  latestActivity: { type: string; description: string | null; at: string } | null;
+  /**
+   * The open follow-up that IS the next action — what the row's quick actions
+   * act on. Null when nothing is queued (closed, or nobody owns the lead).
+   */
+  nextAction: {
+    followUpId: string;
+    type: string;
+    title: string | null;
+    scheduledAt: string;
+    assignedTo: { id: string; fullName: string };
+    isOverdue: boolean;
+  } | null;
 }
 
 @Injectable()
@@ -57,6 +83,9 @@ export class LeadsService {
       status: dto.status,
       assignedToId: dto.assignedToId,
       unassigned: dto.unassigned,
+      fresh: dto.fresh,
+      awaiting: dto.awaiting,
+      lastOutcome: dto.lastOutcome,
       productId: dto.productId,
       accountId: dto.accountId,
       search: dto.search,
@@ -118,11 +147,15 @@ export class LeadsService {
       deactivatedBy: string | null;
       /** The import run that created it, or null if a person typed it in. */
       importBatchId: string | null;
+      /** Free text, as stated ("500 kg monthly"). */
+      requirementQuantity: string | null;
+      /** YYYY-MM-DD — a calendar date, never shifted by a timezone. */
+      expectedPurchaseDate: string | null;
     }
   > {
     // A lead outside the caller's visibility is a 404, exactly like one in
     // another tenant — the response must not confirm it exists.
-    const lead = await this.repository.findById(id, visibilityFilter(principal)?.assignedToId);
+    const lead = await this.repository.findDetailById(id, visibilityFilter(principal)?.assignedToId);
     // Another tenant's lead and a non-existent lead are the same 404.
     if (!lead) throw AppException.leadNotFound();
 
@@ -171,6 +204,12 @@ export class LeadsService {
       deactivationReason: lead.deactivationReason,
       deactivatedBy: lead.deactivatedBy,
       importBatchId: lead.importBatchId,
+      // The requirement as stated on a call: product and interest above, the
+      // quantity and timing here.
+      requirementQuantity: lead.requirementQuantity,
+      expectedPurchaseDate: lead.expectedPurchaseDate
+        ? lead.expectedPurchaseDate.toISOString().slice(0, 10)
+        : null,
       activities: activities.map((activity) => ({
         id: activity.id,
         type: activity.activityType,
@@ -547,9 +586,24 @@ type LeadRow = {
   createdAt: Date;
   deactivatedAt: Date | null;
   assignedTo: { id: string; fullName: string } | null;
+  lastOutcome: string | null;
+  lastOutcomeAt: Date | null;
+  lastContactedAt: Date | null;
+  /** Present when the query included them; see LEAD_SUMMARY_INCLUDE. */
+  followUps?: {
+    id: string;
+    type: string;
+    title: string | null;
+    scheduledAt: Date;
+    assignedUser: { id: string; fullName: string };
+  }[];
+  activities?: { activityType: string; description: string | null; createdAt: Date }[];
 };
 
 function toSummary(lead: LeadRow): LeadSummary {
+  const next = lead.followUps?.[0];
+  const latest = lead.activities?.[0];
+
   const name = [lead.firstName, lead.lastName].filter(Boolean).join(' ').trim();
 
   return {
@@ -567,5 +621,27 @@ function toSummary(lead: LeadRow): LeadSummary {
     assignedTo: lead.assignedTo,
     createdAt: lead.createdAt.toISOString(),
     deactivatedAt: lead.deactivatedAt?.toISOString() ?? null,
+    lastOutcome: lead.lastOutcome,
+    lastOutcomeAt: lead.lastOutcomeAt?.toISOString() ?? null,
+    lastContactedAt: lead.lastContactedAt?.toISOString() ?? null,
+    latestActivity: latest
+      ? {
+          type: latest.activityType,
+          description: latest.description,
+          at: latest.createdAt.toISOString(),
+        }
+      : null,
+    nextAction: next
+      ? {
+          followUpId: next.id,
+          type: next.type,
+          title: next.title,
+          scheduledAt: next.scheduledAt.toISOString(),
+          assignedTo: next.assignedUser,
+          // Derived, exactly as the follow-up view derives it, so a list row
+          // and the queue can never disagree about what is late.
+          isOverdue: next.scheduledAt.getTime() < Date.now(),
+        }
+      : null,
   };
 }

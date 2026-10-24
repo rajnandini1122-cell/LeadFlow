@@ -232,23 +232,23 @@ model Organization {
   followUps    FollowUp[]
   subscription Subscription?
 
-  channelIntegrations ChannelIntegration[]
-  accounts            Account[]
-  notifications       Notification[]
-  userDevices         UserDevice[]
-  products            Product[]
-  whatsappTemplates   WhatsAppTemplate[]
-  conversations       Conversation[]
-  messages            Message[]
-  channelIdentities   ContactChannelIdentity[]
-  integrationIntakes  IntegrationIntake[]
-  leadImportBatches   LeadImportBatch[]
-  leadImportMappings  LeadImportMappingTemplate[]
-  teams               Team[]
-  teamMembers         TeamMember[]
-  assignmentRules     AssignmentRule[]
-  territories         Territory[]
-  territoryCoverage   TerritoryCoverage[]
+  channelIntegrations   ChannelIntegration[]
+  accounts              Account[]
+  notifications         Notification[]
+  userDevices           UserDevice[]
+  products              Product[]
+  whatsappTemplates     WhatsAppTemplate[]
+  conversations         Conversation[]
+  messages              Message[]
+  channelIdentities     ContactChannelIdentity[]
+  integrationIntakes    IntegrationIntake[]
+  leadImportBatches     LeadImportBatch[]
+  leadImportMappings    LeadImportMappingTemplate[]
+  teams                 Team[]
+  teamMembers           TeamMember[]
+  assignmentRules       AssignmentRule[]
+  territories           Territory[]
+  territoryCoverage     TerritoryCoverage[]
   teamAssignmentCursors TeamAssignmentCursor[]
   adminControlCommands  AdminControlCommand[]
 
@@ -398,22 +398,22 @@ model User {
   createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  avatar            UserAvatar?
-  memberships       OrganizationUser[]   @relation("MembershipUser")
-  invitedMembers    OrganizationUser[]   @relation("MembershipInviter")
-  sessions          Session[]
-  passwordResets    PasswordResetToken[]
+  avatar             UserAvatar?
+  memberships        OrganizationUser[]       @relation("MembershipUser")
+  invitedMembers     OrganizationUser[]       @relation("MembershipInviter")
+  sessions           Session[]
+  passwordResets     PasswordResetToken[]
   emailVerifications EmailVerificationToken[]
-  auditLogs         AuditLog[]
-  assignedLeads     Lead[]               @relation("LeadAssignee")
-  leadsAssignedByMe Lead[]               @relation("LeadAssigner")
+  auditLogs          AuditLog[]
+  assignedLeads      Lead[]                   @relation("LeadAssignee")
+  leadsAssignedByMe  Lead[]                   @relation("LeadAssigner")
   /// Website enquiries that automatic assignment routed to this person.
-  assignedIntakes   IntegrationIntake[]  @relation("IntakeAssignee")
-  followUps         FollowUp[]           @relation("FollowUpAssignee")
-  ownedAccounts     Account[]            @relation("AccountOwner")
-  notifications     Notification[]
-  devices           UserDevice[]
-  activities        LeadActivity[]
+  assignedIntakes    IntegrationIntake[]      @relation("IntakeAssignee")
+  followUps          FollowUp[]               @relation("FollowUpAssignee")
+  ownedAccounts      Account[]                @relation("AccountOwner")
+  notifications      Notification[]
+  devices            UserDevice[]
+  activities         LeadActivity[]
 
   connectedIntegrations ChannelIntegration[]
   ownedConversations    Conversation[]
@@ -627,9 +627,9 @@ model EmailVerificationToken {
 /// Append-only. organizationId is nullable because some auditable events
 /// (a failed login against an unknown email) have no resolvable tenant.
 model AuditLog {
-  id             String  @id @default(dbgenerated("uuidv7()")) @db.Uuid
-  organizationId String? @map("organization_id") @db.Uuid
-  actorUserId    String? @map("actor_user_id") @db.Uuid
+  id               String  @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId   String? @map("organization_id") @db.Uuid
+  actorUserId      String? @map("actor_user_id") @db.Uuid
   /// Who did it, when they are not a LeadFlow user.
   ///
   /// An opaque reference supplied by a trusted external system — the control
@@ -721,14 +721,14 @@ model Lead {
   /// rather than free text so it cannot hold "India" in one row and "IN" in
   /// the next, which is how a country filter quietly stops working.
   country      String? @db.VarChar(2)
-  source      String? @db.VarChar(60)
+  source       String? @db.VarChar(60)
   /// The standardised product this enquiry is FOR — the grouping key for every
   /// product KPI.
   ///
   /// Nullable, and permanently so: leads created before the catalogue existed
   /// have none, an enquiry can legitimately be for something not yet
   /// catalogued, and forcing a value would mean guessing one.
-  productId   String? @map("product_id") @db.Uuid
+  productId    String? @map("product_id") @db.Uuid
 
   /// What the customer actually asked for, in their words.
   ///
@@ -770,6 +770,27 @@ model Lead {
   /// migration makes this NOT NULL for every non-terminal status.
   nextFollowUpAt DateTime? @map("next_follow_up_at") @db.Timestamptz(6)
   lastActivityAt DateTime? @map("last_activity_at") @db.Timestamptz(6)
+
+  // --- the last conversation, as structured facts ----------------------------
+  //
+  /// The most recent call outcome (a CALL_OUTCOMES code from @leadflow/api-types).
+  /// VARCHAR rather than an enum so a new outcome is an application change, not
+  /// a migration; the DTO is what restricts the values. NULL for leads whose
+  /// calls predate structured outcomes — unknown, never guessed.
+  lastOutcome     String?   @map("last_outcome") @db.VarChar(40)
+  lastOutcomeAt   DateTime? @map("last_outcome_at") @db.Timestamptz(6)
+  /// When somebody last actually SPOKE to the customer. Distinct from
+  /// lastOutcomeAt: three missed calls move that, never this. "Which customers
+  /// have been contacted?" is answered from here.
+  lastContactedAt DateTime? @map("last_contacted_at") @db.Timestamptz(6)
+
+  /// The requirement as the customer stated it, beside productId and
+  /// productInterest. Free text ("500 kg monthly") — a unit-bearing number
+  /// would have to guess the unit.
+  requirementQuantity  String?   @map("requirement_quantity") @db.VarChar(100)
+  /// When they expect to buy. A calendar DATE, not an instant: "in March" has
+  /// no time of day and must not drift across a timezone boundary.
+  expectedPurchaseDate DateTime? @map("expected_purchase_date") @db.Date
 
   lostReason String?   @map("lost_reason") @db.VarChar(255)
   /// What the deal ACTUALLY closed at. Kept separate from estimatedValue so
@@ -838,17 +859,17 @@ model Lead {
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  organization  Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  contact       Contact?       @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  organization  Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  contact       Contact?            @relation(fields: [contactId], references: [id], onDelete: SetNull)
   /// SetNull, never Cascade: removing an account must never delete the
   /// opportunities that are the evidence of the relationship.
-  account       Account?       @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  account       Account?            @relation(fields: [accountId], references: [id], onDelete: SetNull)
   /// SetNull, never Cascade: deleting a catalogue entry must not delete the
   /// enquiries that referenced it. The free-text productInterest survives too,
   /// so the lead still records what was wanted.
-  product       Product?       @relation(fields: [productId], references: [id], onDelete: SetNull)
-  assignedTo    User?          @relation("LeadAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
-  assignedBy    User?          @relation("LeadAssigner", fields: [assignedById], references: [id], onDelete: SetNull)
+  product       Product?            @relation(fields: [productId], references: [id], onDelete: SetNull)
+  assignedTo    User?               @relation("LeadAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+  assignedBy    User?               @relation("LeadAssigner", fields: [assignedById], references: [id], onDelete: SetNull)
   activities    LeadActivity[]
   followUps     FollowUp[]
   conversations Conversation[]
@@ -899,6 +920,9 @@ model Lead {
   /// status. Mostly NULL, so the btree stays small.
   @@index([organizationId, wonAt])
   @@index([organizationId, lostAt])
+  /// The Awaiting Response view and "last outcome" filters. Mostly NULL for
+  /// historical leads, so the btree stays small.
+  @@index([organizationId, lastOutcome, assignedToId])
   /// Archived-in-range. Every other query filters deleted_at IS NULL, which an
   /// index cannot help; counting the archived ones is the case that needs it.
   @@index([organizationId, deletedAt])
@@ -2260,22 +2284,22 @@ model IntegrationIntake {
 
   /// When processing last ran, whatever the outcome. Distinguishes "never
   /// looked at" from "tried and blocked".
-  lastProcessingAt DateTime? @map("last_processing_at") @db.Timestamptz(6)
+  lastProcessingAt   DateTime? @map("last_processing_at") @db.Timestamptz(6)
   /// How many times processing has run. A row climbing this without reaching
   /// PROCESSED is the one an operator should look at.
-  processingAttempts Int @default(0) @map("processing_attempts")
+  processingAttempts Int       @default(0) @map("processing_attempts")
   /// A short machine-readable outcome, e.g. NO_MATCH or NO_ELIGIBLE_AGENTS.
   /// Paired with failure_reason, which says the same thing in words.
-  processingCode String? @map("processing_code") @db.VarChar(40)
+  processingCode     String?   @map("processing_code") @db.VarChar(40)
 
-  resolvedTerritoryId    String? @map("resolved_territory_id") @db.Uuid
+  resolvedTerritoryId     String? @map("resolved_territory_id") @db.Uuid
   matchedAssignmentRuleId String? @map("matched_assignment_rule_id") @db.Uuid
-  assignedTeamId         String? @map("assigned_team_id") @db.Uuid
+  assignedTeamId          String? @map("assigned_team_id") @db.Uuid
   /// The TeamMember row chosen by the rotation, and the person behind it.
   /// Both, because the membership is what the rotation ordered and the user is
   /// who a person recognises.
-  assignedMembershipId String? @map("assigned_membership_id") @db.Uuid
-  assignedUserId       String? @map("assigned_user_id") @db.Uuid
+  assignedMembershipId    String? @map("assigned_membership_id") @db.Uuid
+  assignedUserId          String? @map("assigned_user_id") @db.Uuid
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
@@ -2289,14 +2313,14 @@ model IntegrationIntake {
 
   /// Routing provenance. All SetNull: retiring a rule or a territory must not
   /// delete the record of how an enquiry was handled while it was live.
-  resolvedTerritory    Territory?      @relation(fields: [resolvedTerritoryId, organizationId], references: [id, organizationId], onDelete: SetNull)
+  resolvedTerritory     Territory?      @relation(fields: [resolvedTerritoryId, organizationId], references: [id, organizationId], onDelete: SetNull)
   matchedAssignmentRule AssignmentRule? @relation(fields: [matchedAssignmentRuleId, organizationId], references: [id, organizationId], onDelete: SetNull)
-  assignedTeam         Team?           @relation("IntakeAssignedTeam", fields: [assignedTeamId, organizationId], references: [id, organizationId], onDelete: SetNull)
+  assignedTeam          Team?           @relation("IntakeAssignedTeam", fields: [assignedTeamId, organizationId], references: [id, organizationId], onDelete: SetNull)
   /// Who the rotation chose. A plain key, not a composite one: a user is
   /// global in this product — one person may belong to several organizations —
   /// so there is no tenant to carry into the key. The MEMBERSHIP above is the
   /// tenant-scoped half of the same fact.
-  assignedUser         User?           @relation("IntakeAssignee", fields: [assignedUserId], references: [id], onDelete: SetNull)
+  assignedUser          User?           @relation("IntakeAssignee", fields: [assignedUserId], references: [id], onDelete: SetNull)
 
   /// Idempotency, enforced by the database rather than by a prior read.
   /// Check-then-insert loses under concurrency: two identical requests both
@@ -2369,14 +2393,14 @@ model Team {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  organization    Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  manager         OrganizationUser? @relation("TeamManager", fields: [managerMembershipId, organizationId], references: [id, organizationId], onDelete: NoAction)
-  members         TeamMember[]
-  assignmentRules AssignmentRule[]
+  organization     Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  manager          OrganizationUser?     @relation("TeamManager", fields: [managerMembershipId, organizationId], references: [id, organizationId], onDelete: NoAction)
+  members          TeamMember[]
+  assignmentRules  AssignmentRule[]
   /// Where this team's rotation has got to. At most one row — see the model.
   assignmentCursor TeamAssignmentCursor?
   /// Enquiries routed to this team, kept as routing provenance.
-  intakes         IntegrationIntake[] @relation("IntakeAssignedTeam")
+  intakes          IntegrationIntake[]   @relation("IntakeAssignedTeam")
 
   /// Lets TeamMember point a composite key here and inherit the tenant.
   @@unique([id, organizationId])
@@ -2544,15 +2568,15 @@ model AssignmentRule {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   /// Composite, so a team from another tenant has nothing to match.
-  targetTeam   Team         @relation(fields: [targetTeamId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  targetTeam   Team                @relation(fields: [targetTeamId, organizationId], references: [id, organizationId], onDelete: Restrict)
   /// Composite for the same reason. Restrict, because losing a product must
   /// not silently delete the routing that referenced it.
-  product      Product?     @relation(fields: [productId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  product      Product?            @relation(fields: [productId, organizationId], references: [id, organizationId], onDelete: Restrict)
   /// Composite for the same reason, Restrict for the same reason: retiring a
   /// territory must not silently delete the routing that referenced it.
-  territory    Territory?   @relation(fields: [territoryId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  territory    Territory?          @relation(fields: [territoryId, organizationId], references: [id, organizationId], onDelete: Restrict)
   /// Enquiries this rule routed, kept as routing provenance.
   intakes      IntegrationIntake[]
 
@@ -2610,7 +2634,7 @@ model Territory {
   id             String @id @default(dbgenerated("uuidv7()")) @db.Uuid
   organizationId String @map("organization_id") @db.Uuid
 
-  name String @db.VarChar(80)
+  name        String  @db.VarChar(80)
   /// Lower-cased, whitespace-collapsed `name`, for the duplicate-name check.
   nameKey     String  @map("name_key") @db.VarChar(80)
   description String? @db.VarChar(500)
@@ -2799,7 +2823,6 @@ model AdminControlCommand {
   @@index([organizationId, createdAt(sort: Desc)])
   @@map("admin_control_commands")
 }
-
 
 // =============================================================================
 // CSV lead import

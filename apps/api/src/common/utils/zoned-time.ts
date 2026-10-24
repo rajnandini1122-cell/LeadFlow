@@ -217,3 +217,23 @@ export function isValidTimezone(timezone: string): boolean {
     return false;
   }
 }
+
+/**
+ * "23 Oct 2026, 2:00 pm" — an instant as wall-clock time in `timezone`.
+ *
+ * For text that is STORED, such as a timeline entry, where the reader must see
+ * the organization's time rather than a UTC ISO string. Locale fixed to en-GB
+ * (day-month order, as Indian business writing uses) so the stored sentence
+ * does not depend on the server's locale.
+ */
+export function formatZonedDateTime(instant: Date, timezone: string): string {
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: timezone,
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  }).format(instant);
+}

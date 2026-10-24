@@ -25,6 +25,9 @@ export interface FollowUp {
   mobile: string | null;
   leadStatus: string | null;
   leadPriority: string | null;
+  /** What the last call on this lead established (CALL_OUTCOMES code). */
+  leadLastOutcome?: string | null;
+  leadLastOutcomeAt?: string | null;
   estimatedValue: string | null;
   scheduledAt: string;
   type: string;
@@ -33,11 +36,61 @@ export interface FollowUp {
   notes: string | null;
   outcome: string | null;
   completedAt: string | null;
+  /** Set when this follow-up was moved — it is then "Rescheduled", not "Cancelled". */
+  rescheduledToId?: string | null;
   assignedTo: { id: string; fullName: string };
   isOverdue: boolean;
 }
 
-export type FollowUpBucket = 'today' | 'upcoming' | 'overdue' | 'completed';
+/**
+ * The follow-up views, computed server-side in the ORGANIZATION's timezone.
+ * Overdue and Today are disjoint; Tomorrow and This week sit inside Upcoming.
+ */
+export type FollowUpBucket =
+  | 'overdue'
+  | 'today'
+  | 'tomorrow'
+  | 'week'
+  | 'upcoming'
+  | 'awaiting'
+  | 'completed'
+  | 'completed_today';
+
+/** True totals per bucket — never the length of a capped page. */
+export type FollowUpCounts = Record<FollowUpBucket, number>;
+
+export interface WorkspaceSummary {
+  timezone: string;
+  scope: 'OWN' | 'TEAM';
+  followUps: FollowUpCounts;
+  leads: { fresh: number; awaiting: number; unassigned: number | null };
+}
+
+/** What logging one call produced. */
+export interface RecordOutcomeResult {
+  leadId: string;
+  outcome: string;
+  leadStatus: LeadStatus;
+  completedFollowUpId: string | null;
+  followUp: FollowUp | null;
+  nextFollowUpAt: string | null;
+  replayed: boolean;
+}
+
+export interface RecordOutcomeInput {
+  outcome: string;
+  followUpId?: string;
+  note?: string;
+  nextFollowUpAt?: string;
+  nextType?: string;
+  markQualified?: boolean;
+  close?: boolean;
+  lostReason?: string;
+  productId?: string;
+  productInterest?: string;
+  quantity?: string;
+  expectedPurchaseDate?: string;
+}
 
 /**
  * Invalidates everything a lead write can affect.
@@ -62,6 +115,9 @@ function useRefreshLeadData(): (leadId?: string) => void {
      * you do the work is worse than no count: it stops being believed.
      */
     void queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+    // The workspace tiles and the queue tab counts read the same buckets.
+    void queryClient.invalidateQueries({ queryKey: ['workspace'] });
+    void queryClient.invalidateQueries({ queryKey: ['follow-up-counts'] });
     if (leadId) {
       void queryClient.invalidateQueries({ queryKey: ['lead', leadId] });
       void queryClient.invalidateQueries({ queryKey: ['lead-activities', leadId] });
@@ -326,6 +382,43 @@ export function useRescheduleFollowUp() {
       idempotencyKey?: string;
     }) => apiPost<FollowUp>(`/follow-ups/${id}/reschedule`, input, idempotencyHeaders(idempotencyKey)),
     onSuccess: (_result, variables) => refresh(variables.leadId),
+  });
+}
+
+/** True totals for every bucket, for the queue tabs. */
+export function useFollowUpCounts(options: { assignedUserId?: string } = {}): UseQueryResult<FollowUpCounts> {
+  const params: Record<string, unknown> = {};
+  if (options.assignedUserId) params['assignedUserId'] = options.assignedUserId;
+  return useQuery({
+    queryKey: ['follow-up-counts', options.assignedUserId ?? null],
+    queryFn: () => apiGet<FollowUpCounts>('/follow-ups/counts', params),
+  });
+}
+
+/** The "My work today" numbers, in the organization's timezone. */
+export function useWorkspaceSummary(options: { assignedUserId?: string } = {}): UseQueryResult<WorkspaceSummary> {
+  const params: Record<string, unknown> = {};
+  if (options.assignedUserId) params['assignedUserId'] = options.assignedUserId;
+  return useQuery({
+    queryKey: ['workspace', options.assignedUserId ?? null],
+    queryFn: () => apiGet<WorkspaceSummary>('/workspace/summary', params),
+  });
+}
+
+/**
+ * Logs one call's outcome — reached or not — with everything it decides.
+ *
+ * The server's rule decides whether the worked follow-up is completed (the
+ * call happened) or replaced by a retry (it did not). One Idempotency-Key per
+ * dialog opening makes a double click one call, not two.
+ */
+export function useRecordOutcome(leadId: string) {
+  const refresh = useRefreshLeadData();
+
+  return useMutation({
+    mutationFn: ({ idempotencyKey, ...input }: RecordOutcomeInput & { idempotencyKey?: string }) =>
+      apiPost<RecordOutcomeResult>(`/leads/${leadId}/outcomes`, input, idempotencyHeaders(idempotencyKey)),
+    onSuccess: () => refresh(leadId),
   });
 }
 
