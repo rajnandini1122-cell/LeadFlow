@@ -13,6 +13,15 @@ import type {
 } from '@leadflow/api-types';
 import { apiGet } from '../../lib/api-client';
 
+/** DOMESTIC = the organization's own country; INTERNATIONAL = importers abroad. */
+export type LeadMarket = 'DOMESTIC' | 'INTERNATIONAL' | 'UNKNOWN';
+
+export const MARKET_LABELS: Record<LeadMarket, string> = {
+  DOMESTIC: 'India',
+  INTERNATIONAL: 'International',
+  UNKNOWN: 'Market unknown',
+};
+
 export interface LeadSummary {
   id: string;
   leadNumber: string;
@@ -27,6 +36,10 @@ export interface LeadSummary {
   createdAt: string;
   /** Null for a live lead. On the summary so the inactive list can show it. */
   deactivatedAt: string | null;
+  /** ISO country code, when the enquiry or import gave one. */
+  country: string | null;
+  /** Home market or abroad — India vs international importers for CRAVION. */
+  market: LeadMarket;
   /** The last structured call outcome (CALL_OUTCOMES code), null if none logged. */
   lastOutcome: string | null;
   lastOutcomeAt: string | null;
@@ -96,6 +109,8 @@ export interface LeadFilters {
   awaiting?: boolean | undefined;
   /** Last call had exactly this outcome. */
   lastOutcome?: string | undefined;
+  /** Home market or abroad. */
+  market?: LeadMarket | undefined;
   /** Every lead from one CSV import, for correcting a bad run. */
   importBatchId?: string | undefined;
   /** Omitted means ACTIVE, which is what keeps deactivated leads out. */
@@ -123,6 +138,7 @@ export function useLeadsPage(
   if (filters.fresh) params['fresh'] = 'true';
   if (filters.awaiting) params['awaiting'] = 'true';
   if (filters.lastOutcome) params['lastOutcome'] = filters.lastOutcome;
+  if (filters.market) params['market'] = filters.market;
   if (filters.importBatchId) params['importBatchId'] = filters.importBatchId;
   if (filters.lifecycle) params['lifecycle'] = filters.lifecycle;
 

@@ -6,7 +6,7 @@ import { OutcomeBadge } from '../../components/outcome-badge';
 import { useAuth } from '../auth/auth-context';
 import { RescheduleFollowUpDialog } from './lead-dialogs';
 import { LogOutcomeDialog, type LogOutcomeLead } from './log-outcome-dialog';
-import type { LeadSummary } from './use-leads';
+import { MARKET_LABELS, type LeadSummary } from './use-leads';
 
 /**
  * A lead list a salesperson can WORK from.
@@ -76,6 +76,21 @@ export function ActionableLeadList({ leads }: { leads: LeadSummary[] }): React.J
   );
 }
 
+/** India or international — a neutral outlined tag, so it never reads as a stage or an outcome. */
+function MarketBadge({ market, country }: { market: LeadSummary['market']; country: string | null }): React.JSX.Element | null {
+  if (market === 'UNKNOWN') return null;
+  return (
+    <span
+      className={`rounded-md px-1.5 py-0.5 text-[11px] font-medium ring-1 ring-inset ${
+        market === 'INTERNATIONAL' ? 'text-indigo-700 ring-indigo-200' : 'text-slate-600 ring-slate-200'
+      }`}
+      title={country ? `Country: ${country}` : 'From the mobile number'}
+    >
+      {market === 'INTERNATIONAL' ? `🌐 ${country ?? 'International'}` : MARKET_LABELS.DOMESTIC}
+    </span>
+  );
+}
+
 /** What the agent should do next, in words — derived, never stored. */
 export function nextActionText(lead: LeadSummary): { text: string; tone: 'danger' | 'warning' | 'muted' | 'default' } {
   if (lead.status === 'WON' || lead.status === 'LOST') return { text: `Closed — ${humanise(lead.status)}`, tone: 'muted' };
@@ -112,6 +127,7 @@ function ActionableLeadRow({
             <p className="truncate text-sm font-medium text-slate-900 group-hover:underline">{lead.name}</p>
             <StatusBadge status={lead.status} />
             <PriorityBadge priority={lead.priority} />
+            <MarketBadge market={lead.market} country={lead.country} />
           </div>
           <p className="mt-0.5 truncate text-xs text-slate-500">
             {lead.companyName ?? <span className="font-mono text-slate-400">{lead.leadNumber}</span>}

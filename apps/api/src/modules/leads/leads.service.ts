@@ -15,6 +15,7 @@ import type { ListLeadsDto } from './dto/leads.dto';
 import type { CreateLeadDto } from './dto/create-lead.dto';
 import { visibilityFilter } from './lead-visibility';
 import { PhoneParseError, toE164 } from '../../common/utils/phone';
+import { leadMarket, type Market } from '../../common/utils/market';
 
 export interface LeadSummary {
   id: string;
@@ -44,6 +45,13 @@ export interface LeadSummary {
   // only a name and a stage forces the agent to open every lead to learn
   // whether anybody has called it. Fetched in the same round trip as the page.
 
+  /** ISO 3166-1 alpha-2, when the enquiry or import gave one. */
+  country: string | null;
+  /**
+   * Home market or abroad (India vs international importers for CRAVION),
+   * derived from `country`, else the mobile's dialling code.
+   */
+  market: Market;
   /** The last structured call outcome (CALL_OUTCOMES code), or null if none logged. */
   lastOutcome: string | null;
   lastOutcomeAt: string | null;
@@ -78,6 +86,7 @@ export class LeadsService {
   async list(dto: ListLeadsDto, principal: TenantPrincipal): Promise<Paginated<LeadSummary>> {
     const limit = dto.limit ?? 25;
     const restriction = visibilityFilter(principal);
+    const homeCountry = await this.repository.organizationCountry();
 
     const filters = {
       status: dto.status,
@@ -86,6 +95,8 @@ export class LeadsService {
       fresh: dto.fresh,
       awaiting: dto.awaiting,
       lastOutcome: dto.lastOutcome,
+      market: dto.market,
+      homeCountry,
       productId: dto.productId,
       accountId: dto.accountId,
       search: dto.search,
@@ -104,7 +115,7 @@ export class LeadsService {
     ]);
 
     const hasMore = rows.length > limit;
-    const items = (hasMore ? rows.slice(0, limit) : rows).map(toSummary);
+    const items = (hasMore ? rows.slice(0, limit) : rows).map((row) => toSummary(row, homeCountry));
 
     return {
       items,
@@ -170,7 +181,7 @@ export class LeadsService {
      * text.
      */
     return {
-      ...toSummary(lead),
+      ...toSummary(lead, await this.repository.organizationCountry()),
       /*
        * Both, deliberately.
        *
@@ -336,7 +347,7 @@ export class LeadsService {
       },
     });
 
-    return toSummary(lead);
+    return toSummary(lead, await this.repository.organizationCountry());
   }
 
   /**
@@ -586,6 +597,7 @@ type LeadRow = {
   createdAt: Date;
   deactivatedAt: Date | null;
   assignedTo: { id: string; fullName: string } | null;
+  country: string | null;
   lastOutcome: string | null;
   lastOutcomeAt: Date | null;
   lastContactedAt: Date | null;
@@ -600,7 +612,7 @@ type LeadRow = {
   activities?: { activityType: string; description: string | null; createdAt: Date }[];
 };
 
-function toSummary(lead: LeadRow): LeadSummary {
+function toSummary(lead: LeadRow, homeCountry: string): LeadSummary {
   const next = lead.followUps?.[0];
   const latest = lead.activities?.[0];
 
@@ -621,6 +633,8 @@ function toSummary(lead: LeadRow): LeadSummary {
     assignedTo: lead.assignedTo,
     createdAt: lead.createdAt.toISOString(),
     deactivatedAt: lead.deactivatedAt?.toISOString() ?? null,
+    country: lead.country,
+    market: leadMarket(lead, homeCountry),
     lastOutcome: lead.lastOutcome,
     lastOutcomeAt: lead.lastOutcomeAt?.toISOString() ?? null,
     lastContactedAt: lead.lastContactedAt?.toISOString() ?? null,

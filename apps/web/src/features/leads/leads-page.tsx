@@ -22,7 +22,7 @@ import {
   PageHeader,
   SkeletonRows,
 } from '../../components/ui';
-import { useLeadsPage } from './use-leads';
+import { MARKET_LABELS, useLeadsPage } from './use-leads';
 import { ActionableLeadList, nextActionText } from './actionable-lead-list';
 import { NewLeadDialog } from './new-lead-dialog';
 import { downloadCsv, exportFilename, toCsv } from '../../lib/export-csv';
@@ -71,6 +71,8 @@ export function LeadsPage(): React.JSX.Element {
   const freshOnly = params.get('fresh') === 'true';
   const awaitingOnly = params.get('awaiting') === 'true';
   const lastOutcome = params.get('lastOutcome') ?? '';
+  const marketParam = params.get('market');
+  const market = marketParam === 'DOMESTIC' || marketParam === 'INTERNATIONAL' || marketParam === 'UNKNOWN' ? marketParam : undefined;
   const setFilter = (key: string, value: string | null): void => {
     const next = new URLSearchParams(params);
     if (value) next.set(key, value);
@@ -100,6 +102,7 @@ export function LeadsPage(): React.JSX.Element {
       ...(freshOnly ? { fresh: true } : {}),
       ...(awaitingOnly ? { awaiting: true } : {}),
       ...(lastOutcome ? { lastOutcome } : {}),
+      ...(market ? { market } : {}),
       /*
        * Filtering by batch shows ALL of it, deactivated rows included.
        *
@@ -142,6 +145,8 @@ export function LeadsPage(): React.JSX.Element {
       { header: 'Next follow-up', value: (lead) => formatDate(lead.nextFollowUpAt) },
       { header: 'Follow-up status', value: (lead) => formatDueDate(lead.nextFollowUpAt) },
       { header: 'Owner', value: (lead) => lead.assignedTo?.fullName ?? 'Unassigned' },
+      { header: 'Market', value: (lead) => MARKET_LABELS[lead.market] },
+      { header: 'Country', value: (lead) => lead.country ?? '' },
       // What happened last and what is next — the columns a manager exports a
       // list FOR. They were on screen but not in the file.
       {
@@ -286,6 +291,16 @@ export function LeadsPage(): React.JSX.Element {
               active={awaitingOnly}
               onClick={() => setFilter('awaiting', awaitingOnly ? null : 'true')}
             />
+            <span className="mx-1 h-4 w-px bg-slate-200" aria-hidden />
+            {/* India vs international importers — derived from country, else the mobile's dialling code. */}
+            {(['DOMESTIC', 'INTERNATIONAL'] as const).map((key) => (
+              <FilterChip
+                key={key}
+                label={MARKET_LABELS[key]}
+                active={market === key}
+                onClick={() => setFilter('market', market === key ? null : key)}
+              />
+            ))}
             <label className="ml-1 flex items-center gap-1.5 text-xs text-slate-500">
               Last call
               <select
@@ -324,7 +339,7 @@ export function LeadsPage(): React.JSX.Element {
             icon="⌕"
             title="No leads match"
             description={
-              search || status !== 'ALL' || freshOnly || awaitingOnly || lastOutcome || unassignedOnly
+              search || status !== 'ALL' || freshOnly || awaitingOnly || lastOutcome || unassignedOnly || market
                 ? 'Try clearing the search box or the filters above.'
                 : 'Add your first lead, or import a CSV file.'
             }

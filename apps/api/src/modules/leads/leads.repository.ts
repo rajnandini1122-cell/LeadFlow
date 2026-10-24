@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { LeadPriority, LeadStatus } from '@leadflow/api-types';
 import { AWAITING_RESPONSE_OUTCOMES, PERMISSIONS } from '@leadflow/api-types';
+import { marketWhere, type Market } from '../../common/utils/market';
 import type { ActivityType } from '../../generated/prisma/enums';
 import type { Prisma } from '../../generated/prisma/client';
 import { sideEffectsFor } from './lead-status';
@@ -84,6 +85,10 @@ export interface LeadListFilters {
   awaiting?: boolean | undefined;
   /** Exactly this last outcome (a CALL_OUTCOMES code). */
   lastOutcome?: string | undefined;
+  /** Home market or abroad; needs `homeCountry` to be meaningful. */
+  market?: Market | undefined;
+  /** The organization's country — what "domestic" means. */
+  homeCountry?: string | undefined;
 }
 
 /**
@@ -160,6 +165,7 @@ export class LeadsRepository {
       });
     }
     if (filters.lastOutcome) and.push({ lastOutcome: filters.lastOutcome });
+    if (filters.market && filters.homeCountry) and.push(marketWhere(filters.market, filters.homeCountry));
     if (and.length > 0) where['AND'] = and;
     if (filters.productId) where['productId'] = filters.productId;
     if (filters.accountId) where['accountId'] = filters.accountId;

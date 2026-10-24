@@ -42,6 +42,7 @@ const LEAD: LeadDetail = {
   deactivationReason: null,
   deactivatedBy: null,
   importBatchId: null,
+  market: 'DOMESTIC',
   lastOutcome: null,
   lastOutcomeAt: null,
   lastContactedAt: null,

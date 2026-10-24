@@ -55,6 +55,8 @@ const LEAD: LeadSummary = {
   assignedTo: { id: 'user-1', fullName: 'Asha Rep' },
   createdAt: '2026-10-01T05:30:00.000Z',
   deactivatedAt: null,
+  country: null,
+  market: 'DOMESTIC',
   lastOutcome: 'NOT_ANSWERED',
   lastOutcomeAt: '2026-10-23T05:30:00.000Z',
   lastContactedAt: null,
@@ -460,5 +462,65 @@ describe('the dashboard', () => {
     await render({});
 
     expect(within(screen.getByRole('region', { name: 'Key numbers' })).getByRole('link', { name: /Awaiting response\s*…/ })).toBeInTheDocument();
+  });
+});
+
+// =============================================================================
+// India vs international importers
+// =============================================================================
+
+describe('lead market', () => {
+  it('tags an international lead with its country on the row', () => {
+    signedInAs(['lead.update']);
+    wrap(<ActionableLeadList leads={[{ ...LEAD, market: 'INTERNATIONAL', country: 'AE' }]} />);
+    expect(screen.getByText('🌐 AE')).toBeInTheDocument();
+  });
+
+  it('tags a domestic lead as India', () => {
+    signedInAs(['lead.update']);
+    wrap(<ActionableLeadList leads={[LEAD]} />);
+    expect(screen.getByText('India')).toBeInTheDocument();
+  });
+
+  it('filters the lead list by market through the API', async () => {
+    const { LeadsPage } = await import('../features/leads/leads-page');
+    signedInAs(['lead.view.all', 'lead.update']);
+    const apiGet = vi
+      .spyOn(apiClient, 'apiGet')
+      .mockResolvedValue({ items: [], hasMore: false, nextCursor: null, total: 0 } as never);
+
+    wrap(<LeadsPage />, '/leads');
+    await userEvent.click(await screen.findByRole('button', { name: 'International' }));
+
+    await waitFor(() =>
+      expect(apiGet).toHaveBeenCalledWith('/leads', expect.objectContaining({ market: 'INTERNATIONAL' })),
+    );
+  });
+
+  it('shows leads by market on the dashboard, each linking to its list', async () => {
+    const { DashboardPage } = await import('../features/dashboard/dashboard-page');
+    signedInAs(['lead.view.all']);
+    vi.spyOn(apiClient, 'apiGet').mockImplementation((url: string, params?: unknown) => {
+      if (url === '/dashboard')
+        return Promise.resolve({
+          scope: 'ALL', timezone: 'Asia/Kolkata', followUps: { overdue: 0, dueToday: 0, upcoming: 0 },
+          pipeline: { activeCount: 0, activeValue: '0', byStage: [] },
+          outcomes: { won: 0, lost: 0, wonValue: '0', conversionRate: 0, newThisWeek: 0 },
+          contacts: 0, nextActions: [], recent: [],
+        } as never);
+      if (url === '/leads') {
+        const market = (params as { market?: string } | undefined)?.market;
+        const total = market === 'DOMESTIC' ? 14 : market === 'INTERNATIONAL' ? 9 : market === 'UNKNOWN' ? 1 : 0;
+        return Promise.resolve({ items: [], hasMore: false, nextCursor: null, total } as never);
+      }
+      return Promise.resolve(SUMMARY as never);
+    });
+    wrap(<DashboardPage />);
+
+    expect(await screen.findByRole('link', { name: /International \(importers\)\s*9/ })).toHaveAttribute(
+      'href',
+      '/leads?market=INTERNATIONAL',
+    );
+    expect(screen.getByRole('link', { name: /India \(domestic\)\s*14/ })).toHaveAttribute('href', '/leads?market=DOMESTIC');
   });
 });

@@ -163,6 +163,8 @@ export function DashboardPage(): React.JSX.Element {
             </div>
           </Card>
 
+          <LeadsByMarket />
+
           <Card>
             <CardHeader title="Lead health" />
             <dl className="divide-y divide-slate-100">
@@ -238,6 +240,40 @@ function PriorityQueue({ overdue, dueToday }: { overdue: number; dueToday: numbe
         <FollowUpQueue bucket={tab} />
       </div>
     </>
+  );
+}
+
+/**
+ * India vs international importers — open leads in each market, each linking
+ * to the filtered list. Totals come from the lead list's own count, so the
+ * number and the list behind it cannot disagree.
+ */
+function LeadsByMarket(): React.JSX.Element {
+  const domestic = useLeadsPage({ lifecycle: 'ACTIVE', market: 'DOMESTIC' }, 1);
+  const international = useLeadsPage({ lifecycle: 'ACTIVE', market: 'INTERNATIONAL' }, 1);
+  const unknown = useLeadsPage({ lifecycle: 'ACTIVE', market: 'UNKNOWN' }, 1);
+  const total = (q: typeof domestic) => q.data?.pages[0]?.total ?? null;
+
+  const rows = [
+    { key: 'DOMESTIC', label: 'India (domestic)', q: domestic },
+    { key: 'INTERNATIONAL', label: 'International (importers)', q: international },
+    { key: 'UNKNOWN', label: 'Market unknown', q: unknown },
+  ] as const;
+
+  return (
+    <Card>
+      <CardHeader title="Leads by market" subtitle="From country, else the mobile’s country code" />
+      <dl className="divide-y divide-slate-100">
+        {rows.map((row) => (
+          <Metric
+            key={row.key}
+            label={row.label}
+            value={total(row.q) === null ? '…' : String(total(row.q))}
+            to={`/leads?market=${row.key}`}
+          />
+        ))}
+      </dl>
+    </Card>
   );
 }
 

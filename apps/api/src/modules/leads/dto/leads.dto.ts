@@ -12,6 +12,7 @@ import {
 } from 'class-validator';
 import { CALL_OUTCOMES, LEAD_LIFECYCLE_FILTERS, LEAD_STATUSES } from '@leadflow/api-types';
 import type { CallOutcome } from '@leadflow/api-types';
+import { MARKETS, type Market } from '../../../common/utils/market';
 import type { LeadLifecycleFilter, LeadStatus } from '@leadflow/api-types';
 
 export class ListLeadsDto {
@@ -47,6 +48,14 @@ export class ListLeadsDto {
   @Transform(({ value }) => (value === 'true' ? true : value === 'false' ? false : value))
   @IsBoolean()
   awaiting?: boolean;
+
+  /**
+   * Home market or abroad — India vs international importers for CRAVION.
+   * Derived from the lead's country, else its mobile's dialling code.
+   */
+  @IsOptional()
+  @IsIn(MARKETS, { message: `must be one of: ${MARKETS.join(', ')}` })
+  market?: Market;
 
   /** Leads whose LAST call had exactly this outcome. */
   @IsOptional()
