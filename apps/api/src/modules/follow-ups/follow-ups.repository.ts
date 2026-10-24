@@ -161,6 +161,8 @@ export class FollowUpsRepository {
         status: true,
         priority: true,
         estimatedValue: true,
+        lastOutcome: true,
+        lastOutcomeAt: true,
       },
     },
     /// A follow-up hangs off EITHER a lead or an account, never both, so one

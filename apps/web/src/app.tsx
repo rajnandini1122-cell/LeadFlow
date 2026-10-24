@@ -12,6 +12,7 @@ import { ResetPasswordPage } from './features/auth/reset-password-page';
 import { HomePage } from './features/marketing/home-page';
 import { AppShell } from './components/app-shell';
 import { ApiError } from './lib/api-client';
+import { ToastProvider } from './components/toast';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -50,6 +51,7 @@ const FeaturesPage = lazy(() => import('./features/marketing/features-page').the
 const PricingPage = lazy(() => import('./features/marketing/pricing-page').then((m) => ({ default: m.PricingPage })));
 const AboutPage = lazy(() => import('./features/marketing/about-page').then((m) => ({ default: m.AboutPage })));
 const ContactPage = lazy(() => import('./features/marketing/contact-page').then((m) => ({ default: m.ContactPage })));
+const WorkspacePage = lazy(() => import('./features/workspace/workspace-page').then((m) => ({ default: m.WorkspacePage })));
 const DashboardPage = lazy(() => import('./features/dashboard/dashboard-page').then((m) => ({ default: m.DashboardPage })));
 const LeadsPage = lazy(() => import('./features/leads/leads-page').then((m) => ({ default: m.LeadsPage })));
 const ChannelReviewPage = lazy(() => import('./features/omnichannel/channel-review-page').then((m) => ({ default: m.ChannelReviewPage })));
@@ -126,7 +128,7 @@ function Home(): React.JSX.Element {
   const { status } = useAuth();
 
   if (status === 'loading') return <Restoring />;
-  if (status === 'authenticated') return <Navigate to="/dashboard" replace />;
+  if (status === 'authenticated') return <Navigate to="/today" replace />;
 
   return <HomePage />;
 }
@@ -136,6 +138,7 @@ export function App(): React.JSX.Element {
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
         <AuthProvider>
+          <ToastProvider>
           {/* Every route change starts at the top, as a real page load would. */}
           <ScrollToTop />
           {/*
@@ -179,6 +182,7 @@ export function App(): React.JSX.Element {
 
             <Route element={<RequireAuth />}>
               <Route element={<AppShell />}>
+                <Route path="today" element={<WorkspacePage />} />
                 <Route path="dashboard" element={<DashboardPage />} />
                 <Route path="inbox" element={<InboxPage />} />
                 <Route path="leads" element={<LeadsPage />} />
@@ -225,6 +229,7 @@ export function App(): React.JSX.Element {
             <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </Suspense>
+          </ToastProvider>
         </AuthProvider>
       </BrowserRouter>
     </QueryClientProvider>

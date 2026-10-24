@@ -76,6 +76,9 @@ export interface FollowUpView {
   mobile: string | null;
   leadStatus: string | null;
   leadPriority: string | null;
+  /** What the last call on this lead established — a CALL_OUTCOMES code. */
+  leadLastOutcome: string | null;
+  leadLastOutcomeAt: string | null;
   /** Already fetched for the row; surfaced so a report can total value at risk. */
   estimatedValue: string | null;
   scheduledAt: string;
@@ -1050,6 +1053,8 @@ type FollowUpRow = {
     status: string;
     priority: string;
     estimatedValue: { toString(): string } | null;
+    lastOutcome: string | null;
+    lastOutcomeAt: Date | null;
   } | null;
   account: { id: string; name: string; status: string } | null;
   assignedUser: { id: string; fullName: string };
@@ -1082,6 +1087,8 @@ function toView(row: FollowUpRow): FollowUpView {
     mobile: row.lead?.mobile ?? null,
     leadStatus: row.lead?.status ?? null,
     leadPriority: row.lead?.priority ?? null,
+    leadLastOutcome: row.lead?.lastOutcome ?? null,
+    leadLastOutcomeAt: row.lead?.lastOutcomeAt?.toISOString() ?? null,
     estimatedValue: row.lead?.estimatedValue?.toString() ?? null,
     scheduledAt: row.scheduledAt.toISOString(),
     type: row.type,

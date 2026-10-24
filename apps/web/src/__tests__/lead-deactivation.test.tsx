@@ -48,6 +48,11 @@ const LEAD: LeadDetail = {
   deactivationReason: null,
   deactivatedBy: null,
   importBatchId: 'batch-1',
+  lastOutcome: null,
+  lastOutcomeAt: null,
+  lastContactedAt: null,
+  latestActivity: null,
+  nextAction: null,
 };
 
 const DEACTIVATED: LeadDetail = {

@@ -60,7 +60,7 @@ export function RegisterPage(): React.JSX.Element {
    * — which React counts, and rejects. It cost a test to find and would have
    * cost a user the page.
    */
-  if (status === 'authenticated') return <Navigate to="/dashboard" replace />;
+  if (status === 'authenticated') return <Navigate to="/today" replace />;
 
   if (awaitingVerification) {
     return (
