@@ -6,12 +6,14 @@ import type { FollowUpType } from '../../generated/prisma/enums';
 import { LeadsRepository } from '../leads/leads.repository';
 import { visibilityFilter } from '../leads/lead-visibility';
 import { isTerminal } from '../leads/lead-status';
-import { FollowUpsRepository } from './follow-ups.repository';
+import { FollowUpsRepository, findReplay, lockFollowUpRow } from './follow-ups.repository';
+import { AUDIT_ACTIONS } from '../../common/audit/audit.repository';
 import { windowFor, type Bucket } from './follow-up-buckets';
 import type {
   CancelFollowUpDto,
   CompleteFollowUpDto,
   CreateFollowUpDto,
+  RecordAttemptDto,
   RescheduleFollowUpDto,
 } from './dto/follow-ups.dto';
 
@@ -137,38 +139,58 @@ export class FollowUpsService {
     leadId: string,
     dto: CreateFollowUpDto,
     principal: TenantPrincipal,
+    idempotencyKey: string | null = null,
   ): Promise<FollowUpView> {
-    const lead = await this.requireVisibleLead(leadId, principal);
-
-    if (isTerminal(lead.status as LeadStatus)) {
-      throw AppException.validation(
-        'This lead is closed. Reopen it before scheduling a follow-up.',
-        { leadId: ['lead is won or lost'] },
-      );
-    }
-
-    const assignedUserId = await this.resolveAssignee(dto.assignedUserId, lead, principal);
+    await this.requireVisibleLead(leadId, principal);
     const scheduledAt = parseWhen(dto.scheduledAt);
 
-    const followUp = await this.repository.create({
-      leadId,
-      assignedUserId,
-      scheduledAt,
-      type: (dto.type ?? 'CALL') as FollowUpType,
-      title: dto.title,
-      notes: dto.notes,
-      actorId: principal.userId,
-    });
+    // Row, mirror and timeline in one commit, under the lead's lock.
+    return this.repository.inLeadTransaction(leadId, async (tx, lead) => {
+      if (!lead) throw AppException.leadNotFound();
 
-    await this.repository.syncLeadNextFollowUp(leadId);
-    await this.leads.recordActivity({
-      leadId,
-      activityType: 'FOLLOW_UP_CREATED',
-      description: `Follow-up scheduled for ${scheduledAt.toISOString()}`,
-      performedById: principal.userId,
-    });
+      const replay = await findReplay(tx, {
+        leadId,
+        activityType: 'FOLLOW_UP_CREATED',
+        key: idempotencyKey,
+      });
+      if (typeof replay?.['followUpId'] === 'string') {
+        const original = await this.repository.findById(replay['followUpId'], undefined, tx);
+        if (original) return toView(original);
+      }
 
-    return toView(followUp);
+      // Checked under the lock, so a lead closed a moment ago is seen closed.
+      if (isTerminal(lead.status as LeadStatus)) {
+        throw AppException.validation(
+          'This lead is closed. Reopen it before scheduling a follow-up.',
+          { leadId: ['lead is won or lost'] },
+        );
+      }
+
+      const assignedUserId = await this.resolveAssignee(dto.assignedUserId, lead, principal);
+
+      const followUp = await this.repository.create({
+        leadId,
+        assignedUserId,
+        scheduledAt,
+        type: (dto.type ?? 'CALL') as FollowUpType,
+        title: dto.title,
+        notes: dto.notes,
+        actorId: principal.userId,
+        tx,
+      });
+
+      await this.repository.syncLeadNextFollowUp(leadId, tx);
+      await this.repository.recordLeadActivity(tx, {
+        leadId,
+        activityType: 'FOLLOW_UP_CREATED',
+        description: `Follow-up scheduled for ${scheduledAt.toISOString()}`,
+        actorId: principal.userId,
+        idempotencyKey,
+        result: { followUpId: followUp.id },
+      });
+
+      return toView(followUp);
+    });
   }
 
   /**
@@ -184,6 +206,7 @@ export class FollowUpsService {
     id: string,
     dto: CompleteFollowUpDto,
     principal: TenantPrincipal,
+    idempotencyKey: string | null = null,
   ): Promise<{ followUp: FollowUpView; nextFollowUpAt: string | null }> {
     const existing = await this.requireOwnFollowUp(id, principal);
 
@@ -216,71 +239,137 @@ export class FollowUpsService {
       );
     }
 
-    const closed = await this.repository.close({
-      id,
-      status: 'COMPLETED',
-      outcome: dto.outcome,
-      notes: dto.notes,
-      actorId: principal.userId,
-    });
-
-    // Zero rows means it was already completed or cancelled — a double submit
-    // or a retry. Saying so beats silently recording a second completion.
-    if (closed === 0) {
-      throw AppException.conflict(
-        ERROR_CODES.CONFLICT,
-        'This follow-up has already been completed or cancelled.',
-      );
-    }
-
-    if (existing.leadId && dto.leadStatus && dto.leadStatus !== existing.lead?.status) {
-      await this.leads.applyStatusChange({
-        leadId: existing.leadId,
-        status: dto.leadStatus,
-        lostReason: dto.lostReason,
-        wonValue: dto.wonValue,
-        actorId: principal.userId,
-      });
-    }
+    const nextAt = dto.nextFollowUpAt ? parseWhen(dto.nextFollowUpAt) : null;
 
     /*
-     * A next action is scheduled when the lead stays open, and is ALLOWED on an
-     * account follow-up when the caller asks for one — a rep who says "call
-     * them again in a month" should get that, without a lead existing.
+     * ONE commit for the whole outcome of one conversation: close this
+     * follow-up, change the stage, schedule the next action, re-derive the
+     * mirror and write the timeline.
+     *
+     * These were five separate writes. A failure after the close left a
+     * completed follow-up with no next action — and the mirror update then hit
+     * the CHECK constraint as a 500, AFTER the completion had already landed.
      */
-    if (dto.nextFollowUpAt && (leadStaysOpen || !existing.leadId)) {
-      await this.repository.create({
-        leadId: existing.leadId,
-        accountId: existing.accountId,
-        assignedUserId: existing.assignedUserId,
-        scheduledAt: parseWhen(dto.nextFollowUpAt),
-        type: (dto.nextType ?? existing.type) as FollowUpType,
+    return this.repository.inLeadTransaction(existing.leadId, async (tx) => {
+      if (existing.leadId) {
+        const replay = await findReplay(tx, {
+          leadId: existing.leadId,
+          activityType: 'FOLLOW_UP_COMPLETED',
+          key: idempotencyKey,
+        });
+        if (replay) {
+          // The same request again — a double click or a retry after a lost
+          // response. It succeeded the first time; say so, with that result,
+          // rather than "already completed", which reads as a failure.
+          const original = await this.repository.findById(id, undefined, tx);
+          const mirror = await this.repository.leadNextFollowUpAt(existing.leadId, tx);
+          return {
+            followUp: toView(original ?? existing),
+            nextFollowUpAt: mirror?.toISOString() ?? null,
+          };
+        }
+      } else {
+        /*
+         * An account follow-up has no lead to lock and no timeline to hold the
+         * key. Its own row is locked instead, and the key is matched against
+         * the audit entry the first request wrote — so a retried completion of
+         * a customer follow-up is answered like a lead one, not with 409.
+         */
+        await lockFollowUpRow(tx, id);
+        const replay = await this.repository.findAccountReplay(tx, {
+          followUpId: id,
+          action: AUDIT_ACTIONS.ACCOUNT_FOLLOW_UP_COMPLETED,
+          key: idempotencyKey,
+        });
+        if (replay) {
+          const original = await this.repository.findById(id, undefined, tx);
+          // An account follow-up carries no next-action mirror; the first
+          // response said null too.
+          return { followUp: toView(original ?? existing), nextFollowUpAt: null };
+        }
+      }
+
+      const closed = await this.repository.close({
+        id,
+        status: 'COMPLETED',
+        outcome: dto.outcome,
+        notes: dto.notes,
         actorId: principal.userId,
+        tx,
       });
-    }
 
-    // Only a lead carries the denormalised next_follow_up_at mirror.
-    const nextFollowUpAt = existing.leadId
-      ? await this.repository.syncLeadNextFollowUp(existing.leadId)
-      : null;
+      // Zero rows means somebody else already completed or cancelled it. A
+      // genuine conflict — a replay of THIS request was answered above.
+      if (closed === 0) {
+        throw AppException.conflict(
+          ERROR_CODES.CONFLICT,
+          'This follow-up has already been completed or cancelled.',
+        );
+      }
 
-    if (existing.leadId) {
-      await this.leads.recordActivity({
-        leadId: existing.leadId,
-        activityType: 'FOLLOW_UP_COMPLETED',
-        description: dto.outcome
-          ? `Follow-up completed: ${dto.outcome}`
-          : 'Follow-up completed',
-        performedById: principal.userId,
-      });
-    }
+      if (existing.leadId && dto.leadStatus && dto.leadStatus !== existing.lead?.status) {
+        await this.leads.applyStatusChange({
+          leadId: existing.leadId,
+          status: dto.leadStatus,
+          lostReason: dto.lostReason,
+          wonValue: dto.wonValue,
+          actorId: principal.userId,
+          tx,
+        });
+      }
 
-    const refreshed = await this.repository.findById(id);
+      /*
+       * A next action is scheduled when the lead stays open, and is ALLOWED on
+       * an account follow-up when the caller asks for one — a rep who says
+       * "call them again in a month" should get that, without a lead existing.
+       */
+      let nextFollowUpId: string | null = null;
+      if (nextAt && (leadStaysOpen || !existing.leadId)) {
+        const next = await this.repository.create({
+          leadId: existing.leadId,
+          accountId: existing.accountId,
+          assignedUserId: existing.assignedUserId,
+          scheduledAt: nextAt,
+          type: (dto.nextType ?? existing.type) as FollowUpType,
+          actorId: principal.userId,
+          tx,
+        });
+        nextFollowUpId = next.id;
+      }
 
-    return {
-      followUp: toView(refreshed ?? existing),
-      nextFollowUpAt: nextFollowUpAt?.toISOString() ?? null,
-    };
+      // Only a lead carries the denormalised next_follow_up_at mirror.
+      const nextFollowUpAt = existing.leadId
+        ? await this.repository.syncLeadNextFollowUp(existing.leadId, tx)
+        : null;
+
+      if (existing.leadId) {
+        await this.repository.recordLeadActivity(tx, {
+          leadId: existing.leadId,
+          activityType: 'FOLLOW_UP_COMPLETED',
+          description: dto.outcome
+            ? `Follow-up completed: ${dto.outcome}`
+            : 'Follow-up completed',
+          actorId: principal.userId,
+          idempotencyKey,
+          result: { followUpId: id, nextFollowUpId },
+        });
+      } else {
+        await this.repository.recordAccountFollowUpAction(tx, {
+          followUpId: id,
+          action: AUDIT_ACTIONS.ACCOUNT_FOLLOW_UP_COMPLETED,
+          actorId: principal.userId,
+          idempotencyKey,
+          result: { outcome: dto.outcome ?? null, nextFollowUpId },
+        });
+      }
+
+      const refreshed = await this.repository.findById(id, undefined, tx);
+
+      return {
+        followUp: toView(refreshed ?? existing),
+        nextFollowUpAt: nextFollowUpAt?.toISOString() ?? null,
+      };
+    });
   }
 
   /**
@@ -290,10 +379,152 @@ export class FollowUpsService {
    * that an attempt was missed — which is the single most useful signal a
    * manager has. The chain stays visible instead.
    */
+  /**
+   * Records a FAILED CONTACT ATTEMPT and schedules the retry.
+   *
+   * THE DEFECT THIS FIXES. "No answer" posted a single activity row and
+   * stopped: no retry was scheduled, the pending follow-up was untouched, and
+   * nothing reached the queue. A rep who rang four times and got no answer had
+   * four timeline entries, an overdue follow-up still sitting at its original
+   * date, and no record that anybody had tried.
+   *
+   * WHY THIS IS NOT `complete`. An unanswered call is an attempt, not an
+   * outcome: the work is still owed. Completing the follow-up would mark the
+   * task done and drop it out of the queue — the precise opposite of what a
+   * missed call means. So the attempt is logged, the pending follow-up is
+   * SUPERSEDED by one at the retry time, and the lead keeps its place in the
+   * queue.
+   *
+   * THE SALES STAGE IS NEVER TOUCHED. Not by omission — there is no parameter
+   * for it, so no caller can. A lead at NEW that nobody answered is still at
+   * NEW: "Contacted" means somebody was reached, and letting a failed attempt
+   * set it would overstate the pipeline and corrupt every stage-conversion
+   * figure computed from it.
+   *
+   * Outcome, note and retry time are all ONE request, so the three facts about
+   * one phone call commit together or not at all.
+   */
+  async recordAttempt(
+    leadId: string,
+    dto: RecordAttemptDto,
+    principal: TenantPrincipal,
+    idempotencyKey: string | null = null,
+  ): Promise<{
+    followUp: FollowUpView | null;
+    nextFollowUpAt: string | null;
+    leadStatus: LeadStatus;
+  }> {
+    await this.requireVisibleLead(leadId, principal);
+    const retryAt = parseWhen(dto.retryAt);
+
+    /*
+     * The attempt and its retry commit TOGETHER, under the lead's lock.
+     *
+     * They were two writes: the timeline entry, then the reschedule. A double
+     * click therefore logged two attempts and superseded the retry twice, and a
+     * failure between the two left an attempt on record with no retry behind
+     * it — the dead end this endpoint exists to remove.
+     */
+    return this.repository.inLeadTransaction(leadId, async (tx, lead) => {
+      if (!lead) throw AppException.leadNotFound();
+
+      const replay = await findReplay(tx, {
+        leadId,
+        activityType: dto.activityType,
+        key: idempotencyKey,
+      });
+      if (replay) {
+        // The same click again. ONE attempt happened; answer with its result.
+        const followUpId = typeof replay['followUpId'] === 'string' ? replay['followUpId'] : null;
+        const followUp = followUpId ? await this.repository.findById(followUpId, undefined, tx) : null;
+        const mirror = await this.repository.leadNextFollowUpAt(leadId, tx);
+        return {
+          followUp: followUp ? toView(followUp) : null,
+          nextFollowUpAt: mirror?.toISOString() ?? null,
+          leadStatus: lead.status as LeadStatus,
+        };
+      }
+
+      /*
+       * A closed lead owes nobody a call.
+       *
+       * Refused rather than silently reopening it: reopening is a deliberate
+       * decision with its own audit trail, and a quick-action button is not
+       * where a won deal should be able to make it. Checked under the lock, so
+       * a lead closed a moment ago is seen closed.
+       */
+      if (isTerminal(lead.status as LeadStatus)) {
+        throw AppException.validation(
+          'This lead is closed. Reopen it before logging another attempt.',
+          { leadId: ['lead is won or lost'] },
+        );
+      }
+
+      const result = await this.repository.setNextForLead({
+        leadId,
+        scheduledAt: retryAt,
+        // Null when nobody owns the lead: there is no such thing as an
+        // unassigned follow-up, and inventing an assignee would hand this
+        // person's work to whoever happened to click the button.
+        assignedUserId: lead.assignedToId ?? null,
+        ...(dto.type ? { type: dto.type as FollowUpType } : {}),
+        reason: `Retry after ${ATTEMPT_LABELS[dto.activityType] ?? 'a failed attempt'}`,
+        actorId: principal.userId,
+        tx,
+      });
+
+      await this.repository.recordLeadActivity(tx, {
+        leadId,
+        activityType: dto.activityType,
+        description: attemptDescription(dto),
+        actorId: principal.userId,
+        idempotencyKey,
+        result: { followUpId: result.followUpId },
+      });
+
+      const followUp = result.followUpId
+        ? await this.repository.findById(result.followUpId, undefined, tx)
+        : null;
+
+      return {
+        followUp: followUp ? toView(followUp) : null,
+        nextFollowUpAt: result.nextFollowUpAt.toISOString(),
+        // Returned so the caller can SEE the stage did not move, rather than
+        // taking it on trust.
+        leadStatus: lead.status as LeadStatus,
+      };
+    });
+  }
+
+  /**
+   * Moves a lead's next action, from the lead screen rather than a follow-up.
+   *
+   * Used by the lead edit form and by activity logging, both of which used to
+   * write `leads.next_follow_up_at` directly and create no follow-up row. That
+   * is what produced "Next action: a date" beside "Follow-ups: 0 open".
+   */
+  async setNextForLead(
+    leadId: string,
+    scheduledAt: Date,
+    principal: TenantPrincipal,
+    reason?: string,
+  ): Promise<{ followUpId: string | null; nextFollowUpAt: Date }> {
+    const lead = await this.requireVisibleLead(leadId, principal);
+
+    return this.repository.setNextForLead({
+      leadId,
+      scheduledAt,
+      assignedUserId: lead.assignedToId ?? null,
+      ...(reason ? { reason } : {}),
+      actorId: principal.userId,
+    });
+  }
+
   async reschedule(
     id: string,
     dto: RescheduleFollowUpDto,
     principal: TenantPrincipal,
+    idempotencyKey: string | null = null,
   ): Promise<FollowUpView> {
     const existing = await this.requireOwnFollowUp(id, principal);
     const scheduledAt = parseWhen(dto.scheduledAt);
@@ -313,6 +544,7 @@ export class FollowUpsService {
       title: existing.title ?? undefined,
       reason: dto.reason ?? 'Rescheduled',
       actorId: principal.userId,
+      idempotencyKey,
     });
 
     if (!replacement) {
@@ -322,8 +554,8 @@ export class FollowUpsService {
       );
     }
 
-    if (existing.leadId) await this.repository.syncLeadNextFollowUp(existing.leadId);
-
+    // The lead's mirror is re-derived inside cancelAndReplace, in the same
+    // commit as the replacement.
     return toView(replacement);
   }
 
@@ -428,6 +660,32 @@ export class FollowUpsService {
 
     return requested;
   }
+}
+
+/**
+ * How each attempt type reads in a sentence.
+ *
+ * Only the types that mean "I tried and did not get through" are here; the
+ * DTO's own `@IsIn` is what restricts the input to them.
+ */
+const ATTEMPT_LABELS: Record<string, string> = {
+  CALL_NOT_ANSWERED: 'no answer',
+  CALL_BACK_LATER: 'a call-back request',
+  WHATSAPP_OPENED: 'a WhatsApp message',
+};
+
+/**
+ * The timeline entry for one attempt.
+ *
+ * The rep's own note wins when there is one, because it says more than any
+ * label this code could choose. Without a note the label still records what
+ * happened, so the entry is never just "activity logged".
+ */
+function attemptDescription(dto: { activityType: string; note?: string | undefined }): string {
+  const label = ATTEMPT_LABELS[dto.activityType] ?? 'attempt';
+  const base = `Tried to reach the customer — ${label}`;
+
+  return dto.note ? `${base}: ${dto.note}` : base;
 }
 
 function parseWhen(value: string): Date {

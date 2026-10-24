@@ -6,6 +6,7 @@ import { IntakeProcessingModule } from '../intake-processing/intake-processing.m
 import { AdminControlController } from './admin-control.controller';
 import { AdminControlOperations } from './admin-control.operations';
 import { AdminControlRepository } from './admin-control.repository';
+import { AdminLeadsRepository } from './admin-leads.repository';
 import { AdminControlService } from './admin-control.service';
 
 /**
@@ -23,6 +24,11 @@ import { AdminControlService } from './admin-control.service';
 @Module({
   imports: [TeamsModule, TerritoriesModule, AssignmentRulesModule, IntakeProcessingModule],
   controllers: [AdminControlController],
-  providers: [AdminControlService, AdminControlOperations, AdminControlRepository],
+  providers: [
+    AdminControlService,
+    AdminControlOperations,
+    AdminControlRepository,
+    AdminLeadsRepository,
+  ],
 })
 export class AdminControlModule {}

@@ -28,6 +28,15 @@ export interface LeadSummary {
   nextFollowUpAt: string | null;
   assignedTo: { id: string; fullName: string } | null;
   createdAt: string;
+  /**
+   * Null for a live lead.
+   *
+   * On the SUMMARY, not just the detail, so the inactive list can show when
+   * each record was taken out of service without a second request per row. The
+   * address stays off the summary — a page of results pays for every field, and
+   * nobody scans a list by street name.
+   */
+  deactivatedAt: string | null;
 }
 
 @Injectable()
@@ -47,10 +56,15 @@ export class LeadsService {
     const filters = {
       status: dto.status,
       assignedToId: dto.assignedToId,
+      unassigned: dto.unassigned,
       productId: dto.productId,
       accountId: dto.accountId,
       search: dto.search,
       restrictToUserId: restriction?.assignedToId,
+      importBatchId: dto.importBatchId,
+      // Absent means ACTIVE, which the repository applies. Stated here so the
+      // default is visible at the call site rather than only in the WHERE.
+      lifecycle: dto.lifecycle ?? 'ACTIVE',
     };
 
     // The total is counted with the SAME filters, so "showing 25 of 812"
@@ -84,6 +98,26 @@ export class LeadsService {
       accountId: string | null;
       account: { id: string; name: string; status: string } | null;
       source: string | null;
+      email: string | null;
+      /**
+       * The whole postal address.
+       *
+       * `city` was previously the only one of these that existed, which is why
+       * a CSV address column had nowhere to go. On the detail rather than the
+       * summary: it is five more fields on a record somebody opened
+       * deliberately, and five more on every row of a list of eight hundred.
+       */
+      addressLine1: string | null;
+      addressLine2: string | null;
+      city: string | null;
+      state: string | null;
+      postalCode: string | null;
+      country: string | null;
+      /** Why this record is not live work, and who decided. Null when it is. */
+      deactivationReason: string | null;
+      deactivatedBy: string | null;
+      /** The import run that created it, or null if a person typed it in. */
+      importBatchId: string | null;
     }
   > {
     // A lead outside the caller's visibility is a 404, exactly like one in
@@ -127,6 +161,16 @@ export class LeadsService {
       accountId: lead.accountId,
       account: lead.account,
       source: lead.source,
+      email: lead.email,
+      addressLine1: lead.addressLine1,
+      addressLine2: lead.addressLine2,
+      city: lead.city,
+      state: lead.state,
+      postalCode: lead.postalCode,
+      country: lead.country,
+      deactivationReason: lead.deactivationReason,
+      deactivatedBy: lead.deactivatedBy,
+      importBatchId: lead.importBatchId,
       activities: activities.map((activity) => ({
         id: activity.id,
         type: activity.activityType,
@@ -165,21 +209,41 @@ export class LeadsService {
      * the existing one so the client can offer to open it; creating anyway
      * requires the caller to opt in.
      *
-     * Skipped entirely without a mobile, because the mobile IS the duplicate
-     * key. Matching on name or company instead would be far worse than missing
-     * a duplicate: "John Smith at Acme" collides constantly, and wrongly
-     * refusing to create a lead loses a real enquiry.
+     * TWO keys, asked in order of strength. The mobile is the primary one; the
+     * email address is secondary but real, and asking it closes the case the
+     * mobile check cannot see — a customer who left the phone field blank, for
+     * whom there was previously no duplicate key at all.
+     *
+     * The email read is skipped whenever the mobile already answered, so the
+     * common path still costs exactly one query.
+     *
+     * Matching on name or company is still deliberately NOT done, and would be
+     * far worse than missing a duplicate: "John Smith at Acme" collides
+     * constantly, and wrongly refusing to create a lead loses a real enquiry.
+     * An email address identifies a mailbox; a name does not identify a person.
      */
-    if (mobile !== null && !dto.allowDuplicate) {
-      const existing = await this.repository.findActiveByMobile(mobile);
+    if (!dto.allowDuplicate) {
+      const byMobile = mobile === null ? null : await this.repository.findActiveByMobile(mobile);
+      const byEmail =
+        byMobile || !dto.email ? null : await this.repository.findActiveByEmail(dto.email);
+      const existing = byMobile ?? byEmail;
+
       if (existing) {
         const name = [existing.firstName, existing.lastName].filter(Boolean).join(" ").trim();
+        /*
+         * Named by whichever key actually matched.
+         *
+         * Reporting an email collision as a mobile one would send somebody
+         * looking for a phone number that was never the problem — and on a
+         * lead with no phone at all, would put `null` in the message.
+         */
+        const matchedOn = byMobile ? `mobile ${mobile as string}` : `email ${dto.email as string}`;
 
         // Details carry the existing lead so the client can offer
         // "Open existing lead" without a second round trip.
         throw new AppException(
           ERROR_CODES.DUPLICATE_LEAD,
-          `A lead with mobile ${mobile} already exists (${existing.leadNumber}).`,
+          `A lead with ${matchedOn} already exists (${existing.leadNumber}).`,
           HttpStatus.CONFLICT,
           {
             existingLeadId: [existing.id],
@@ -407,26 +471,37 @@ export class LeadsService {
          * only runs on the rare collision path.
          */
         /*
-         * Only a mobile can collide on the duplicate index, and since
-         * numbering moved under the tenant lock it is the only collision
-         * left. Established by re-querying rather than by parsing the error,
-         * which cannot go stale the way a parsed shape can.
+         * TWO keys can collide now, not one: mobile, and — since
+         * `leads_org_email_uniq` — the email address. Established by
+         * re-querying rather than by parsing the error, which cannot go stale
+         * the way a parsed shape can.
+         *
+         * Mobile is asked first because it is the stronger identity and the
+         * message naming it is more useful; either is a genuine duplicate.
          */
-        const collidingLead =
+        const collidingByMobile =
           mobile === null ? null : await this.repository.findActiveByMobile(mobile);
+        const collidingByEmail =
+          collidingByMobile || !dto.email
+            ? null
+            : await this.repository.findActiveByEmail(dto.email);
+
+        const colliding = collidingByMobile ?? collidingByEmail;
 
         /*
-         * An acknowledged duplicate is excluded from the index, so a P2002
-         * here cannot have come from the mobile. Treating it as one would
+         * An acknowledged duplicate is excluded from both indexes, so a P2002
+         * here cannot have come from either key. Treating it as one would
          * report a duplicate to somebody who explicitly allowed one.
          */
-        if (collidingLead && dto.allowDuplicate !== true) {
+        if (colliding && dto.allowDuplicate !== true) {
           // Another request created this customer between our duplicate check
-          // and this insert. That is the race the index exists to catch, and
+          // and this insert. That is the race the indexes exist to catch, and
           // it is not retryable.
           throw AppException.conflict(
             ERROR_CODES.DUPLICATE_LEAD,
-            'A lead with this mobile number was just created.',
+            collidingByMobile
+              ? 'A lead with this mobile number was just created.'
+              : 'A lead with this email address was just created.',
           );
         }
 
@@ -470,6 +545,7 @@ type LeadRow = {
   estimatedValue: { toString(): string } | null;
   nextFollowUpAt: Date | null;
   createdAt: Date;
+  deactivatedAt: Date | null;
   assignedTo: { id: string; fullName: string } | null;
 };
 
@@ -490,5 +566,6 @@ function toSummary(lead: LeadRow): LeadSummary {
     nextFollowUpAt: lead.nextFollowUpAt?.toISOString() ?? null,
     assignedTo: lead.assignedTo,
     createdAt: lead.createdAt.toISOString(),
+    deactivatedAt: lead.deactivatedAt?.toISOString() ?? null,
   };
 }

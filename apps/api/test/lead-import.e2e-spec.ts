@@ -111,10 +111,16 @@ describe('Lead import and dashboard', () => {
       expect(response.body.data.invalidRows).toBe(3);
 
       const rows = response.body.data.rows as { line: number; errors: string[] }[];
-      expect(rows.find((row) => row.line === 3)?.errors).toContain('firstName is empty');
-      expect(rows.find((row) => row.line === 5)?.errors).toContain(
-        'mobile is not a valid phone number',
-      );
+      expect(rows.find((row) => row.line === 3)?.errors).toContain('firstName is empty.');
+      /*
+       * The message now QUOTES the rejected value.
+       *
+       * It used to read "mobile is not a valid phone number", which is true and
+       * useless: the common cause is a delimiter the parser did not expect, so
+       * the whole row lands in one cell and the user goes looking at the phone
+       * column. Naming the value is what makes the error actionable.
+       */
+      expect(rows.find((row) => row.line === 5)?.errors.join(' ')).toContain('not-a-number');
     });
 
     it('flags a row that duplicates an existing lead', async () => {
@@ -149,7 +155,13 @@ describe('Lead import and dashboard', () => {
         .send({ csv, defaultNextFollowUpAt: inDays(3) })
         .expect(200);
 
-      expect(response.body.data.rows[1].duplicateOf).toEqual({ line: 2, kind: 'file' });
+      // `matchedOn` is new: a duplicate can now be found by email as well as
+      // mobile, and which key matched is what the user needs told.
+      expect(response.body.data.rows[1].duplicateOf).toEqual({
+        line: 2,
+        kind: 'file',
+        matchedOn: 'mobile',
+      });
     });
 
     it('names the required fields that no column maps to', async () => {

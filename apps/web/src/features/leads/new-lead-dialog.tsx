@@ -14,6 +14,7 @@ import {
 import { ApiError, apiGet, apiPost } from '../../lib/api-client';
 import { currencySymbol, humanise } from '../../lib/format';
 import type { LeadSummary } from './use-leads';
+import { zonedDefault, zonedInputToIso } from '../../lib/zoned-input';
 
 /**
  * Neutral fallback, used only when an organization has configured none of its
@@ -38,12 +39,12 @@ interface ExistingLead {
   status: string;
 }
 
-/** Default follow-up: tomorrow at 11:00, a sane working-hours slot. */
+/**
+ * Default follow-up: tomorrow at 11:00 on the ORGANIZATION's calendar, a sane
+ * working-hours slot for the team rather than for whatever zone the device is in.
+ */
 function defaultFollowUp(): string {
-  const date = new Date(Date.now() + 86_400_000);
-  date.setHours(11, 0, 0, 0);
-  const offset = date.getTimezoneOffset() * 60_000;
-  return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+  return zonedDefault(1);
 }
 
 /**
@@ -189,7 +190,7 @@ export function NewLeadDialog({
         ...(assignedToId ? { assignedToId } : {}),
         // A terminal lead has no next action — the server rejects one, and the
         // database CHECK constraint would too.
-        ...(terminal ? {} : { nextFollowUpAt: new Date(nextFollowUpAt).toISOString() }),
+        ...(terminal ? {} : { nextFollowUpAt: zonedInputToIso(nextFollowUpAt) }),
         ...(allowDuplicate ? { allowDuplicate: true } : {}),
       }),
     onSuccess: (lead) => {

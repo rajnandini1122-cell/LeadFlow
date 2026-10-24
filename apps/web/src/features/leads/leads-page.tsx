@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { LEAD_STATUSES, type LeadStatus } from '@leadflow/api-types';
+import { Link, useSearchParams } from 'react-router-dom';
+import {
+  LEAD_STATUSES,
+  type LeadLifecycleFilter,
+  type LeadStatus,
+} from '@leadflow/api-types';
 import {
   formatCurrency,
   formatCurrencyCompact,
@@ -38,7 +42,25 @@ export function LeadsPage(): React.JSX.Element {
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState<LeadStatus | 'ALL'>('ALL');
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [lifecycle, setLifecycle] = useState<LeadLifecycleFilter>('ACTIVE');
+  /*
+   * Leads nobody owns. They cannot carry a follow-up row, so they appear in no
+   * follow-up queue — this is the one place a manager can find them to assign.
+   */
+  const [unassignedOnly, setUnassignedOnly] = useState(false);
   const { user, can } = useAuth();
+  const canSeeTeam = can('lead.view.all');
+
+  /*
+   * The import batch comes from the URL, not from a control on this page.
+   *
+   * It is arrived at by following a link — from the import result or the batch
+   * list — which means the link can be shared and reopened, and the screen that
+   * fixes a bad import keeps working after a refresh. A piece of state only
+   * this component knew would lose that.
+   */
+  const [params] = useSearchParams();
+  const importBatchId = params.get('importBatchId') ?? undefined;
 
   // Debounced, because the search box now hits the API on every keystroke.
   useEffect(() => {
@@ -50,6 +72,15 @@ export function LeadsPage(): React.JSX.Element {
     {
       search: search || undefined,
       status: status === 'ALL' ? undefined : status,
+      ...(canSeeTeam && unassignedOnly ? { unassigned: true } : {}),
+      /*
+       * Filtering by batch shows ALL of it, deactivated rows included.
+       *
+       * The screen exists to correct a bad import, so it has to show what it is
+       * about to act on — and after somebody deactivates half the batch, a list
+       * that hid those rows would make the work look undone.
+       */
+      ...(importBatchId ? { importBatchId, lifecycle: 'ALL' as const } : { lifecycle }),
     },
     PAGE_SIZE,
   );
@@ -156,6 +187,54 @@ export function LeadsPage(): React.JSX.Element {
             />
           ))}
         </div>
+
+        {/*
+          A SEPARATE row from the status chips, deliberately.
+          Deactivated is not a pipeline stage — it is orthogonal to every stage,
+          and putting it in the same row as NEW and WON would read as though it
+          were one of them. The three states that mean "not live work" —
+          deactivated, archived and LOST — are different things, and this
+          control only reaches the first.
+        */}
+        {!importBatchId && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="mr-1 text-xs text-slate-500">Show</span>
+            <FilterChip
+              label="In the pipeline"
+              active={lifecycle === 'ACTIVE'}
+              onClick={() => setLifecycle('ACTIVE')}
+            />
+            <FilterChip
+              label="Deactivated"
+              active={lifecycle === 'INACTIVE'}
+              onClick={() => setLifecycle('INACTIVE')}
+            />
+            <FilterChip
+              label="Both"
+              active={lifecycle === 'ALL'}
+              onClick={() => setLifecycle('ALL')}
+            />
+            {canSeeTeam && (
+              <>
+                <span className="mx-1 h-4 w-px bg-slate-200" aria-hidden />
+                <FilterChip
+                  label="Unassigned only"
+                  active={unassignedOnly}
+                  onClick={() => setUnassignedOnly((value) => !value)}
+                />
+              </>
+            )}
+          </div>
+        )}
+
+        {importBatchId && (
+          <p className="flex items-center gap-2 rounded-lg bg-slate-100 px-3 py-2 text-xs text-slate-700">
+            <span>Showing one CSV import only, including any rows already deactivated.</span>
+            <Link to="/leads" className="underline">
+              Show everything
+            </Link>
+          </p>
+        )}
       </div>
 
       <Card>

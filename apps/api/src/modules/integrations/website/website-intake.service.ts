@@ -3,6 +3,7 @@ import { ERROR_CODES } from '@leadflow/api-types';
 import { AppConfig } from '../../../common/config/config.module';
 import { AppException } from '../../../common/errors/app.exception';
 import { AuditRepository } from '../../../common/audit/audit.repository';
+import { METRIC, MetricsService } from '../../../common/observability/metrics.service';
 import { TenantContextService } from '../../../common/tenancy/tenant-context.service';
 import { parsePhone } from '../../../common/utils/phone';
 import { WebsiteIntakeRepository, type IntakeRecord } from './website-intake.repository';
@@ -52,6 +53,7 @@ export class WebsiteIntakeService {
     private readonly repository: WebsiteIntakeRepository,
     private readonly audit: AuditRepository,
     private readonly tenantContext: TenantContextService,
+    private readonly metrics: MetricsService,
   ) {}
 
   /** Whether this deployment has the integration switched on at all. */
@@ -181,6 +183,15 @@ export class WebsiteIntakeService {
       });
 
       if (created) {
+        /*
+         * Counted once per enquiry that actually landed.
+         *
+         * Inside the `created` branch deliberately: a redelivery of the same
+         * submission returns the existing receipt without a row, and counting
+         * it would make the funnel report traffic rather than enquiries.
+         */
+        this.metrics.increment(METRIC.INTAKE_RECEIVED);
+
         await this.audit.record({
           action: 'integration.intake.received',
           entityType: 'IntegrationIntake',

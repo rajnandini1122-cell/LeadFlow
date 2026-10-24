@@ -20,6 +20,8 @@ export function useIntakes(query: IntegrationIntakeQuery) {
   const search = new URLSearchParams();
   if (query.status) search.set('status', query.status);
   if (query.source) search.set('source', query.source);
+  if (query.submissionId) search.set('submissionId', query.submissionId);
+  if (query.enquiryType) search.set('enquiryType', query.enquiryType);
   if (query.limit !== undefined) search.set('limit', String(query.limit));
   if (query.offset !== undefined) search.set('offset', String(query.offset));
 

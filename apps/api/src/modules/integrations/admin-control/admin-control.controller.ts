@@ -33,6 +33,7 @@ import {
   UpdateTerritoryDto,
 } from '../../territories/dto/territories.dto';
 import { IntakeQueryDto, RetryIntakeDto } from '../intake-processing/dto/intake-operations.dto';
+import { AdminLeadQueryDto } from './dto/admin-leads.dto';
 
 /**
  * The Central Admin control plane.
@@ -135,6 +136,37 @@ export class AdminControlController {
   ) {
     this.authenticate(request, headers);
     return this.control.read(() => this.operations.territory(id));
+  }
+
+  /**
+   * Qualified enquiries, for an export operation to act on.
+   *
+   * `GET .../leads?status=QUALIFIED`. Read-only: there is no matching write on
+   * this plane, and no endpoint here creates an order or moves a stage.
+   *
+   * Tenant-bound by `control.read`, which runs inside
+   * `ADMIN_CONTROL_ORGANIZATION_ID` — the same binding every other read here
+   * uses. The caller cannot name a tenant, because a signature proves who is
+   * calling and not what they may touch.
+   */
+  @Get('leads')
+  async leads(
+    @Req() request: RawBodyRequest<Request>,
+    @Headers() headers: Headers0,
+    @Query() query: AdminLeadQueryDto,
+  ) {
+    this.authenticate(request, headers);
+    return this.control.read(() => this.operations.leads(query));
+  }
+
+  @Get('leads/:id')
+  async lead(
+    @Req() request: RawBodyRequest<Request>,
+    @Headers() headers: Headers0,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    this.authenticate(request, headers);
+    return this.control.read(() => this.operations.lead(id));
   }
 
   @Get('intakes')

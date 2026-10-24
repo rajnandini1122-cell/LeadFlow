@@ -46,10 +46,11 @@ export function DailyReportPage(): React.JSX.Element {
         value: (item) => ((overdue.data ?? []).includes(item) ? 'Overdue' : 'Due today'),
       },
       { header: 'Lead number', value: (item) => item.leadNumber },
-      { header: 'Name', value: (item) => item.leadName },
+      { header: 'Name', value: (item) => item.leadName ?? item.accountName },
       { header: 'Company', value: (item) => item.companyName },
       { header: 'Mobile', value: (item) => item.mobile },
-      { header: 'Lead status', value: (item) => humanise(item.leadStatus) },
+      // A customer follow-up has no lead, so no lead status — said, not left blank.
+      { header: 'Lead status', value: (item) => (item.leadStatus ? humanise(item.leadStatus) : 'Customer follow-up') },
       { header: 'Follow-up type', value: (item) => humanise(item.type) },
       { header: 'Scheduled', value: (item) => formatDueDate(item.scheduledAt) },
       { header: 'Owner', value: (item) => item.assignedTo.fullName },
@@ -193,22 +194,37 @@ export function DailyReportPage(): React.JSX.Element {
 }
 
 function ActionRow({ followUp }: { followUp: FollowUp }): React.JSX.Element {
+  // A customer follow-up links to the customer; it used to link to /leads/null.
+  const target = followUp.leadId
+    ? `/leads/${followUp.leadId}`
+    : followUp.accountId
+      ? `/customers/${followUp.accountId}`
+      : null;
+  const name = followUp.leadName ?? followUp.accountName ?? followUp.companyName ?? 'Follow-up';
+
   return (
     <tr className="hover:bg-slate-50">
       <td className="px-5 py-2.5">
-        <Link
-          to={`/leads/${followUp.leadId}`}
-          className="font-medium text-slate-900 hover:underline"
-        >
-          {followUp.leadName}
-        </Link>
+        {target ? (
+          <Link to={target} className="font-medium text-slate-900 hover:underline">
+            {name}
+          </Link>
+        ) : (
+          <span className="font-medium text-slate-900">{name}</span>
+        )}
         <p className="text-xs text-slate-500">
-          <span className="font-mono">{followUp.leadNumber}</span>
-          {followUp.companyName ? ` · ${followUp.companyName}` : ''}
+          {followUp.leadNumber ? (
+            <>
+              <span className="font-mono">{followUp.leadNumber}</span>
+              {followUp.companyName ? ` · ${followUp.companyName}` : ''}
+            </>
+          ) : (
+            'Customer follow-up'
+          )}
         </p>
       </td>
       <td className="px-3 py-2.5">
-        <StatusBadge status={followUp.leadStatus as never} />
+        {followUp.leadStatus && <StatusBadge status={followUp.leadStatus as never} />}
         <p className="mt-1 text-[11px] text-slate-500">{humanise(followUp.type)}</p>
       </td>
       <td className="px-3 py-2.5 text-slate-600">{followUp.assignedTo.fullName}</td>

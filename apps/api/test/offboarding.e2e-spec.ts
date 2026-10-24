@@ -115,6 +115,19 @@ describe('Organization administration and employee exit', () => {
     const leadId = lead.body.data.id as string;
     let followUpId: string | undefined;
 
+    /*
+     * NOTE ON THE COUNTS BELOW.
+     *
+     * An assigned lead created with `nextFollowUpAt` now gets a REAL follow-up
+     * row, not just the mirror column — that was the "Next action: a date /
+     * Follow-ups: 0 open" defect. So every lead this helper seeds carries one
+     * follow-up by construction, and `withFollowUp` adds a SECOND, which the
+     * product permits: a call tomorrow and a meeting next week are two things
+     * owed on one lead.
+     *
+     * The lead counts in these tests are therefore unchanged; the follow-up
+     * counts doubled, and that is the fix showing up rather than a regression.
+     */
     if (options.withFollowUp) {
       const followUp = await ctx
         .http()
@@ -467,7 +480,8 @@ describe('Organization administration and employee exit', () => {
       const workload = await workloadOf(org.token, rep.userId);
 
       expect(workload.activeLeads).toBe(2);
-      expect(workload.openFollowUps).toBe(2);
+      // Two leads, each with its creation follow-up plus the explicit one.
+      expect(workload.openFollowUps).toBe(4);
       expect(workload.wonLeads).toBe(1);
       expect(workload.lostLeads).toBe(1);
       expect(workload.requiresReassignment).toBe(true);
@@ -526,7 +540,8 @@ describe('Organization administration and employee exit', () => {
       // The message has to carry the counts, or the admin cannot tell how big
       // a decision they are being asked to make.
       expect(response.body.error.details.activeLeads).toEqual(['1']);
-      expect(response.body.error.details.openFollowUps).toEqual(['1']);
+      // The lead's own creation follow-up, plus the one the fixture scheduled.
+      expect(response.body.error.details.openFollowUps).toEqual(['2']);
     });
 
     it('refuses to deactivate a member who still owns active leads', async () => {
@@ -585,7 +600,9 @@ describe('Organization administration and employee exit', () => {
         .expect(200);
 
       expect(response.body.data.leadsReassigned).toBe(2);
-      expect(response.body.data.followUpsReassigned).toBe(2);
+      // Unchanged leads, doubled follow-ups: one per lead at creation, one
+      // scheduled. Both move to the successor, which is the claim being made.
+      expect(response.body.data.followUpsReassigned).toBe(4);
       expect(response.body.data.action).toBe('REMOVE');
 
       // The leads now belong to the successor and are visible to them.
@@ -1018,7 +1035,7 @@ describe('Organization administration and employee exit', () => {
 
       // The reschedule created a replacement, so there are still exactly two
       // OPEN follow-ups — the original is CANCELLED and must not be moved.
-      expect(result.body.data.followUpsReassigned).toBe(2);
+      expect(result.body.data.followUpsReassigned).toBe(4);
 
       const successorFollowUps = await ctx
         .http()
@@ -1076,7 +1093,8 @@ describe('Organization administration and employee exit', () => {
 
       // Completing created a new open follow-up; the finished one stays with
       // the person who actually did it.
-      expect(result.body.data.followUpsReassigned).toBe(1);
+      // The completed one still does not move; the creation follow-up does.
+      expect(result.body.data.followUpsReassigned).toBe(2);
 
       const completed = await ctx
         .http()
@@ -1153,7 +1171,7 @@ describe('Organization administration and employee exit', () => {
       expect(entry?.entityId).toBe(leaver.userId);
       expect(entry?.after?.['reassignToId']).toBe(successor.userId);
       expect(entry?.after?.['leadsReassigned']).toBe(1);
-      expect(entry?.after?.['followUpsReassigned']).toBe(1);
+      expect(entry?.after?.['followUpsReassigned']).toBe(2);
     });
 
     it('records an admin transfer', async () => {

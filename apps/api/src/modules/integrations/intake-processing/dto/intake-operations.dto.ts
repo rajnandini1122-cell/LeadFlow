@@ -1,6 +1,6 @@
 import { Transform } from 'class-transformer';
 import { IsIn, IsISO8601, IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
-import { INTAKE_STATUSES } from '@leadflow/api-types';
+import { ENQUIRY_TYPES, INTAKE_STATUSES, type EnquiryType } from '@leadflow/api-types';
 
 /**
  * The body of a retry: nothing at all.
@@ -34,6 +34,29 @@ export class IntakeQueryDto {
   @MaxLength(40)
   @Transform(({ value }) => (typeof value === 'string' ? value.trim().toUpperCase() : value))
   source?: string;
+
+  /**
+   * The sender's own id for one submission, matched exactly.
+   *
+   * The filter that makes "did website submission X reach LeadFlow?"
+   * answerable from the API. Exact match rather than a contains search: these
+   * are opaque ids somebody pastes out of a support ticket, and a partial
+   * match would hand back a neighbour's enquiry.
+   *
+   * NOT uppercased, unlike `source` — a submission id is case-sensitive and
+   * chosen by the caller.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  submissionId?: string;
+
+  /** One of the eight classifications. Uppercased so a lowercase query works. */
+  @IsOptional()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim().toUpperCase() : value))
+  @IsIn(ENQUIRY_TYPES, { message: `must be one of: ${ENQUIRY_TYPES.join(', ')}` })
+  enquiryType?: EnquiryType;
 
   /** Inclusive. */
   @IsOptional()

@@ -7,6 +7,7 @@ import {
   useRepeatOptions,
   type RepeatOptions,
 } from './use-retention';
+import { zonedDefault, zonedInputToIso } from '../../lib/zoned-input';
 
 /**
  * Raising the next opportunity for a customer we already have.
@@ -69,7 +70,7 @@ export function RepeatBusinessDialog({
         ...(productInterest ? { productInterest } : {}),
         // Only what was actually typed. Never the previous won value.
         ...(estimatedValue ? { estimatedValue: Number(estimatedValue) } : {}),
-        nextFollowUpAt: new Date(nextFollowUpAt).toISOString(),
+        nextFollowUpAt: zonedInputToIso(nextFollowUpAt),
       },
       {
         onSuccess: (result) => {
@@ -295,11 +296,6 @@ function formatMoney(value: number): string {
 
 /** Tomorrow morning — a sensible default nobody has to think about. */
 function defaultFollowUp(): string {
-  const date = new Date(Date.now() + 24 * 60 * 60 * 1000);
-  date.setHours(10, 0, 0, 0);
-
-  const pad = (value: number): string => String(value).padStart(2, '0');
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(
-    date.getHours(),
-  )}:${pad(date.getMinutes())}`;
+  // Tomorrow 10:00 for the organization, not for the device's timezone.
+  return zonedDefault(1, 10);
 }

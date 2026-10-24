@@ -185,7 +185,52 @@ export class IntakeProcessingRepository {
    */
   async activeLeadByMobile(tx: PrismaTransaction, mobile: string) {
     return tx.lead.findFirst({
-      where: { mobile, deletedAt: null, status: { not: 'LOST' } },
+      where: {
+        mobile,
+        deletedAt: null,
+        // Mirrors `leads_org_mobile_uniq` / `leads_org_email_uniq`, which gained
+        // this clause in 20261013090000. A deactivated lead has released its
+        // identifiers, so a website enquiry from that customer is a NEW lead
+        // rather than a duplicate of a record somebody took out of service.
+        deactivatedAt: null,
+        status: { not: 'LOST' },
+      },
+      select: { id: true, leadNumber: true },
+    });
+  }
+
+  /**
+   * An active lead already holding this email address.
+   *
+   * The counterpart to activeLeadByMobile, and it exists because an enquiry
+   * with an email and no phone had no duplicate key at all: the mobile
+   * pre-check is guarded by `if (mobile)` and skipped, and no constraint
+   * covered email, so two submissions from one person who left the phone blank
+   * became two active leads.
+   *
+   * CASE-INSENSITIVE, matching `leads_org_email_uniq` which keys on
+   * lower(email). Stored addresses are not uniformly normalised — the intake
+   * DTO has always lowercased, the manual create and update DTOs did not until
+   * this change — so comparing raw strings would miss exactly the duplicate
+   * this is here to find.
+   *
+   * The predicate mirrors the index clause for clause. A LOST lead releases
+   * the address and a soft-deleted one never held it, so a customer who went
+   * quiet may legitimately return as a new enquiry.
+   */
+  async activeLeadByEmail(tx: PrismaTransaction, email: string) {
+    return tx.lead.findFirst({
+      where: {
+        email: { equals: email, mode: 'insensitive' },
+        deletedAt: null,
+        // Mirrors `leads_org_mobile_uniq` / `leads_org_email_uniq`, which gained
+        // this clause in 20261013090000. A deactivated lead has released its
+        // identifiers, so a website enquiry from that customer is a NEW lead
+        // rather than a duplicate of a record somebody took out of service.
+        deactivatedAt: null,
+        status: { not: 'LOST' },
+        duplicateAcknowledgedAt: null,
+      },
       select: { id: true, leadNumber: true },
     });
   }
