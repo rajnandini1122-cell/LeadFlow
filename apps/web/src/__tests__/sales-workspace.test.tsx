@@ -13,6 +13,7 @@ import { LogOutcomeDialog } from '../features/leads/log-outcome-dialog';
 import { ActionableLeadList, nextActionText } from '../features/leads/actionable-lead-list';
 import { RescheduleFollowUpDialog } from '../features/leads/lead-dialogs';
 import type { LeadSummary } from '../features/leads/use-leads';
+import type { WorkspaceSummary } from '../features/leads/use-lead-mutations';
 
 /**
  * The sales workspace, on screen.
@@ -68,7 +69,7 @@ const LEAD: LeadSummary = {
   },
 };
 
-const SUMMARY = {
+const SUMMARY: WorkspaceSummary = {
   timezone: 'Asia/Kolkata',
   scope: 'OWN',
   followUps: { overdue: 3, today: 5, tomorrow: 2, week: 4, upcoming: 9, awaiting: 2, completed: 40, completed_today: 6 },
@@ -166,7 +167,7 @@ describe('My work today', () => {
 
   it('says so when the numbers cannot be loaded', async () => {
     signedInAs(['lead.view.own']);
-    vi.spyOn(apiClient, 'apiGet').mockRejectedValue(new apiClient.ApiError('INTERNAL', 'boom', 500));
+    vi.spyOn(apiClient, 'apiGet').mockRejectedValue(new apiClient.ApiError('INTERNAL_ERROR', 'boom', 500));
     wrap(<WorkspacePage />);
 
     expect(await screen.findByText(/Could not load your work/)).toBeInTheDocument();
