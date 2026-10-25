@@ -52,6 +52,18 @@ const OPEN = `('UPCOMING','DUE','OVERDUE')`;
 const CHECKS = [
   ['P0', 'Session is read-only', `SHOW default_transaction_read_only`,
     (r) => (r[0].default_transaction_read_only === 'on' ? ['OK', 'on'] : ['STOP', 'not read-only'])],
+  ['P0c', 'Connected role holds no write or DDL privilege (not an admin connection)',
+    `SELECT (SELECT rolsuper OR rolcreaterole OR rolcreatedb OR rolbypassrls FROM pg_roles WHERE rolname = current_user) AS powerful,
+            has_schema_privilege('public', 'CREATE') AS can_create,
+            (SELECT count(*)::int FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE n.nspname = 'public' AND c.relkind IN ('r','p')
+                AND (has_table_privilege(c.oid, 'INSERT') OR has_table_privilege(c.oid, 'UPDATE')
+                  OR has_table_privilege(c.oid, 'DELETE') OR has_table_privilege(c.oid, 'TRUNCATE'))) AS writable,
+            (SELECT count(*)::int FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE n.nspname = 'public' AND pg_get_userbyid(c.relowner) = current_user) AS owned`,
+    (r) => (!r[0].powerful && !r[0].can_create && r[0].writable === 0 && r[0].owned === 0
+      ? ['OK', 'read-only role']
+      : ['STOP', 'this connection can write or alter objects — use the leadflow_preflight role'])],
   ['P0b', 'PostgreSQL server version (pg_dump must be this major or newer)', `SHOW server_version`,
     (r) => ['INFO', r[0].server_version]],
   ['P1', 'Database encoding is UTF8',
@@ -69,7 +81,10 @@ const CHECKS = [
       : r[0].n === 0 ? ['OK', '0'] : ['STOP', `${r[0].n} already present — someone applied part of the release`])],
   ['P3', 'Release objects present (table, columns, enum values)',
     `SELECT (to_regclass('public.lead_attachments') IS NOT NULL)::int
-          + (EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='leads' AND column_name='last_outcome'))::int
+          -- pg_attribute, not information_schema: the latter hides columns the
+          -- role holds no privilege on, which would make this check pass falsely
+          -- for a least-privilege preflight role.
+          + (EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass('public.leads') AND attname = 'last_outcome' AND NOT attisdropped))::int
           + (EXISTS (SELECT 1 FROM pg_enum e JOIN pg_type t ON t.oid=e.enumtypid WHERE t.typname='activity_type' AND e.enumlabel LIKE 'DOCUMENT_%'))::int AS n`,
     (r) => (!BEFORE ? ['INFO', `${r[0].n} of 3 present (all 3 expected after #12)`]
       : r[0].n === 0 ? ['OK', 'none'] : ['STOP', `${r[0].n} present`])],
@@ -151,6 +166,11 @@ try {
     }
     if (verdict === 'STOP') stops++;
     console.log(`${verdict.padEnd(6)} ${id.padEnd(4)} ${label}\n         ${detail}`);
+    // A connection that is not provably read-only reads no business data.
+    if (verdict === 'STOP' && (id === 'P0' || id === 'P0c')) {
+      console.log('\nStopped before reading any data.');
+      break;
+    }
   }
   await client.query('ROLLBACK');
   console.log(`\n${stops === 0 ? 'No STOP findings.' : `${stops} STOP finding(s): ${BEFORE ? "do not merge #11" : "do not proceed to the next step"} until resolved.`}`);
