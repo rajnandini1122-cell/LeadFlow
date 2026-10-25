@@ -1,19 +1,20 @@
 import { useState, type FormEvent } from 'react';
-import { Link, Navigate } from 'react-router-dom';
+import { Link, Navigate, useLocation } from 'react-router-dom';
 import type { OrganizationSummary } from '@leadflow/api-types';
 import { ApiError } from '../../lib/api-client';
 import { useAuth } from './auth-context';
 import { AuthLayout } from './auth-shell';
 
 export function LoginPage(): React.JSX.Element {
-  const { login, status, pendingOrganizations } = useAuth();
+  const { login, status, pendingOrganizations, sessionExpired } = useAuth();
+  const location = useLocation();
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  if (status === 'authenticated') return <Navigate to="/today" replace />;
+  if (status === 'authenticated') return <Navigate to={returnPath(location.state)} replace />;
 
   /**
    * Signs in, optionally naming which organization to enter.
@@ -56,6 +57,12 @@ export function LoginPage(): React.JSX.Element {
           * from the bug this screen was just fixed for, and would have hidden
           * a 403 completely.
           */}
+        {sessionExpired && !error && (
+          <p role="status" className="mb-4 rounded-md bg-sky-50 px-3 py-2 text-sm text-sky-900">
+            Your session ended. Sign in again to carry on where you were — anything you were typing in a call outcome is kept.
+          </p>
+        )}
+
         {error && (
           <p
             role="alert"
@@ -205,4 +212,16 @@ function Field({
       />
     </div>
   );
+}
+
+/**
+ * Where to go after signing in: back to the page the session ended on, when
+ * there was one. Only an in-app path is accepted — never another site.
+ */
+export function returnPath(state: unknown): string {
+  const from = (state as { from?: unknown } | null)?.from;
+  if (typeof from !== 'string' || !from.startsWith('/') || from.startsWith('//') || from.startsWith('/login')) {
+    return '/today';
+  }
+  return from;
 }

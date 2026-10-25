@@ -63,6 +63,18 @@ export function Dialog({
 }): React.JSX.Element | null {
   const panel = useRef<HTMLDivElement>(null);
   const opener = useRef<Element | null>(null);
+  /*
+   * The latest onClose, read at the moment it is needed.
+   *
+   * The focus effect below used to depend on onClose itself. Callers pass it
+   * inline, so any re-render of the page behind the dialog — a queue refetching
+   * on its 30 s cycle, the app coming back from the dialer — re-ran the effect:
+   * focus jumped to the first button mid-sentence, and keystrokes were lost.
+   */
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  });
 
   useEffect(() => {
     if (!open) return;
@@ -79,7 +91,7 @@ export function Dialog({
 
     const onKey = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') {
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (event.key !== 'Tab') return;
@@ -104,7 +116,7 @@ export function Dialog({
       window.removeEventListener('keydown', onKey);
       (opener.current as HTMLElement | null)?.focus();
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
 
