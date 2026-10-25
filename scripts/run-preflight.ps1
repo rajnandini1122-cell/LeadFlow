@@ -28,7 +28,14 @@ param(
   [int]$Port = 17722,
   [string]$Database = 'railway',
   [string]$Role = 'leadflow_preflight',
-  [ValidateSet('require', 'verify-full', 'disable')] [string]$SslMode = 'require',
+  # verify-ca: trust ONLY this database's own root certificate (pinned in the
+  # repository). verify-full is impossible against Railway's proxy: its
+  # certificate names localhost / postgres-17.railway.internal, not the proxy
+  # host, and no public CA signs it. 'require' (encrypt, no identity check) is
+  # a fallback for when the pinned certificate no longer matches; 'disable' is
+  # for local test databases only.
+  [ValidateSet('verify-ca', 'require', 'disable')] [string]$SslMode = 'verify-ca',
+  [string]$RootCert = (Join-Path (Split-Path -Parent $PSScriptRoot) 'docs\release\railway-postgres-root-ca.pem'),
   [string]$SecretFile = (Join-Path $env:LOCALAPPDATA 'LeadFlow\preflight-password.dpapi')
 )
 $ErrorActionPreference = 'Stop'
@@ -50,7 +57,19 @@ try {
   $secure = Get-Content -Path $SecretFile | ConvertTo-SecureString
   $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
   $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
-  $ssl = if ($SslMode -eq 'disable') { 'sslmode=disable' } else { "sslmode=$SslMode&uselibpqcompat=true" }
+  $ssl = switch ($SslMode) {
+    'disable' { 'sslmode=disable' }
+    'require' {
+      Write-Warning 'sslmode=require: encrypted, but the server is NOT authenticated. Use only if the pinned root certificate has changed and you have re-verified the new one.'
+      'sslmode=require&uselibpqcompat=true'
+    }
+    default {
+      if (-not (Test-Path $RootCert)) { throw "Pinned root certificate not found: $RootCert" }
+      $pin = (Get-FileHash -Algorithm SHA256 -Path $RootCert).Hash
+      Write-Host "TLS: verify-ca, pinned root certificate file SHA-256 $($pin.Substring(0,16))..."
+      "sslmode=verify-ca&sslrootcert=$([Uri]::EscapeDataString(($RootCert -replace '\\', '/')))&uselibpqcompat=true"
+    }
+  }
   $env:PREFLIGHT_DATABASE_URL = "postgresql://${Role}:$([Uri]::EscapeDataString($plain))@${DbHost}:${Port}/${Database}?$ssl"
   Remove-Variable plain
 

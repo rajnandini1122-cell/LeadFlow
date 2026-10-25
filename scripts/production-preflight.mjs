@@ -54,13 +54,16 @@ const CHECKS = [
     (r) => (r[0].default_transaction_read_only === 'on' ? ['OK', 'on'] : ['STOP', 'not read-only'])],
   ['P0c', 'Connected role holds no write or DDL privilege (not an admin connection)',
     `SELECT (SELECT rolsuper OR rolcreaterole OR rolcreatedb OR rolbypassrls FROM pg_roles WHERE rolname = current_user) AS powerful,
-            has_schema_privilege('public', 'CREATE') AS can_create,
+            (has_database_privilege(current_database(), 'CREATE')
+              OR EXISTS (SELECT 1 FROM pg_namespace n WHERE n.nspname NOT IN ('pg_catalog','information_schema')
+                           AND n.nspname NOT LIKE 'pg\\_%' AND has_schema_privilege(n.oid, 'CREATE'))) AS can_create,
             (SELECT count(*)::int FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-              WHERE n.nspname = 'public' AND c.relkind IN ('r','p')
+              WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname NOT LIKE 'pg\\_%' AND c.relkind IN ('r','p')
                 AND (has_table_privilege(c.oid, 'INSERT') OR has_table_privilege(c.oid, 'UPDATE')
                   OR has_table_privilege(c.oid, 'DELETE') OR has_table_privilege(c.oid, 'TRUNCATE'))) AS writable,
             (SELECT count(*)::int FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-              WHERE n.nspname = 'public' AND pg_get_userbyid(c.relowner) = current_user) AS owned`,
+              WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname NOT LIKE 'pg\\_%'
+                AND pg_get_userbyid(c.relowner) = current_user) AS owned`,
     (r) => (!r[0].powerful && !r[0].can_create && r[0].writable === 0 && r[0].owned === 0
       ? ['OK', 'read-only role']
       : ['STOP', 'this connection can write or alter objects — use the leadflow_preflight role'])],

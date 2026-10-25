@@ -34,6 +34,26 @@ ALTER ROLE leadflow_preflight SET statement_timeout = '60s';
 ALTER ROLE leadflow_preflight SET lock_timeout = '5s';
 ALTER ROLE leadflow_preflight SET idle_in_transaction_session_timeout = '60s';
 
+-- PUBLIC holds TEMP on every database by default, and any role may create a
+-- large object. Both are refused in this role's read-only sessions; they
+-- become possible only if a session deliberately switches read-only off, and
+-- even then cannot touch any application object or row. They cannot be
+-- revoked for one role without revoking them from PUBLIC — i.e. changing
+-- every existing user — so they are capped and detected instead:
+--   * temp_file_limit caps temporary disk use. It is a superuser-only
+--     setting the role cannot override, so it is applied only when this file
+--     runs as a superuser (Railway's postgres user is one).
+--   * scripts/verify-preflight-role.mjs fails if the role owns any object or
+--     large object; the undo below drops anything it ever created.
+DO $$
+BEGIN
+  IF current_setting('is_superuser') = 'on' THEN
+    ALTER ROLE leadflow_preflight SET temp_file_limit = '16MB';
+  ELSE
+    RAISE NOTICE 'Not a superuser: temp_file_limit not set for leadflow_preflight (the other limits still apply).';
+  END IF;
+END $$;
+
 -- Connect to THIS database (named at run time, so the file works on any copy).
 DO $$
 BEGIN
@@ -63,14 +83,12 @@ GRANT SELECT (organization_id, user_id, status)
 GRANT SELECT (organization_id, action, entity_id, before, created_at)
   ON public.audit_logs TO leadflow_preflight;     -- before->>'assignedToId' only, for check A
 
--- Deliberately NOT granted: any other table, any other column, CREATE or TEMP
--- beyond what PUBLIC already has, and no ALTER DEFAULT PRIVILEGES — tables
--- created later are not readable by this role.
+-- Deliberately NOT granted: any other table, any other column, CREATE on the
+-- database or any schema, and no ALTER DEFAULT PRIVILEGES — tables created
+-- later are not readable by this role. Nothing granted to PUBLIC is changed.
 
 -- =============================================================================
--- UNDO (after the release; run as the database owner):
---   REVOKE ALL ON ALL TABLES IN SCHEMA public FROM leadflow_preflight;
---   REVOKE ALL ON SCHEMA public FROM leadflow_preflight;
---   DO $$ BEGIN EXECUTE format('REVOKE ALL ON DATABASE %I FROM leadflow_preflight', current_database()); END $$;
+-- UNDO (after the release; run as the database owner, in this database):
+--   DROP OWNED BY leadflow_preflight;   -- revokes its grants AND drops anything it created
 --   DROP ROLE leadflow_preflight;
 -- =============================================================================

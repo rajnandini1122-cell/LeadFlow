@@ -61,24 +61,57 @@ try {
   const ro = (await client.query('SHOW default_transaction_read_only')).rows[0].default_transaction_read_only;
   report(ro === 'on', 'every session is read-only by default', ro);
 
-  const db = (await client.query(`SELECT has_database_privilege(current_database(), 'CREATE') AS c`)).rows[0];
+  // EFFECTIVE privileges: has_*_privilege includes everything granted to
+  // PUBLIC, so defaults inherited that way are checked too — in EVERY
+  // non-system schema, not only public.
+  const USER_SCHEMAS = `n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg\\_toast%' AND n.nspname NOT LIKE 'pg\\_temp\\_%'`;
+
+  const db = (await client.query(`SELECT has_database_privilege(current_database(), 'CREATE') AS c, has_database_privilege(current_database(), 'TEMP') AS t`)).rows[0];
   report(!db.c, 'cannot CREATE schemas in the database');
-  const schema = (await client.query(`SELECT has_schema_privilege('public', 'CREATE') AS c, has_schema_privilege('public', 'USAGE') AS u`)).rows[0];
-  report(!schema.c && schema.u, 'schema public: USAGE only, no CREATE');
+  const schemas = (
+    await client.query(`SELECT n.nspname, has_schema_privilege(n.oid, 'CREATE') AS c FROM pg_namespace n WHERE ${USER_SCHEMAS}`)
+  ).rows;
+  const creatable = schemas.filter((s) => s.c).map((s) => s.nspname);
+  report(creatable.length === 0, `no CREATE on any of ${schemas.length} schema(s), including via PUBLIC`, creatable.join(', '));
+  const usage = (await client.query(`SELECT has_schema_privilege('public', 'USAGE') AS u`)).rows[0];
+  report(usage.u, 'schema public: USAGE (lookup only)');
+
+  const memberships = (await client.query(`SELECT count(*)::int AS n FROM pg_auth_members WHERE member = (SELECT oid FROM pg_roles WHERE rolname = current_user)`)).rows[0];
+  report(memberships.n === 0, 'member of no other role (cannot SET ROLE to gain anything)');
+
+  // Functions that run with their OWNER's rights would let a caller write
+  // indirectly. The application defines none, but production is checked, not assumed.
+  const definers = (
+    await client.query(
+      `SELECT n.nspname || '.' || p.proname AS f FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE ${USER_SCHEMAS} AND p.prosecdef AND has_function_privilege(p.oid, 'EXECUTE')`,
+    )
+  ).rows.map((r) => r.f);
+  report(definers.length === 0, 'can execute no SECURITY DEFINER function', definers.join(', '));
+
+  const largeObjects = (await client.query(`SELECT count(*)::int AS n FROM pg_largeobject_metadata WHERE lomowner = (SELECT oid FROM pg_roles WHERE rolname = current_user)`)).rows[0];
+  report(largeObjects.n === 0, 'owns no large object', largeObjects.n ? `${largeObjects.n} — investigate, then DROP OWNED BY leadflow_preflight` : '');
+
+  // Residual, by design: PUBLIC's default TEMP on the database (and any role's
+  // ability to create a large object) cannot be removed for one role without
+  // changing PUBLIC for every user. Both are refused while the session is
+  // read-only, touch no application object, and are capped / detected above.
+  const tempLimit = (await client.query(`SELECT setting FROM pg_settings WHERE name = 'temp_file_limit'`)).rows[0]?.setting;
+  console.log(`NOTE  temporary objects via PUBLIC's default TEMP: ${db.t ? 'possible only if the session turns read-only off' : 'not granted'}; temp_file_limit ${tempLimit === '-1' ? 'unlimited' : `${tempLimit} kB`}`);
 
   const tables = (
     await client.query(
-      `SELECT c.relname,
+      `SELECT CASE WHEN n.nspname = 'public' THEN c.relname ELSE n.nspname || '.' || c.relname END AS relname,
               has_table_privilege(c.oid, 'INSERT') OR has_table_privilege(c.oid, 'UPDATE') OR has_table_privilege(c.oid, 'DELETE')
                 OR has_table_privilege(c.oid, 'TRUNCATE') OR has_table_privilege(c.oid, 'REFERENCES') OR has_table_privilege(c.oid, 'TRIGGER') AS writes,
               has_table_privilege(c.oid, 'SELECT') AS whole_table_select,
               pg_get_userbyid(c.relowner) = current_user AS owns
          FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-        WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm')`,
+        WHERE ${USER_SCHEMAS} AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')`,
     )
   ).rows;
   const writable = tables.filter((t) => t.writes).map((t) => t.relname);
-  report(writable.length === 0, `no INSERT/UPDATE/DELETE/TRUNCATE/REFERENCES/TRIGGER on any of ${tables.length} tables`, writable.join(', '));
+  report(writable.length === 0, `no INSERT/UPDATE/DELETE/TRUNCATE/REFERENCES/TRIGGER on any of ${tables.length} tables/views/sequences, including via PUBLIC`, writable.join(', '));
   const whole = tables.filter((t) => t.whole_table_select).map((t) => t.relname);
   report(whole.length === 0, 'no whole-table SELECT anywhere (column grants only)', whole.join(', '));
   const owned = tables.filter((t) => t.owns).map((t) => t.relname);
@@ -87,10 +120,10 @@ try {
   // Every readable column, across every table, must be on the allow-list.
   const readable = (
     await client.query(
-      `SELECT c.relname, a.attname
+      `SELECT CASE WHEN n.nspname = 'public' THEN c.relname ELSE n.nspname || '.' || c.relname END AS relname, a.attname
          FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
          JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
-        WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm')
+        WHERE ${USER_SCHEMAS} AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
           AND has_column_privilege(c.oid, a.attnum, 'SELECT')`,
     )
   ).rows;
