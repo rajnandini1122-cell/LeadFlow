@@ -175,6 +175,10 @@ enum ActivityType {
   CONVERSATION_LINKED
   CONVERSATION_UNLINKED
 
+  /// A file (quotation, invoice, photo…) attached to the lead, or removed.
+  DOCUMENT_ATTACHED
+  DOCUMENT_REMOVED
+
   @@map("activity_type")
 }
 
@@ -228,6 +232,7 @@ model Organization {
   auditLogs    AuditLog[]
   leads        Lead[]
   contacts     Contact[]
+  leadAttachments LeadAttachment[]
   activities   LeadActivity[]
   followUps    FollowUp[]
   subscription Subscription?
@@ -871,6 +876,7 @@ model Lead {
   assignedTo    User?               @relation("LeadAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
   assignedBy    User?               @relation("LeadAssigner", fields: [assignedById], references: [id], onDelete: SetNull)
   activities    LeadActivity[]
+  attachments   LeadAttachment[]
   followUps     FollowUp[]
   conversations Conversation[]
   /// The website enquiries this lead was created from. Normally one; a list
@@ -949,6 +955,47 @@ model LeadActivity {
   @@index([organizationId, leadId, createdAt(sort: Desc)])
   @@index([organizationId, createdAt(sort: Desc)])
   @@map("lead_activities")
+}
+
+/// A file attached to a lead: a quotation sent, an invoice, a proforma, a
+/// purchase order, product or sample photos, or any other document.
+///
+/// The BYTES live in their own table, like user avatars, so nothing that lists
+/// leads ever reads them, and no external storage service is needed. Files are
+/// capped (10 MB each) and their type is detected from the bytes on upload.
+///
+/// Soft-deleted only: what was sent to a customer is part of the record, so a
+/// removal is reversible and attributed rather than physical.
+model LeadAttachment {
+  id             String @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String @map("organization_id") @db.Uuid
+  leadId         String @map("lead_id") @db.Uuid
+
+  /// QUOTATION | INVOICE | PROFORMA | PURCHASE_ORDER | PRODUCT_PHOTO |
+  /// SAMPLE_PHOTO | DOCUMENT | OTHER. VARCHAR so a new kind is not a migration.
+  kind      String   @db.VarChar(30)
+  fileName  String   @map("file_name") @db.VarChar(255)
+  /// Detected from the bytes, never taken from the client.
+  mimeType  String   @map("mime_type") @db.VarChar(120)
+  sizeBytes Int      @map("size_bytes")
+  /// Integrity, and a cheap way to notice the same file attached twice.
+  sha256    String   @db.VarChar(64)
+  data      Bytes
+  note      String?  @db.VarChar(500)
+  /// The quoted or invoiced amount, when given — a quotation's value.
+  amount    Decimal? @db.Decimal(14, 2)
+
+  uploadedBy String?   @map("uploaded_by") @db.Uuid
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  deletedAt  DateTime? @map("deleted_at") @db.Timestamptz(6)
+  deletedBy  String?   @map("deleted_by") @db.Uuid
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  lead         Lead         @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, leadId, createdAt(sort: Desc)])
+  @@index([organizationId, kind, createdAt(sort: Desc)])
+  @@map("lead_attachments")
 }
 
 /// A person, reusable across many leads.

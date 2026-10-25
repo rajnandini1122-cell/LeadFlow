@@ -136,6 +136,34 @@ for the five columns. Once outcomes exist, the timeline keeps each call in `lead
 Requires the stabilization branch's two migrations first (`20261002…`, `20261013…`). See that branch's runbook
 for the duplicate-email preflight and backup requirements.
 
+### Files & quotations (lead attachments)
+
+Two more migrations, applied in this order after `20261023…`:
+
+| Migration | What it does | Lock / risk | Rollback |
+|---|---|---|---|
+| `20261024090000_document_activity_types` | Adds `DOCUMENT_ATTACHED` and `DOCUMENT_REMOVED` to the `activity_type` enum (`ADD VALUE IF NOT EXISTS`, outside a transaction as Postgres requires) | Brief catalog lock, no row changes | None needed: unused enum values are harmless. Postgres cannot drop an enum value. |
+| `20261024091000_lead_attachments` | A new, empty `lead_attachments` table with two indexes and two foreign keys, in one transaction with `lock_timeout = 5s` | Brief SHARE ROW EXCLUSIVE lock on `leads` and `organizations` while the foreign keys are added | `DROP TABLE lead_attachments;` (export the files first if any exist) |
+
+Both were drift-checked against `schema.prisma` on a fresh PostgreSQL 17 database: the diff shows nothing for attachments.
+
+**Behaviour**
+
+- One file per upload, up to 10 MB and up to 50 files per lead. Accepted types are PDF, JPEG, PNG, WebP, .xlsx, .docx, CSV and text.
+- The type is detected from the bytes and the extension is rewritten to match. The client's name and MIME type decide nothing.
+- Downloads always use `Content-Disposition: attachment`, `nosniff` and a sandbox CSP, with `no-store`.
+- Visibility follows the lead: a rep who cannot see the lead, or another organization, gets a 404.
+- A quotation marked *sent* moves the stage forward to Quotation sent, only from New, Contacted, Qualified or Follow-up, so the lead appears under Awaiting response. The file, the stage change and the timeline entry commit in one transaction under the lead lock. An `Idempotency-Key` makes a retried upload a single attachment.
+- Remove is a soft delete: the row and its bytes stay, hidden, and the timeline records the removal.
+
+**Storage-growth risk.** Files are stored in PostgreSQL (`bytea`), with no new infrastructure, the same approach as avatars. Every file counts against database size, backups and restore time. At the caps, one lead can hold up to 500 MB. Watch the size of `lead_attachments`:
+
+```sql
+SELECT pg_size_pretty(pg_total_relation_size('lead_attachments'));
+```
+
+If it grows past a few GB, move the bytes to object storage. The API's `findWithData` / `create` repository methods are the only code that would change.
+
 ## 6. Manual acceptance checklist
 
 Use a test organization set to Asia/Kolkata.
@@ -151,3 +179,5 @@ Use a test organization set to Asia/Kolkata.
 9. **Reassignment:** reassign a lead with a pending follow-up. The new owner sees it in *My work*; the previous owner no longer does.
 10. **Counts:** every Follow-ups tab number equals the rows in that tab. The dashboard's overdue count equals the Overdue tab.
 11. **Phone width:** *My work*, Leads (cards) and the outcome dialog are usable at 390 px.
+12. **Quotation tracking:** on a Contacted lead, attach a PDF as *Quotation* with an amount, and leave *Sent to the customer* ticked. The stage becomes Quotation sent and the lead appears under Awaiting response. Commercial details shows *Latest quotation* with the amount, and the timeline reads "Quotation attached: … — sent to the customer".
+13. **Files:** attach a photo; it shows a thumbnail. Download a file and confirm it is byte-identical. Remove it; it disappears from the list and the timeline says "removed". Rename an HTML file to `.pdf` and try to attach it; it is refused.

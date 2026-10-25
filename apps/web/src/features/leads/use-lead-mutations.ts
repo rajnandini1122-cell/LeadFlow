@@ -100,7 +100,7 @@ export interface RecordOutcomeInput {
  * site guarantees one of them eventually gets missed and the UI shows stale
  * data, so it is done in one place.
  */
-function useRefreshLeadData(): (leadId?: string) => void {
+export function useRefreshLeadData(): (leadId?: string) => void {
   const queryClient = useQueryClient();
 
   return (leadId?: string) => {

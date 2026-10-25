@@ -27,6 +27,8 @@ import { WebsiteEnquiryPanel } from '../intakes/website-enquiry-panel';
 import { useLead, type LeadActivity, type LeadDetail } from './use-leads';
 import { LogOutcomeDialog } from './log-outcome-dialog';
 import { OutcomeBadge } from '../../components/outcome-badge';
+import { LeadAttachmentsCard, latestQuotation } from './lead-attachments-card';
+import { useLeadAttachments } from './use-lead-attachments';
 import {
   useAddNote,
   useArchiveLead,
@@ -211,6 +213,9 @@ export function LeadDetailPage(): React.JSX.Element {
               )}
             </div>
           </Card>
+
+          {/* Quotations sent, invoices, POs, photos — where the commercial evidence lives. */}
+          <LeadAttachmentsCard leadId={data.id} canEdit={can('lead.update')} />
 
           <Card>
             <CardHeader
@@ -633,6 +638,8 @@ const ACTIVITY_TONE: Record<string, string> = {
   FOLLOW_UP_RESCHEDULED: 'bg-amber-100 text-amber-700',
   LEAD_WON: 'bg-emerald-100 text-emerald-700',
   LEAD_LOST: 'bg-rose-100 text-rose-700',
+  DOCUMENT_ATTACHED: 'bg-orange-100 text-orange-700',
+  DOCUMENT_REMOVED: 'bg-slate-100 text-slate-600',
 };
 
 function Timeline({ activities }: { activities: LeadActivity[] }): React.JSX.Element {
@@ -782,6 +789,8 @@ function CommercialDetails({ lead }: { lead: LeadDetail }): React.JSX.Element {
             ? 'Requested — to be sent'
             : 'Not yet';
   const sample = lead.lastOutcome === 'SAMPLE_REQUESTED' ? 'Requested on the last call' : null;
+  // The quotation itself, when one was attached: what was quoted, and when.
+  const quoted = latestQuotation(useLeadAttachments(lead.id).data);
 
   return (
     <Card>
@@ -796,6 +805,12 @@ function CommercialDetails({ lead }: { lead: LeadDetail }): React.JSX.Element {
         />
         <Detail label="Estimated value" value={lead.estimatedValue ? formatCurrency(lead.estimatedValue) : null} />
         <Detail label="Quotation" value={quotation} />
+        {quoted && (
+          <Detail
+            label="Latest quotation"
+            value={`${quoted.amount !== null ? `${formatCurrency(quoted.amount)} · ` : ''}${formatDate(quoted.createdAt)} · ${quoted.fileName}`}
+          />
+        )}
         <Detail label="Sample" value={sample} />
       </dl>
       {lead.lastOutcome && (

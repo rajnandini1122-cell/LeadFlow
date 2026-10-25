@@ -162,7 +162,7 @@ describe('logging a call outcome from the lead page', () => {
 
     await openOutcome();
     await choose(/^Not answered$/);
-    await userEvent.type(screen.getByLabelText(/^Note/), 'Rang twice, voicemail');
+    await userEvent.type(within(screen.getByRole('dialog')).getByLabelText(/^Note/), 'Rang twice, voicemail');
     await userEvent.click(inDialog(/Save and schedule retry/));
 
     await waitFor(() =>
