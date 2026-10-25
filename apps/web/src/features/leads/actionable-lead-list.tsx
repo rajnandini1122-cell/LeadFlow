@@ -200,7 +200,7 @@ function ActionableLeadRow({
           <a
             href={tel}
             onClick={() => canLogOutcome && onLogOutcome()}
-            className="rounded-lg bg-slate-900 px-2.5 py-1.5 text-xs font-medium text-white transition hover:bg-slate-800"
+            className="inline-flex min-h-11 items-center rounded-lg bg-slate-900 px-3 py-1.5 text-sm sm:min-h-0 sm:px-2.5 sm:text-xs font-medium text-white transition hover:bg-slate-800"
           >
             Call
           </a>
@@ -210,7 +210,7 @@ function ActionableLeadRow({
             type="button"
             onClick={onLogOutcome}
             aria-label={`Log call outcome for ${lead.name}`}
-            className="rounded-lg border border-slate-900 px-2.5 py-1.5 text-xs font-semibold text-slate-900 transition hover:bg-slate-50"
+            className="inline-flex min-h-11 items-center rounded-lg border border-slate-900 px-3 py-1.5 text-sm sm:min-h-0 sm:px-2.5 sm:text-xs font-semibold text-slate-900 transition hover:bg-slate-50"
           >
             Log outcome
           </button>
@@ -220,14 +220,14 @@ function ActionableLeadRow({
             type="button"
             onClick={onReschedule}
             aria-label={`Reschedule next action for ${lead.name}`}
-            className="rounded-lg px-2.5 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-100"
+            className="inline-flex min-h-11 items-center rounded-lg px-3 py-1.5 text-sm sm:min-h-0 sm:px-2.5 sm:text-xs font-medium text-slate-600 transition hover:bg-slate-100"
           >
             Reschedule
           </button>
         )}
         <Link
           to={`/leads/${lead.id}`}
-          className="rounded-lg px-2.5 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-100"
+          className="inline-flex min-h-11 items-center rounded-lg px-3 py-1.5 text-sm sm:min-h-0 sm:px-2.5 sm:text-xs font-medium text-slate-600 transition hover:bg-slate-100"
         >
           History
         </Link>

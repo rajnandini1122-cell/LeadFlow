@@ -187,7 +187,7 @@ export function FollowUpRow({
             onClick={() => {
               if (tel && isLead && canLogOutcome) onLogOutcome();
             }}
-            className={`rounded-lg px-2.5 py-1.5 text-xs font-medium transition ${
+            className={`inline-flex min-h-11 items-center rounded-lg px-3 py-1.5 text-sm sm:min-h-0 sm:px-2.5 sm:text-xs font-medium transition ${
               tel ? 'bg-slate-900 text-white hover:bg-slate-800' : 'pointer-events-none bg-slate-100 text-slate-400'
             }`}
           >
@@ -198,7 +198,7 @@ export function FollowUpRow({
             target="_blank"
             rel="noreferrer"
             aria-disabled={!whatsapp}
-            className={`rounded-lg px-2.5 py-1.5 text-xs font-medium transition ${
+            className={`inline-flex min-h-11 items-center rounded-lg px-3 py-1.5 text-sm sm:min-h-0 sm:px-2.5 sm:text-xs font-medium transition ${
               whatsapp ? 'bg-emerald-600 text-white hover:bg-emerald-700' : 'pointer-events-none bg-slate-100 text-slate-400'
             }`}
           >
@@ -209,7 +209,7 @@ export function FollowUpRow({
               type="button"
               onClick={onLogOutcome}
               aria-label={`Log call outcome for ${name}`}
-              className="rounded-lg border border-slate-900 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-900 transition hover:bg-slate-50"
+              className="inline-flex min-h-11 items-center rounded-lg border border-slate-900 bg-white px-3 py-1.5 text-sm sm:min-h-0 sm:px-2.5 sm:text-xs font-semibold text-slate-900 transition hover:bg-slate-50"
             >
               Log outcome
             </button>
@@ -218,7 +218,7 @@ export function FollowUpRow({
             <button
               type="button"
               onClick={onComplete}
-              className="rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+              className="inline-flex min-h-11 items-center rounded-lg border border-slate-300 px-3 py-1.5 text-sm sm:min-h-0 sm:px-2.5 sm:text-xs font-medium text-slate-700 transition hover:bg-slate-50"
             >
               Complete
             </button>
@@ -228,7 +228,7 @@ export function FollowUpRow({
               type="button"
               onClick={onReschedule}
               aria-label={`Reschedule follow-up for ${name}`}
-              className="rounded-lg px-2.5 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-100"
+              className="inline-flex min-h-11 items-center rounded-lg px-3 py-1.5 text-sm sm:min-h-0 sm:px-2.5 sm:text-xs font-medium text-slate-600 transition hover:bg-slate-100"
             >
               Reschedule
             </button>

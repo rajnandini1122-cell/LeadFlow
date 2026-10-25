@@ -24,6 +24,7 @@ import {
 import { zonedDefault, zonedFromNow, zonedInputToIso, toZonedInput } from '../../lib/zoned-input';
 import { newIdempotencyKey } from '../../lib/idempotency';
 import { useToast } from '../../components/toast';
+import { useBusyLabel } from '../../components/offline-banner';
 
 const FOLLOW_UP_TYPES = ['CALL', 'WHATSAPP', 'EMAIL', 'MEETING', 'OTHER'];
 
@@ -868,6 +869,7 @@ function DialogActions({
    */
   disabled?: boolean;
 }): React.JSX.Element {
+  const pendingLabel = useBusyLabel(busyLabel);
   return (
     <div className="flex justify-end gap-2 border-t border-slate-100 pt-4">
       <button type="button" onClick={onCancel} className="rounded-lg px-4 py-2 text-sm text-slate-600 transition hover:bg-slate-100">
@@ -879,7 +881,7 @@ function DialogActions({
         aria-busy={busy}
         className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:opacity-50"
       >
-        {busy ? busyLabel : label}
+        {busy ? pendingLabel : label}
       </button>
     </div>
   );
