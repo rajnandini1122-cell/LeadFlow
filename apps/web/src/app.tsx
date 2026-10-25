@@ -12,6 +12,7 @@ import { ResetPasswordPage } from './features/auth/reset-password-page';
 import { HomePage } from './features/marketing/home-page';
 import { AppShell } from './components/app-shell';
 import { ApiError } from './lib/api-client';
+import { isNativeApp } from './lib/platform';
 import { ToastProvider } from './components/toast';
 
 const queryClient = new QueryClient({
@@ -129,6 +130,9 @@ function Home(): React.JSX.Element {
 
   if (status === 'loading') return <Restoring />;
   if (status === 'authenticated') return <Navigate to="/today" replace />;
+  // The Android app is for people who already work here: no sales pitch (and
+  // no "Download the app" card inside the app) — straight to sign in.
+  if (isNativeApp()) return <Navigate to="/login" replace />;
 
   return <HomePage />;
 }

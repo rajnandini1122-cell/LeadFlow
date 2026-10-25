@@ -62,12 +62,37 @@ export function routeForNotification(payload: {
  */
 type PushPlugin = typeof PushNotifications;
 
-async function plugin(): Promise<PushPlugin | null> {
+/** Set by vite.config.ts from the presence of android/app/google-services.json. */
+export function pushConfigured(): boolean {
+  return import.meta.env['VITE_ANDROID_PUSH'] === 'true';
+}
+
+/*
+ * Returns the plugin WRAPPED in an object, never bare.
+ *
+ * A Capacitor plugin is a proxy that forwards ANY property to native code.
+ * Returning it from an async function makes the promise look for `.then` on it,
+ * which the proxy sends to Android, which rejects: "PushNotifications.then() is
+ * not implemented on android". Found on the emulator — registration had never
+ * once run in the app. The wrapper has no `then`, so it resolves normally.
+ */
+async function plugin(): Promise<{ push: PushPlugin } | null> {
   if (!isNativeApp()) return null;
+
+  /*
+   * Only when this APK was built WITH Firebase (google-services.json present).
+   *
+   * Without it, the plugin's register() and unregister() call
+   * FirebaseMessaging.getInstance(), which throws; Capacitor rethrows that on
+   * its plugin thread and the whole APP CRASHES — right after sign-in on
+   * Android 12 and below (permission is implicit), on tapping "Allow" on 13+.
+   * No push is a missing feature; a crash on sign-in is a broken app.
+   */
+  if (!pushConfigured()) return null;
 
   try {
     const module = await import('@capacitor/push-notifications');
-    return module.PushNotifications;
+    return { push: module.PushNotifications };
   } catch {
     // The plugin is absent in a browser build. Not an error — push simply is
     // not available, and every caller already handles that.
@@ -88,8 +113,11 @@ async function plugin(): Promise<PushPlugin | null> {
 export async function registerForPush(
   onOpened: (route: string) => void,
 ): Promise<{ registered: boolean; reason?: string }> {
-  const push = await plugin();
-  if (!push) return { registered: false, reason: 'not a native app' };
+  const loaded = await plugin();
+  if (!loaded) {
+    return { registered: false, reason: isNativeApp() ? 'push is not configured in this build' : 'not a native app' };
+  }
+  const { push } = loaded;
 
   try {
     let permission = await push.checkPermissions();
@@ -169,8 +197,9 @@ export async function registerForPush(
  * the alternative is a user who cannot log out.
  */
 export async function unregisterFromPush(): Promise<void> {
-  const push = await plugin();
-  if (!push) return;
+  const loaded = await plugin();
+  if (!loaded) return;
+  const { push } = loaded;
 
   try {
     const token = lastToken;

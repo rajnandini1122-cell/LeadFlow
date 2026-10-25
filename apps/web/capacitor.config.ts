@@ -21,14 +21,16 @@ const config: CapacitorConfig = {
 
   android: {
     /*
-     * A plain HTTP API is refused by Android 9+ unless cleartext is allowed.
+     * The app page is https://localhost, so the WebView blocks every request
+     * to an http:// API as mixed content — a debug APK pointed at a dev API
+     * could not even sign in ("Network Error"; found on the emulator).
      *
-     * Left FALSE here, which is the safe default and what a real deployment
-     * wants. Local development against http://<lan-ip>:3000 needs it enabled —
-     * that is a documented, deliberate step in docs/android.md rather than
-     * something switched on quietly for everyone.
+     * So it is allowed ONLY when the API this build targets is itself http://.
+     * That can only be a debug build: `android:release` refuses a non-https
+     * VITE_API_BASE_URL, so every release APK has this false. Evaluated at
+     * `cap sync`, from the same variable the bundle was built with.
      */
-    allowMixedContent: false,
+    allowMixedContent: (process.env['VITE_API_BASE_URL'] ?? '').startsWith('http://'),
   },
 
   server: {

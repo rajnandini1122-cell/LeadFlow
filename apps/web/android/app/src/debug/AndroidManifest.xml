@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  DEBUG BUILDS ONLY (src/debug is not part of a release build).
+
+  Lets a debug APK on the Android emulator reach a development API over plain
+  HTTP at 10.0.2.2 (the emulator's alias for the host machine). Everything else
+  stays HTTPS-only, and a release APK has no exception at all.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application android:networkSecurityConfig="@xml/network_security_config_debug" />
+</manifest>

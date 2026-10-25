@@ -12,6 +12,7 @@ import {
   apiGet,
   apiPost,
   mayHaveSession,
+  refreshRequestBody,
   setAccessToken,
   setSessionExpiredHandler,
 } from '../../lib/api-client';
@@ -173,7 +174,8 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
       }
 
       try {
-        const result = await apiPost<RefreshResult>('/auth/refresh');
+        // The stored token in the app (no cookie there); nothing in a browser.
+        const result = await apiPost<RefreshResult>('/auth/refresh', refreshRequestBody());
 
         if (cancelled) return;
         keepRefreshToken(result.tokens);

@@ -19,6 +19,13 @@ interface ImportMetaEnv {
    * build, where a relative URL would point at the APK's own assets.
    */
   readonly VITE_API_BASE_URL?: string;
+
+  /**
+   * 'true' when the Android build had Firebase configured
+   * (android/app/google-services.json). Set by vite.config.ts; push is never
+   * touched otherwise, because registering without Firebase crashes the app.
+   */
+  readonly VITE_ANDROID_PUSH?: string;
 }
 
 interface ImportMeta {

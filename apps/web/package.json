@@ -11,16 +11,19 @@
     "typecheck": "tsc -b --noEmit",
     "lint": "eslint src --max-warnings 0",
     "test": "vitest run",
-    "android:sync": "npm run build && node ../../scripts/strip-apk-from-bundle.mjs && cap sync android",
+    "android:sync": "node ../../scripts/check-release-config.mjs --debug && npm run build && node ../../scripts/strip-apk-from-bundle.mjs && cap sync android && node ../../scripts/write-android-build-info.mjs",
     "android:open": "cap open android",
     "android:build": "npm run android:sync && cd android && gradlew.bat assembleDebug",
-    "android:release": "node ../../scripts/check-release-config.mjs && npm run build && node ../../scripts/strip-apk-from-bundle.mjs && cap sync android && cd android && gradlew.bat assembleRelease"
+    "android:release": "node ../../scripts/check-release-config.mjs && npm run build && node ../../scripts/strip-apk-from-bundle.mjs && cap sync android && node ../../scripts/write-android-build-info.mjs && cd android && gradlew.bat assembleRelease"
   },
   "dependencies": {
     "@aparajita/capacitor-secure-storage": "^7.1.6",
     "@capacitor/android": "^7.6.8",
+    "@capacitor/app": "^7.1.2",
     "@capacitor/core": "^7.6.8",
+    "@capacitor/filesystem": "^7.1.9",
     "@capacitor/push-notifications": "^7.0.7",
+    "@capacitor/share": "^7.0.4",
     "@leadflow/api-types": "0.1.0",
     "@tanstack/react-query": "5.101.4",
     "axios": "1.19.0",

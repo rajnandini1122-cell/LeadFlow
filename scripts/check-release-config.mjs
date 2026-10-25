@@ -10,12 +10,20 @@
  * This moves that discovery to the build. You cannot produce a release APK that
  * points nowhere, or at your laptop.
  *
- * Deliberately NOT applied to debug builds: pointing a debug APK at a LAN
- * address is exactly what a developer testing on a real handset needs to do.
+ * With `--debug` (every `android:sync`), only the two checks that make ANY
+ * build useless are enforced: the URL must be set and must parse. The APK
+ * committed on 2026-08-22 was a debug build with no URL at all — it installed,
+ * opened, and could not reach anything. A LAN address or plain HTTP stays
+ * allowed for a debug build, because testing on a real handset needs exactly
+ * that; those are printed as warnings instead.
  */
 
 const url = process.env.VITE_API_BASE_URL;
+const debug = process.argv.includes('--debug');
 const failures = [];
+const warnings = [];
+// In a debug build, "wrong for production" is a warning, not a stop.
+const productionOnly = (message) => (debug ? warnings : failures).push(message);
 
 if (!url) {
   failures.push(
@@ -38,7 +46,7 @@ if (!url) {
     const localHosts = ['localhost', '127.0.0.1', '0.0.0.0', '10.0.2.2', '[::1]'];
 
     if (localHosts.includes(parsed.hostname)) {
-      failures.push(
+      productionOnly(
         `VITE_API_BASE_URL points at ${parsed.hostname}, which is this machine.\n` +
           '    A release build must point at the production API.',
       );
@@ -46,7 +54,7 @@ if (!url) {
 
     // A private range is the same mistake wearing a different address.
     if (/^(192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/.test(parsed.hostname)) {
-      failures.push(
+      productionOnly(
         `VITE_API_BASE_URL points at the private address ${parsed.hostname}.\n` +
           '    That works on one network and nowhere else.',
       );
@@ -58,7 +66,7 @@ if (!url) {
      * does not do. Failing here beats an APK that cannot reach its own API.
      */
     if (parsed.protocol !== 'https:') {
-      failures.push(
+      productionOnly(
         `VITE_API_BASE_URL uses ${parsed.protocol.replace(':', '')}, not https.\n` +
           '    Tokens would travel in the clear, and Android blocks cleartext by default.',
       );
@@ -66,11 +74,13 @@ if (!url) {
   }
 }
 
+for (const warning of warnings) console.warn(`  ! ${warning}\n`);
+
 if (failures.length > 0) {
-  console.error('\nRelease build refused — configuration is not shippable:\n');
+  console.error(`\n${debug ? 'Android build' : 'Release build'} refused — configuration is not shippable:\n`);
   for (const failure of failures) console.error(`  • ${failure}\n`);
   console.error('See docs/android.md.\n');
   process.exit(1);
 }
 
-console.log(`Release configuration OK — API base URL: ${url}`);
+console.log(`${debug ? 'Debug' : 'Release'} configuration OK — API base URL: ${url}`);

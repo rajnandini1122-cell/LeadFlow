@@ -8,6 +8,8 @@
  * reporting APIs in Phase 4.
  */
 
+import { saveFile } from './save-file';
+
 /** RFC 4180 escaping: quote if the value contains a comma, quote or newline. */
 function escapeCell(value: unknown): string {
   if (value === null || value === undefined) return '';
@@ -38,19 +40,14 @@ export function toCsv<T>(
   return `sep=,\r\n${[header, ...body].join('\r\n')}`;
 }
 
+/** A download in the browser; the share sheet in the Android app (see saveFile). */
 export function downloadCsv(filename: string, csv: string): void {
   const blob = new Blob(['﻿', csv], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-
-  // Release the blob once the download has been handed to the browser.
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  void saveFile(blob, filename).catch((error: unknown) => {
+    // Only the app path can fail (writing the cache file); say so plainly.
+    console.error('Export failed', error);
+    window.alert('Could not export the file. Please try again.');
+  });
 }
 
 /** e.g. leadflow-leads-acme-2026-08-20.csv */

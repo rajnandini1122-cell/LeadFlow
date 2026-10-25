@@ -2,6 +2,7 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import { fileURLToPath } from 'node:url';
+import { existsSync } from 'node:fs';
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
@@ -36,6 +37,19 @@ export default defineConfig({
         changeOrigin: true,
       },
     },
+  },
+
+  /*
+   * Push on Android needs Firebase, configured by android/app/google-services.json
+   * (git-ignored, per deployment). Registering without it crashes the app — see
+   * lib/push.ts — so the bundle is told whether that file was there at build.
+   * An explicit VITE_ANDROID_PUSH in the environment wins.
+   */
+  define: {
+    'import.meta.env.VITE_ANDROID_PUSH': JSON.stringify(
+      process.env['VITE_ANDROID_PUSH'] ??
+        (existsSync(fileURLToPath(new URL('./android/app/google-services.json', import.meta.url))) ? 'true' : 'false'),
+    ),
   },
 
   build: { outDir: 'dist', sourcemap: true },

@@ -50,15 +50,40 @@ relaxing it to `SameSite=None` would weaken CSRF protection for every browser us
 order to serve the app. So the app uses the token-in-body path the API has supported
 since Phase 1 — it sends `platform: 'ANDROID'` and stores the token itself.
 
-This is an honest trade, not a claim of equivalence: WebView `localStorage` is weaker
-than Android's `EncryptedSharedPreferences`. What makes it acceptable is that the
-WebView loads a fixed bundle from the APK with no remote script origin and no
-user-supplied HTML, so the XSS surface a browser tab has is largely absent. Moving to
-encrypted native storage is a plugin swap behind `storeRefreshToken`, which is why
-every caller goes through that function.
+The token is stored in Android's `EncryptedSharedPreferences` (Keystore-backed, via
+`@aparajita/capacitor-secure-storage`), not in WebView `localStorage`. Every caller
+goes through `storeRefreshToken` / `hydrateRefreshToken` in
+[`platform.ts`](../apps/web/src/lib/platform.ts).
+
+### What the app adds to the browser behaviour
+
+These were all found on Android, not in the browser:
+
+| | Browser | Android app |
+|---|---|---|
+| Hardware **Back** | — | Closes an open dialog, then goes back a page. It leaves the app only from the first screen. Without this, Back closed the app from any screen. |
+| Returning to the app after a call | Tab focus refetches stale data | The native app-state event drives the same refetch, so counts are current when the rep comes back from the dialer |
+| CSV export, attachment download | Browser download | The file is written to the app cache and opened in Android's **share sheet** (WhatsApp, Drive, Files). A `blob:` download does nothing in a WebView. |
+| Opening `/` signed out | Marketing page | Straight to **Sign in** |
+| Call button | `tel:` link | The same `tel:` link opens the dialer through an Android intent. No `CALL_PHONE` permission. Nothing is logged until the rep saves an outcome. |
+| Reopening after Android killed the app | The cookie restores the session | The startup restore sends the **stored** refresh token. It used to send nothing, so every relaunch signed the rep out. |
+| Push notifications | — | Registered only when the APK was built **with** `android/app/google-services.json`. Without Firebase, `register()` crashes the app (`FATAL EXCEPTION: CapacitorPlugins … Default FirebaseApp is not initialized`, reproduced on the emulator), so it is not called. Registration also never ran before: returning the plugin proxy from an async function triggered `"PushNotifications.then()" is not implemented`. |
+
+### Push needs Firebase
+
+The repository has no `google-services.json`, so **APKs built from it have no push
+notifications**. In-app notifications (the bell) still work. To enable push, add the
+Firebase project's `google-services.json` at `apps/web/android/app/` before building.
+The build detects the file and turns push on. Never commit that file.
 
 Everything else — screens, hooks, permissions, tenant isolation, conversation
 visibility — is the same code running the same way.
+
+### Permissions the APK requests
+
+`INTERNET`, `ACCESS_NETWORK_STATE`, `POST_NOTIFICATIONS`, `WAKE_LOCK` and
+`com.google.android.c2dm.permission.RECEIVE` (push). No phone, contacts, location or
+storage permissions.
 
 ---
 
@@ -117,12 +142,56 @@ apps/web/android/app/build/outputs/apk/debug/app-debug.apk
 
 Open the project in Android Studio instead with `npm run android:open`.
 
+### Build guards
+
+These exist because the APK published on 2026-08-22 was a debug build with **no API
+address compiled in**. It installed and opened, then failed every request.
+
+- **`android:sync`** (and so `android:build`) refuses to run unless `VITE_API_BASE_URL`
+  is set to a valid URL. A LAN address or `http` is allowed for a debug build, with a
+  warning. `android:release` additionally requires `https` and a public host.
+- **`build-info.json`** is written into the app's assets after `cap sync`, recording the
+  API origin, the source commit and branch, and whether the tree had uncommitted
+  changes. It travels inside the APK. Check it with
+  `apkanalyzer files cat --file /assets/public/build-info.json app-debug.apk`.
+- **`android:publish`** copies nothing unless:
+  - the build info names an API;
+  - that API is not this machine (override with `--allow-local`);
+  - the assets predate the APK;
+  - `versionCode` is higher than the published one, since Android refuses an
+    "update" that isn't.
+  The manifest it writes includes the API origin and the source commit.
+
+### Versioning
+
+`versionCode` / `versionName` live in `android/app/build.gradle`. Raise `versionCode`
+for **every** APK given to users. 1 / "1.0" was the 2026-08-22 build; 2 / "1.1.0" is
+the first build with the sales workspace.
+
+### Releasing alongside the API
+
+The APK ships the web bundle of the commit it was built from and calls that commit's
+API. **Publish a new APK only after the matching API is deployed.** Otherwise it calls
+endpoints production does not have yet, such as `/workspace/summary`,
+`/leads/:id/outcomes` and `/leads/:id/attachments`.
+
 ### Cleartext HTTP for local development
 
-Android 9+ refuses plain `http://`. `allowMixedContent` is **false** in
-`capacitor.config.ts`, which is what a real deployment wants. To test against a local
-API over HTTP, add a network security config to the Android project — a deliberate,
-temporary local step, not something switched on for everyone.
+Two separate blocks stop an `http://` API, and both apply to debug builds only:
+
+1. **Mixed content.** The app page is `https://localhost`, so the WebView blocks
+   `http://` requests outright, and sign-in shows "Network Error".
+   `capacitor.config.ts` sets `allowMixedContent` to true only when
+   `VITE_API_BASE_URL` itself starts with `http://`. A release build is always
+   `https`, because `android:release` refuses anything else.
+2. **Cleartext.** Android 9+ refuses plain `http://`. Debug builds allow cleartext
+   only to `10.0.2.2`, the emulator's alias for the host, through
+   `app/src/debug/res/xml/network_security_config_debug.xml`. A release build has no
+   exception. A physical phone on a LAN address needs that domain added locally; don't
+commit it.
+
+On the emulator the API must also allow the WebView's origin:
+`CORS_ORIGINS=…,https://localhost`.
 
 ---
 
