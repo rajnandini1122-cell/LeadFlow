@@ -19,10 +19,38 @@ android {
             ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    /*
+     * Release signing — NO secrets in this repository.
+     *
+     * The keystore path, its password, the key alias and the key password are
+     * read from environment variables or from the builder's own
+     * ~/.gradle/gradle.properties (never this project's):
+     *   LEADFLOW_UPLOAD_STORE_FILE, LEADFLOW_UPLOAD_STORE_PASSWORD,
+     *   LEADFLOW_UPLOAD_KEY_ALIAS,  LEADFLOW_UPLOAD_KEY_PASSWORD
+     * Without them the release build is produced UNSIGNED
+     * (app-release-unsigned.apk), which cannot be installed by accident.
+     * See docs/android.md, "Release signing".
+     */
+    def signingValue = { String name -> System.getenv(name) ?: (project.findProperty(name) as String) }
+    def storeFilePath = signingValue('LEADFLOW_UPLOAD_STORE_FILE')
+    signingConfigs {
+        if (storeFilePath) {
+            release {
+                storeFile file(storeFilePath)
+                storePassword signingValue('LEADFLOW_UPLOAD_STORE_PASSWORD')
+                keyAlias signingValue('LEADFLOW_UPLOAD_KEY_ALIAS')
+                keyPassword signingValue('LEADFLOW_UPLOAD_KEY_PASSWORD')
+            }
+        }
+    }
     buildTypes {
         release {
             minifyEnabled false
+            debuggable false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            if (storeFilePath) {
+                signingConfig signingConfigs.release
+            }
         }
     }
 }

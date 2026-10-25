@@ -175,6 +175,81 @@ API. **Publish a new APK only after the matching API is deployed.** Otherwise it
 endpoints production does not have yet, such as `/workspace/summary`,
 `/leads/:id/outcomes` and `/leads/:id/attachments`.
 
+### Production prerequisite: CORS
+
+The app's pages are served from `https://localhost` inside the phone, so every API
+call is cross-origin. Production's API must list that origin. As of 2026-10-25 it
+does not: a preflight from `https://localhost` to
+`https://leadflow.cravionventures.com` returns no `Access-Control-Allow-Origin`, and
+the app could not sign in. In Railway, add it to the API service's `CORS_ORIGINS`
+(comma-separated), keeping the existing values:
+
+```
+CORS_ORIGINS=<existing origins>,https://localhost
+```
+
+Check it, read-only, with:
+
+```bash
+curl -s -D - -o /dev/null -X OPTIONS \
+  -H "Origin: https://localhost" -H "Access-Control-Request-Method: POST" \
+  https://leadflow.cravionventures.com/api/v1/auth/login | grep -i access-control-allow-origin
+# expected: access-control-allow-origin: https://localhost
+```
+
+### Release signing
+
+Nothing secret is in this repository, and keystores are git-ignored.
+`app/build.gradle` reads four values from environment variables, or from the
+builder's own `~/.gradle/gradle.properties`, never the project's:
+
+| Variable | Value |
+|---|---|
+| `LEADFLOW_UPLOAD_STORE_FILE` | path to the release keystore (`.jks`) |
+| `LEADFLOW_UPLOAD_STORE_PASSWORD` | keystore password |
+| `LEADFLOW_UPLOAD_KEY_ALIAS` | key alias |
+| `LEADFLOW_UPLOAD_KEY_PASSWORD` | key password |
+
+Without them, `assembleRelease` produces **`app-release-unsigned.apk`**, which cannot
+be installed. That's the safe default.
+
+To create the key, once, and keep it outside the repository, backed up in two places.
+Losing it means existing installs can never be updated:
+
+```bash
+keytool -genkeypair -v -keystore leadflow-release.jks -alias leadflow \
+  -keyalg RSA -keysize 2048 -validity 10000
+```
+
+Build:
+
+```bash
+set VITE_API_BASE_URL=https://leadflow.cravionventures.com
+set LEADFLOW_UPLOAD_STORE_FILE=D:\secure\leadflow-release.jks
+# …the three passwords/alias, typed into the shell, never into a file in the repo
+npm run android:release -w apps/web
+```
+
+The output is `android/app/build/outputs/apk/release/app-release.apk`. The release
+APK:
+- is not debuggable;
+- has WebView debugging off;
+- has no cleartext exception and has `allowBackup="false"`.
+
+Its `build-info.json` names the HTTPS API and the source commit.
+
+**Signing changes the app's identity.** Every APK given out so far was debug-signed,
+so phones must **uninstall the old app** before installing the first release-signed
+one. After that, release builds update in place.
+
+### Keyboard on Android 15
+
+`targetSdk 35` enforces edge-to-edge, and in that mode the window no longer resizes
+for the keyboard, so a field near the bottom was typed blind behind it. The app
+themes opt out with `android:windowOptOutEdgeToEdgeEnforcement`, and the activity
+uses `adjustResize`. Moving to full inset handling later means removing the opt-out
+together.
+
 ### Cleartext HTTP for local development
 
 Two separate blocks stop an `http://` API, and both apply to debug builds only:
