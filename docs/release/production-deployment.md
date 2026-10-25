@@ -3,6 +3,41 @@
 Nothing here runs without the owner's explicit approval at each gate. One PR per
 deployment; never two at once.
 
+## Status (2026-10-25)
+
+| Gate 0 item | Status |
+|---|---|
+| 0.1 Read-only preflight | **BLOCKED — admin credentials unavailable.** The `leadflow_preflight` role ([`preflight-role.sql`](./preflight-role.sql)) is reviewed and tested but not created; creating it needs the Railway `postgres` password. No credential was reset, rotated or changed. |
+| 0.2 Backup | Procedure verified locally; production backup not taken (owner decision pending). |
+| 0.3 Baseline probes | Production answers "Before" on every probe. |
+| 0.4 CI | 5/5 green on #11 `e9b004b`, #12 `aa77731`, #13 `4fbe945`; all three CLEAN. |
+| 0.5 Log watcher | Owner to arrange. |
+
+### Upgrade rehearsal (local PostgreSQL 17, no production contact)
+
+A database at production's level (`c60e614`), seeded with leads, follow-ups,
+activities and users, was upgraded the way Railway will do it:
+
+| Stage | Result |
+|---|---|
+| #11 migrations (`prisma migrate deploy`) | 7.1 s; every row count preserved; `--after=11` no STOP |
+| #11 code on it | API smoke 9/9, including `/leads/import/batches` |
+| Rollback: `c60e614` code on the post-#11 schema | 8/8 |
+| #12 migrations | 5.9 s; every existing row count preserved; `--after=12` no STOP |
+| Final code (#13 `4fbe945`) on the post-#12 schema | 12/12, including `/workspace/summary`, attachments, overdue queue |
+| Rollback: #11 code on the post-#12 schema | 9/9 |
+| Rollback: `c60e614` code on the post-#12 schema | 8/8 |
+
+Every smoke includes a real write cycle (create a lead, add a note, archive it).
+
+**Known schema drift (P2, not a blocker).** `prisma migrate diff` reports 8 items
+after the upgrade, all from #11's `20261013090000` migration: foreign-key
+`ON UPDATE` actions, the sort direction of one index, and two indexes
+(`leads_import_batch_idx`, `leads_org_deactivated_idx`) that the migration makes
+partial while `schema.prisma` declares them plain `@@index`. The drift is
+identical on a fresh database and on the upgraded one, and the behaviour is the
+same. Align `schema.prisma` in a later PR; never edit the applied migration.
+
 ## How production deploys (verified 2026-10-25)
 
 | Fact | Evidence |

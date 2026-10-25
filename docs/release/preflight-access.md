@@ -98,6 +98,9 @@ Inspected on 2026-10-25 (TLS handshake only, no login):
 
 ## 2. Create the role (owner action — only after approving the SQL)
 
+> **Status 2026-10-25: BLOCKED — admin credentials unavailable.** The role has
+> not been created. Nothing below has been run against production.
+
 Use PowerShell. You'll need the database owner's password from Railway:
 **Postgres service → Variables → `PGPASSWORD`** (user `postgres`). You type it
 when prompted; it is never echoed, saved or added to history.
