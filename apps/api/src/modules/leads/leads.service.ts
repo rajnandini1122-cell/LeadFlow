@@ -1,6 +1,7 @@
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import {
   ERROR_CODES,
+  PERMISSIONS,
   isTerminalLeadStatus,
   type LeadPriority,
   type LeadStatus,
@@ -162,6 +163,15 @@ export class LeadsService {
       requirementQuantity: string | null;
       /** YYYY-MM-DD — a calendar date, never shifted by a timezone. */
       expectedPurchaseDate: string | null;
+      /**
+       * How the deal closed. Stored since the start but never returned, so a
+       * closed lead's page could not say what it was won at or why it was
+       * lost. Null while open.
+       */
+      wonAt: string | null;
+      wonValue: string | null;
+      lostAt: string | null;
+      lostReason: string | null;
     }
   > {
     // A lead outside the caller's visibility is a 404, exactly like one in
@@ -221,6 +231,10 @@ export class LeadsService {
       expectedPurchaseDate: lead.expectedPurchaseDate
         ? lead.expectedPurchaseDate.toISOString().slice(0, 10)
         : null,
+      wonAt: lead.wonAt?.toISOString() ?? null,
+      wonValue: lead.wonValue?.toString() ?? null,
+      lostAt: lead.lostAt?.toISOString() ?? null,
+      lostReason: lead.lostReason,
       activities: activities.map((activity) => ({
         id: activity.id,
         type: activity.activityType,
@@ -240,6 +254,27 @@ export class LeadsService {
   // ---------------------------------------------------------------------------
 
   async create(dto: CreateLeadDto, principal: TenantPrincipal): Promise<LeadSummary> {
+    /*
+     * Who owns a lead nobody was named for.
+     *
+     * A sales rep sees only their own leads and has no "Assign to" choice, so
+     * the form sends no owner — and the lead was stored UNASSIGNED: created on
+     * the phone, then gone from the rep's own list and queues (found on the
+     * Android emulator). A creator who can only see their own leads now owns
+     * what they create; one who may not assign cannot hand it to someone else
+     * and lose it the same way. Managers and admins are unchanged: no owner
+     * still means the unassigned pool, for routing.
+     */
+    if (visibilityFilter(principal)) {
+      const canAssign = principal.permissions.includes(PERMISSIONS.LEAD_ASSIGN);
+      if (dto.assignedToId && dto.assignedToId !== principal.userId && !canAssign) {
+        throw AppException.validation('You can create leads for yourself only.', {
+          assignedToId: ['ask a manager to assign leads to someone else'],
+        });
+      }
+      dto.assignedToId ??= principal.userId;
+    }
+
     const status = dto.status ?? 'NEW';
     const nextFollowUpAt = this.resolveFollowUp(dto, status);
 

@@ -95,6 +95,11 @@ export type LeadDetail = LeadSummary & {
   requirementQuantity?: string | null;
   /** YYYY-MM-DD, a calendar date. */
   expectedPurchaseDate?: string | null;
+  /** How the deal closed; null while open. */
+  wonAt?: string | null;
+  wonValue?: string | null;
+  lostAt?: string | null;
+  lostReason?: string | null;
 };
 
 export interface LeadFilters {

@@ -202,4 +202,44 @@ describe('Release audit probes', () => {
     const again = await ctx.http().post('/api/v1/accounts').set(rep()).send({ name: company }).expect(409);
     expect(again.body.error.details.duplicateAccountIds).toContain(created.id);
   });
+
+  it('A lead a sales rep creates is owned by that rep — never an unassigned lead they cannot see', async () => {
+    const created = (
+      await ctx.http().post('/api/v1/leads').set(rep()).send({ firstName: 'Rep-made', mobile: fixtureMobile(), nextFollowUpAt: inDays(1) }).expect(201)
+    ).body.data;
+    expect(created.assignedTo?.id).toBe(ctx.orgA.rep.id);
+    await ctx.http().get(`/api/v1/leads/${created.id}`).set(rep()).expect(200);
+    expect(await bucketIds('upcoming', rep())).toContain(created.id);
+
+    // Handing it to someone else without permission to assign is refused, not silently lost.
+    const refused = await ctx
+      .http()
+      .post('/api/v1/leads')
+      .set(rep())
+      .send({ firstName: 'Rep-made', mobile: fixtureMobile(), nextFollowUpAt: inDays(1), assignedToId: ctx.orgA.owner.id })
+      .expect(400);
+    expect(JSON.stringify(refused.body)).toMatch(/yourself/);
+
+    // Managers and owners are unchanged: no owner named means the unassigned pool.
+    const pooled = (
+      await ctx.http().post('/api/v1/leads').set(owner()).send({ firstName: 'Pool', mobile: fixtureMobile(), nextFollowUpAt: inDays(1) }).expect(201)
+    ).body.data;
+    expect(pooled.assignedTo).toBeNull();
+  });
+
+  it('A closed lead says how it closed: won value and date, or lost reason and date', async () => {
+    const wonId = await createLead();
+    await ctx.http().patch(`/api/v1/leads/${wonId}`).set(owner()).send({ status: 'WON', wonValue: 470000 }).expect(200);
+    const won = (await ctx.http().get(`/api/v1/leads/${wonId}`).set(owner()).expect(200)).body.data;
+    expect(Number(won.wonValue)).toBe(470000);
+    expect(won.wonAt).toBeTruthy();
+    expect(won.lostReason).toBeNull();
+
+    const lostId = await createLead();
+    await ctx.http().patch(`/api/v1/leads/${lostId}`).set(owner()).send({ status: 'LOST', lostReason: 'Bought from a competitor' }).expect(200);
+    const lost = (await ctx.http().get(`/api/v1/leads/${lostId}`).set(owner()).expect(200)).body.data;
+    expect(lost.lostReason).toBe('Bought from a competitor');
+    expect(lost.lostAt).toBeTruthy();
+    expect(lost.wonValue).toBeNull();
+  });
 });
