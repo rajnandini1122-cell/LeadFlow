@@ -815,6 +815,21 @@ function CommercialDetails({ lead }: { lead: LeadDetail }): React.JSX.Element {
           />
         )}
         <Detail label="Sample" value={sample} />
+        {/* How it ended — the first thing anyone opening a closed lead needs. */}
+        {lead.status === 'WON' && (
+          <Detail
+            label="Won"
+            value={[lead.wonValue ? formatCurrency(lead.wonValue) : null, lead.wonAt ? formatDate(lead.wonAt) : null]
+              .filter(Boolean)
+              .join(' · ') || 'Won'}
+          />
+        )}
+        {lead.status === 'LOST' && (
+          <Detail
+            label="Lost"
+            value={[lead.lostReason, lead.lostAt ? formatDate(lead.lostAt) : null].filter(Boolean).join(' · ') || 'Lost'}
+          />
+        )}
       </dl>
       {lead.lastOutcome && (
         <div className="border-t border-slate-100 px-5 py-3">
