@@ -175,4 +175,31 @@ describe('Release audit probes', () => {
     if (stranded.length) console.log('STRANDED', JSON.stringify(stranded, null, 1));
     expect(stranded).toEqual([]);
   });
+
+  it('A won lead with no customer is linked by its rep and its customer becomes a CUSTOMER', async () => {
+    const company = `Audit Exports ${randomUUID().slice(0, 8)}`;
+    const leadId = await createLead({ companyName: company, assignedToId: ctx.orgA.rep.id });
+    await ctx.http().patch(`/api/v1/leads/${leadId}`).set(rep()).send({ status: 'WON', wonValue: 250000 }).expect(200);
+
+    // Winning never invents a customer from a free-text company name.
+    const won = (await ctx.http().get(`/api/v1/leads/${leadId}`).set(rep()).expect(200)).body.data;
+    expect(won.account).toBeNull();
+
+    // The rep records the company and links the deal — what the lead page now offers.
+    const created = (await ctx.http().post('/api/v1/accounts').set(rep()).send({ name: company }).expect(201)).body.data.account;
+    const linked = (
+      await ctx.http().post('/api/v1/accounts/mapping/assign').set(rep()).send({ accountId: created.id, leadIds: [leadId] }).expect(201)
+    ).body.data;
+    expect(linked.leadsUpdated).toBe(1);
+
+    const lead = (await ctx.http().get(`/api/v1/leads/${leadId}`).set(rep()).expect(200)).body.data;
+    expect(lead.account).toMatchObject({ id: created.id, status: 'CUSTOMER' });
+    const account = (await ctx.http().get(`/api/v1/accounts/${created.id}`).set(owner()).expect(200)).body.data;
+    expect(account.status).toBe('CUSTOMER');
+    expect(account.firstWonAt).toBeTruthy();
+
+    // A second "create" of the same company is caught as a duplicate.
+    const again = await ctx.http().post('/api/v1/accounts').set(rep()).send({ name: company }).expect(409);
+    expect(again.body.error.details.duplicateAccountIds).toContain(created.id);
+  });
 });

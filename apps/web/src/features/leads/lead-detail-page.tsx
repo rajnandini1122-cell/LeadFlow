@@ -28,6 +28,7 @@ import { useLead, type LeadActivity, type LeadDetail } from './use-leads';
 import { LogOutcomeDialog } from './log-outcome-dialog';
 import { OutcomeBadge } from '../../components/outcome-badge';
 import { LeadAttachmentsCard, latestQuotation } from './lead-attachments-card';
+import { LeadCustomerCard } from './lead-customer-card';
 import { useLeadAttachments } from './use-lead-attachments';
 import {
   useAddNote,
@@ -416,6 +417,8 @@ export function LeadDetailPage(): React.JSX.Element {
           </Card>
 
           <CommercialDetails lead={data} />
+
+          <LeadCustomerCard lead={data} canLink={can('account.create')} />
 
           <Card>
             <CardHeader title="Details" />
