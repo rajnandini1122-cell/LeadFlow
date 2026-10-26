@@ -24,8 +24,17 @@
 -- REVERSIBLE: every change is recorded in repair_20261021_follow_ups first;
 -- 03-repair-undo.DRAFT.sql restores exactly those rows from it.
 --
--- Production schema (main @ d909b89). If 20261013090000 has been applied,
--- add `AND l.deactivated_at IS NULL` to the section C predicate.
+-- Schema: production after #11 and #12 (main @ ddbfb1f). Section C skips
+-- DEACTIVATED leads (`deactivated_at`, added by 20261013090000) and leads whose
+-- owner is not an ACTIVE member of the lead's own organization.
+--
+-- Revised 2026-10-26 after a rehearsal on a restored production copy:
+--   * deactivated leads excluded (the previous draft predated that column);
+--   * the assignee must be an active member of the lead's organization;
+--   * follow_ups is locked against writes for the few milliseconds this runs,
+--     so a salesperson working a lead at the same moment cannot end up with a
+--     second open follow-up beside the restored one;
+--   * the restored row's note no longer names a date.
 -- =============================================================================
 
 BEGIN;
@@ -33,6 +42,15 @@ BEGIN;
 -- Bounded lock wait: if the app is holding a lead row, give up rather than
 -- queueing behind it and stalling agents.
 SET LOCAL lock_timeout = '5s';
+
+-- Blocks concurrent INSERT/UPDATE on follow_ups (reads continue) until this
+-- transaction ends, so the "has no open follow-up" check below cannot race an
+-- app write. Fails after lock_timeout rather than queueing.
+LOCK TABLE follow_ups IN SHARE ROW EXCLUSIVE MODE;
+
+-- Before.
+SELECT (SELECT count(*) FROM follow_ups WHERE status IN ('UPCOMING', 'DUE', 'OVERDUE')) AS open_follow_ups_before,
+       (SELECT count(*) FROM follow_ups) AS follow_ups_before;
 
 CREATE TABLE IF NOT EXISTS repair_20261021_follow_ups (
   follow_up_id         uuid        NOT NULL,
@@ -84,7 +102,13 @@ UPDATE follow_ups f
 WITH missing AS (
   SELECT l.id AS lead_id, l.organization_id, l.assigned_to, l.next_follow_up_at
     FROM leads l
+    -- Tenant guard: the owner must be an active member of THIS lead's organization.
+    JOIN organization_users ou
+      ON ou.organization_id = l.organization_id
+     AND ou.user_id = l.assigned_to
+     AND ou.status = 'ACTIVE'
    WHERE l.deleted_at IS NULL
+     AND l.deactivated_at IS NULL
      AND l.status NOT IN ('WON', 'LOST')
      AND l.assigned_to IS NOT NULL
      AND l.next_follow_up_at IS NOT NULL
@@ -98,7 +122,7 @@ created AS (
   SELECT organization_id, lead_id, assigned_to, next_follow_up_at, 'CALL',
          -- Same rule as the application: a date already passed is DUE now.
          CASE WHEN next_follow_up_at <= now() THEN 'DUE'::follow_up_status ELSE 'UPCOMING'::follow_up_status END,
-         'Next action', 'Restored by data repair 2026-10-21 (no queue row existed)', now(), now()
+         'Next action', 'Restored by data repair: the lead had a follow-up date but no queue row', now(), now()
     FROM missing
   RETURNING id, lead_id, organization_id, assigned_user_id
 )
@@ -117,6 +141,7 @@ SELECT kind, count(*) AS rows_changed
 SELECT count(*) AS leads_still_missing_queue_row
   FROM leads l
  WHERE l.deleted_at IS NULL
+   AND l.deactivated_at IS NULL
    AND l.status NOT IN ('WON', 'LOST')
    AND l.assigned_to IS NOT NULL
    AND l.next_follow_up_at IS NOT NULL
