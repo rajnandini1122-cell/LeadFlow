@@ -8,7 +8,7 @@ import {
   type LeadStatus,
 } from '@leadflow/api-types';
 import { ApiError, apiGet } from '../../lib/api-client';
-import { humanise } from '../../lib/format';
+import { formatDateTime, humanise } from '../../lib/format';
 import type { LeadDetail } from './use-leads';
 import {
   useAssignLead,
@@ -23,6 +23,7 @@ import {
 } from './use-lead-mutations';
 import { zonedDefault, zonedFromNow, zonedInputToIso, toZonedInput } from '../../lib/zoned-input';
 import { newIdempotencyKey } from '../../lib/idempotency';
+import { useToast } from '../../components/toast';
 
 const FOLLOW_UP_TYPES = ['CALL', 'WHATSAPP', 'EMAIL', 'MEETING', 'OTHER'];
 
@@ -169,11 +170,11 @@ export function Field({
   );
 }
 
-function errorMessage(error: unknown, fallback: string): string {
+export function errorMessage(error: unknown, fallback: string): string {
   return error instanceof ApiError ? error.message : fallback;
 }
 
-function fieldErrorOf(error: unknown, field: string): string | undefined {
+export function fieldErrorOf(error: unknown, field: string): string | undefined {
   return error instanceof ApiError ? error.details?.[field]?.[0] : undefined;
 }
 
@@ -496,6 +497,7 @@ export function ScheduleFollowUpDialog({
   onClose: () => void;
 }): React.JSX.Element | null {
   const create = useCreateFollowUp(leadId);
+  const toast = useToast();
 
   const [scheduledAt, setScheduledAt] = useState(defaultNextFollowUp());
   const [type, setType] = useState('CALL');
@@ -522,7 +524,12 @@ export function ScheduleFollowUpDialog({
         ...(title ? { title } : {}),
         idempotencyKey,
       },
-      { onSuccess: onClose },
+      {
+        onSuccess: (created) => {
+          toast.success(`Follow-up scheduled for ${formatDateTime(created.scheduledAt)}.`);
+          onClose();
+        },
+      },
     );
   };
 
@@ -561,7 +568,13 @@ export function ScheduleFollowUpDialog({
 // Complete follow-up
 // -----------------------------------------------------------------------------
 
-const OUTCOMES = ['Spoke to customer', 'No answer', 'Call back later', 'Sent information', 'Meeting held'];
+/**
+ * Completion outcomes — for CUSTOMER follow-ups, which have no lead and so no
+ * call-outcome flow. "No answer" and "Call back later" are gone from here:
+ * choosing them COMPLETED the task although nothing was done. A lead's calls
+ * are logged through the outcome dialog, where a missed call schedules a retry.
+ */
+const OUTCOMES = ['Spoke to customer', 'Sent information', 'Meeting held', 'Order discussed'];
 
 /**
  * Completion dialog.
@@ -581,6 +594,7 @@ export function CompleteFollowUpDialog({
   onClose: () => void;
 }): React.JSX.Element | null {
   const complete = useCompleteFollowUp();
+  const toast = useToast();
 
   const [outcome, setOutcome] = useState(OUTCOMES[0] as string);
   const [notes, setNotes] = useState('');
@@ -628,7 +642,12 @@ export function CompleteFollowUpDialog({
             ? { leadStatus: 'WON' as LeadStatus, ...(wonValue ? { wonValue: Number(wonValue) } : {}) }
             : { leadStatus: 'LOST' as LeadStatus, lostReason }),
       },
-      { onSuccess: onClose },
+      {
+        onSuccess: () => {
+          toast.success(`Follow-up completed: ${outcome}.`);
+          onClose();
+        },
+      },
     );
   };
 
@@ -710,16 +729,35 @@ export function CompleteFollowUpDialog({
 // Reschedule
 // -----------------------------------------------------------------------------
 
+/**
+ * Calendar-aware choices, the same as the call-outcome dialog's: "Tomorrow"
+ * means tomorrow at 11:00 on the organization's calendar, not "24 hours from
+ * now", which put a 7 am call in the queue.
+ */
+const RESCHEDULE_PRESETS = [
+  { label: 'In 2 hours', value: () => zonedFromNow(2) },
+  { label: 'Tomorrow 11 am', value: () => zonedDefault(1, 11) },
+  { label: 'In 3 days', value: () => zonedDefault(3, 11) },
+  { label: 'Next week', value: () => zonedDefault(7, 11) },
+] as const;
+
 export function RescheduleFollowUpDialog({
   followUp,
   open,
   onClose,
 }: {
-  followUp: FollowUp | null;
+  /**
+   * Only what the dialog needs, so a lead row's next action can open it too.
+   * `scheduledAt` and a name are shown so the agent sees what is moving.
+   */
+  followUp:
+    | (Pick<FollowUp, 'id' | 'leadId'> & { scheduledAt?: string; leadName?: string | null; accountName?: string | null })
+    | null;
   open: boolean;
   onClose: () => void;
 }): React.JSX.Element | null {
   const reschedule = useRescheduleFollowUp();
+  const toast = useToast();
   const [scheduledAt, setScheduledAt] = useState(defaultNextFollowUp(1));
   const [reason, setReason] = useState('');
   const [idempotencyKey, setIdempotencyKey] = useState(newIdempotencyKey);
@@ -744,23 +782,37 @@ export function RescheduleFollowUpDialog({
         scheduledAt: zonedInputToIso(scheduledAt),
         ...(reason ? { reason } : {}),
       },
-      { onSuccess: onClose },
+      {
+        onSuccess: (result) => {
+          toast.success(`Rescheduled to ${formatDateTime(result.scheduledAt)}.`);
+          onClose();
+        },
+      },
     );
   };
 
   return (
-    <Dialog open={open} title="Reschedule follow-up" onClose={onClose}>
+    <Dialog
+      open={open}
+      title={`Reschedule follow-up${followUp.leadName ?? followUp.accountName ? ` — ${followUp.leadName ?? followUp.accountName}` : ''}`}
+      onClose={onClose}
+    >
       <form onSubmit={submit} className="space-y-4 p-5" noValidate>
+        {followUp.scheduledAt && (
+          <p className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600">
+            Currently: <span className="font-medium text-slate-900">{formatDateTime(followUp.scheduledAt)}</span>
+          </p>
+        )}
         <Field label="New date and time" htmlFor="re-when" required>
           <input id="re-when" type="datetime-local" value={scheduledAt} required onChange={(e) => setScheduledAt(e.target.value)} className={inputClass} />
         </Field>
 
         <div className="flex flex-wrap gap-2">
-          {RETRY_PRESETS.map((preset) => (
+          {RESCHEDULE_PRESETS.map((preset) => (
             <button
               key={preset.label}
               type="button"
-              onClick={() => setScheduledAt(zonedFromNow(preset.hours))}
+              onClick={() => setScheduledAt(preset.value())}
               className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
             >
               {preset.label}

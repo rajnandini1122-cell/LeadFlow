@@ -203,12 +203,17 @@ const QUEUE_ROW = {
   isOverdue: true,
 };
 
-function renderQueue(permissions: string[], overdue: unknown[] = [QUEUE_ROW]): void {
+function renderQueue(
+  permissions: string[],
+  overdue: unknown[] = [QUEUE_ROW],
+  counts: Record<string, number> = { overdue: overdue.length, today: 0, tomorrow: 0, week: 0, upcoming: 0, awaiting: 0, completed: 0, completed_today: 0 },
+): void {
   vi.spyOn(authContext, 'useAuth').mockReturnValue({
     can: (permission: string) => permissions.includes(permission),
     user: { id: 'user-1', fullName: 'Asha Rep' },
   } as never);
-  vi.spyOn(apiClient, 'apiGet').mockImplementation((_url: string, params?: unknown) => {
+  vi.spyOn(apiClient, 'apiGet').mockImplementation((url: string, params?: unknown) => {
+    if (url === '/follow-ups/counts') return Promise.resolve(counts as never);
     const bucket = (params as { bucket?: string } | undefined)?.bucket;
     return Promise.resolve((bucket === 'overdue' ? overdue : []) as never);
   });
@@ -223,42 +228,51 @@ function renderQueue(permissions: string[], overdue: unknown[] = [QUEUE_ROW]): v
 }
 
 describe('the follow-up queue', () => {
-  it('logs "No answer" from the row, with a retry, in one request', async () => {
+  it('logs a missed call from the row as ONE outcome request on that follow-up', async () => {
     const apiPost = vi.spyOn(apiClient, 'apiPost').mockResolvedValue({
+      leadId: QUEUE_ROW.leadId,
+      outcome: 'NOT_ANSWERED',
+      leadStatus: 'NEW',
+      completedFollowUpId: null,
       followUp: null,
       nextFollowUpAt: '2026-10-22T05:30:00.000Z',
-      leadStatus: 'NEW',
+      replayed: false,
     } as never);
     renderQueue(['lead.update', 'followup.complete', 'followup.create']);
 
-    await userEvent.click(await screen.findByRole('button', { name: /No answer from Ravi Kulkarni/ }));
-
+    await userEvent.click(await screen.findByRole('button', { name: /Log call outcome for Ravi Kulkarni/ }));
     const dialog = screen.getByRole('dialog');
-    expect(within(dialog).getByLabelText(/What happened/)).toHaveValue('CALL_NOT_ANSWERED');
-
-    await userEvent.click(within(dialog).getByRole('button', { name: 'Log and reschedule' }));
+    await userEvent.click(within(dialog).getByRole('radio', { name: /^Not answered$/ }));
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save and schedule retry' }));
 
     await waitFor(() => expect(apiPost).toHaveBeenCalledTimes(1));
     const [url, body, options] = apiPost.mock.calls[0] ?? [];
-    expect(url).toBe(`/leads/${QUEUE_ROW.leadId}/attempts`);
-    expect(body).toMatchObject({ activityType: 'CALL_NOT_ANSWERED' });
+    expect(url).toBe(`/leads/${QUEUE_ROW.leadId}/outcomes`);
+    // The row's own follow-up — the one being worked — not "whichever is earliest".
+    expect(body).toMatchObject({ outcome: 'NOT_ANSWERED', followUpId: QUEUE_ROW.id });
     expect((options as { headers: Record<string, string> }).headers['Idempotency-Key']).toMatch(
       /^[A-Za-z0-9_-]{8,100}$/,
     );
   });
 
-  it('hides "No answer" from someone who may not update leads', async () => {
+  it('hides "Log outcome" from someone who may not update leads', async () => {
     renderQueue(['followup.complete']);
 
     await screen.findByText('Ravi Kulkarni');
-    expect(screen.queryByRole('button', { name: /No answer from/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Log call outcome/ })).not.toBeInTheDocument();
   });
 
-  it('shows a full page as "200+" rather than as the total', async () => {
-    const rows = Array.from({ length: 200 }, (_, i) => ({ ...QUEUE_ROW, id: `fu-${i}` }));
-    renderQueue(['lead.update'], rows);
+  it('shows TRUE totals on the tabs, not the length of a capped page', async () => {
+    // 340 overdue, but only one row on this page: the tab must say 340.
+    renderQueue(['lead.update'], [QUEUE_ROW], {
+      overdue: 340, today: 4, tomorrow: 7, week: 12, upcoming: 30, awaiting: 5, completed: 900, completed_today: 3,
+    });
 
-    expect(await screen.findByText(/200\+ overdue/)).toBeInTheDocument();
+    expect(await screen.findByText(/340 overdue/)).toBeInTheDocument();
+    const tabs = within(screen.getByRole('tablist', { name: 'Follow-up buckets' }));
+    expect(tabs.getByRole('tab', { name: /Overdues*340/ })).toBeInTheDocument();
+    expect(tabs.getByRole('tab', { name: /Tomorrows*7/ })).toBeInTheDocument();
+    expect(tabs.getByRole('tab', { name: /Awaiting responses*5/ })).toBeInTheDocument();
   });
 });
 

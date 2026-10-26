@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
-import type { FollowUpStatus } from '../../generated/prisma/enums';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { bucketWhere, type BucketWindow } from '../follow-ups/follow-up-buckets';
 
 /**
  * Dashboard aggregation.
@@ -68,24 +68,10 @@ export class DashboardRepository {
    * so the dashboard and the follow-up screen can never disagree about what is
    * overdue.
    */
-  async countFollowUps(
-    window: { statuses: FollowUpStatus[]; from?: Date | undefined; to?: Date | undefined },
-    restrictToUserId?: string,
-  ): Promise<number> {
-    return this.prisma.client.followUp.count({
-      where: {
-        status: { in: window.statuses },
-        ...(window.from || window.to
-          ? {
-              scheduledAt: {
-                ...(window.from ? { gte: window.from } : {}),
-                ...(window.to ? { lt: window.to } : {}),
-              },
-            }
-          : {}),
-        ...(restrictToUserId ? { assignedUserId: restrictToUserId } : {}),
-      },
-    });
+  async countFollowUps(window: BucketWindow, restrictToUserId?: string): Promise<number> {
+    // The same predicate the follow-up lists use, so a tile cannot disagree
+    // with the list it links to.
+    return this.prisma.client.followUp.count({ where: bucketWhere(window, { restrictToUserId }) });
   }
 
   /**

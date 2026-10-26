@@ -10,7 +10,9 @@ import {
   MaxLength,
   Min,
 } from 'class-validator';
-import { LEAD_LIFECYCLE_FILTERS, LEAD_STATUSES } from '@leadflow/api-types';
+import { CALL_OUTCOMES, LEAD_LIFECYCLE_FILTERS, LEAD_STATUSES } from '@leadflow/api-types';
+import type { CallOutcome } from '@leadflow/api-types';
+import { MARKETS, type Market } from '../../../common/utils/market';
 import type { LeadLifecycleFilter, LeadStatus } from '@leadflow/api-types';
 
 export class ListLeadsDto {
@@ -34,6 +36,31 @@ export class ListLeadsDto {
   @Transform(({ value }) => (value === 'true' ? true : value === 'false' ? false : value))
   @IsBoolean()
   unassigned?: boolean;
+
+  /** Still NEW and never reached — the workspace's "New leads". */
+  @IsOptional()
+  @Transform(({ value }) => (value === 'true' ? true : value === 'false' ? false : value))
+  @IsBoolean()
+  fresh?: boolean;
+
+  /** Waiting on the customer: last outcome "awaiting response", or a quotation is out. */
+  @IsOptional()
+  @Transform(({ value }) => (value === 'true' ? true : value === 'false' ? false : value))
+  @IsBoolean()
+  awaiting?: boolean;
+
+  /**
+   * Home market or abroad — India vs international importers for CRAVION.
+   * Derived from the lead's country, else its mobile's dialling code.
+   */
+  @IsOptional()
+  @IsIn(MARKETS, { message: `must be one of: ${MARKETS.join(', ')}` })
+  market?: Market;
+
+  /** Leads whose LAST call had exactly this outcome. */
+  @IsOptional()
+  @IsIn(CALL_OUTCOMES, { message: `must be one of: ${CALL_OUTCOMES.join(', ')}` })
+  lastOutcome?: CallOutcome;
 
   /** Narrows the list to one product, for the product drill-down. */
   @IsOptional()

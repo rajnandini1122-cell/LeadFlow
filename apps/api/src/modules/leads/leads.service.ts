@@ -1,6 +1,7 @@
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import {
   ERROR_CODES,
+  PERMISSIONS,
   isTerminalLeadStatus,
   type LeadPriority,
   type LeadStatus,
@@ -15,6 +16,7 @@ import type { ListLeadsDto } from './dto/leads.dto';
 import type { CreateLeadDto } from './dto/create-lead.dto';
 import { visibilityFilter } from './lead-visibility';
 import { PhoneParseError, toE164 } from '../../common/utils/phone';
+import { leadMarket, type Market } from '../../common/utils/market';
 
 export interface LeadSummary {
   id: string;
@@ -37,6 +39,39 @@ export interface LeadSummary {
    * nobody scans a list by street name.
    */
   deactivatedAt: string | null;
+
+  // --- what happened last, and what happens next --------------------------
+  //
+  // On the SUMMARY because they are what a sales list is FOR: a row that shows
+  // only a name and a stage forces the agent to open every lead to learn
+  // whether anybody has called it. Fetched in the same round trip as the page.
+
+  /** ISO 3166-1 alpha-2, when the enquiry or import gave one. */
+  country: string | null;
+  /**
+   * Home market or abroad (India vs international importers for CRAVION),
+   * derived from `country`, else the mobile's dialling code.
+   */
+  market: Market;
+  /** The last structured call outcome (CALL_OUTCOMES code), or null if none logged. */
+  lastOutcome: string | null;
+  lastOutcomeAt: string | null;
+  /** When somebody last actually spoke to the customer. Missed calls do not move it. */
+  lastContactedAt: string | null;
+  /** The most recent timeline entry, for the "latest interaction" column. */
+  latestActivity: { type: string; description: string | null; at: string } | null;
+  /**
+   * The open follow-up that IS the next action — what the row's quick actions
+   * act on. Null when nothing is queued (closed, or nobody owns the lead).
+   */
+  nextAction: {
+    followUpId: string;
+    type: string;
+    title: string | null;
+    scheduledAt: string;
+    assignedTo: { id: string; fullName: string };
+    isOverdue: boolean;
+  } | null;
 }
 
 @Injectable()
@@ -52,11 +87,17 @@ export class LeadsService {
   async list(dto: ListLeadsDto, principal: TenantPrincipal): Promise<Paginated<LeadSummary>> {
     const limit = dto.limit ?? 25;
     const restriction = visibilityFilter(principal);
+    const homeCountry = await this.repository.organizationCountry();
 
     const filters = {
       status: dto.status,
       assignedToId: dto.assignedToId,
       unassigned: dto.unassigned,
+      fresh: dto.fresh,
+      awaiting: dto.awaiting,
+      lastOutcome: dto.lastOutcome,
+      market: dto.market,
+      homeCountry,
       productId: dto.productId,
       accountId: dto.accountId,
       search: dto.search,
@@ -75,7 +116,7 @@ export class LeadsService {
     ]);
 
     const hasMore = rows.length > limit;
-    const items = (hasMore ? rows.slice(0, limit) : rows).map(toSummary);
+    const items = (hasMore ? rows.slice(0, limit) : rows).map((row) => toSummary(row, homeCountry));
 
     return {
       items,
@@ -118,11 +159,24 @@ export class LeadsService {
       deactivatedBy: string | null;
       /** The import run that created it, or null if a person typed it in. */
       importBatchId: string | null;
+      /** Free text, as stated ("500 kg monthly"). */
+      requirementQuantity: string | null;
+      /** YYYY-MM-DD — a calendar date, never shifted by a timezone. */
+      expectedPurchaseDate: string | null;
+      /**
+       * How the deal closed. Stored since the start but never returned, so a
+       * closed lead's page could not say what it was won at or why it was
+       * lost. Null while open.
+       */
+      wonAt: string | null;
+      wonValue: string | null;
+      lostAt: string | null;
+      lostReason: string | null;
     }
   > {
     // A lead outside the caller's visibility is a 404, exactly like one in
     // another tenant — the response must not confirm it exists.
-    const lead = await this.repository.findById(id, visibilityFilter(principal)?.assignedToId);
+    const lead = await this.repository.findDetailById(id, visibilityFilter(principal)?.assignedToId);
     // Another tenant's lead and a non-existent lead are the same 404.
     if (!lead) throw AppException.leadNotFound();
 
@@ -137,7 +191,7 @@ export class LeadsService {
      * text.
      */
     return {
-      ...toSummary(lead),
+      ...toSummary(lead, await this.repository.organizationCountry()),
       /*
        * Both, deliberately.
        *
@@ -171,6 +225,16 @@ export class LeadsService {
       deactivationReason: lead.deactivationReason,
       deactivatedBy: lead.deactivatedBy,
       importBatchId: lead.importBatchId,
+      // The requirement as stated on a call: product and interest above, the
+      // quantity and timing here.
+      requirementQuantity: lead.requirementQuantity,
+      expectedPurchaseDate: lead.expectedPurchaseDate
+        ? lead.expectedPurchaseDate.toISOString().slice(0, 10)
+        : null,
+      wonAt: lead.wonAt?.toISOString() ?? null,
+      wonValue: lead.wonValue?.toString() ?? null,
+      lostAt: lead.lostAt?.toISOString() ?? null,
+      lostReason: lead.lostReason,
       activities: activities.map((activity) => ({
         id: activity.id,
         type: activity.activityType,
@@ -190,6 +254,27 @@ export class LeadsService {
   // ---------------------------------------------------------------------------
 
   async create(dto: CreateLeadDto, principal: TenantPrincipal): Promise<LeadSummary> {
+    /*
+     * Who owns a lead nobody was named for.
+     *
+     * A sales rep sees only their own leads and has no "Assign to" choice, so
+     * the form sends no owner — and the lead was stored UNASSIGNED: created on
+     * the phone, then gone from the rep's own list and queues (found on the
+     * Android emulator). A creator who can only see their own leads now owns
+     * what they create; one who may not assign cannot hand it to someone else
+     * and lose it the same way. Managers and admins are unchanged: no owner
+     * still means the unassigned pool, for routing.
+     */
+    if (visibilityFilter(principal)) {
+      const canAssign = principal.permissions.includes(PERMISSIONS.LEAD_ASSIGN);
+      if (dto.assignedToId && dto.assignedToId !== principal.userId && !canAssign) {
+        throw AppException.validation('You can create leads for yourself only.', {
+          assignedToId: ['ask a manager to assign leads to someone else'],
+        });
+      }
+      dto.assignedToId ??= principal.userId;
+    }
+
     const status = dto.status ?? 'NEW';
     const nextFollowUpAt = this.resolveFollowUp(dto, status);
 
@@ -297,7 +382,7 @@ export class LeadsService {
       },
     });
 
-    return toSummary(lead);
+    return toSummary(lead, await this.repository.organizationCountry());
   }
 
   /**
@@ -547,9 +632,25 @@ type LeadRow = {
   createdAt: Date;
   deactivatedAt: Date | null;
   assignedTo: { id: string; fullName: string } | null;
+  country: string | null;
+  lastOutcome: string | null;
+  lastOutcomeAt: Date | null;
+  lastContactedAt: Date | null;
+  /** Present when the query included them; see LEAD_SUMMARY_INCLUDE. */
+  followUps?: {
+    id: string;
+    type: string;
+    title: string | null;
+    scheduledAt: Date;
+    assignedUser: { id: string; fullName: string };
+  }[];
+  activities?: { activityType: string; description: string | null; createdAt: Date }[];
 };
 
-function toSummary(lead: LeadRow): LeadSummary {
+function toSummary(lead: LeadRow, homeCountry: string): LeadSummary {
+  const next = lead.followUps?.[0];
+  const latest = lead.activities?.[0];
+
   const name = [lead.firstName, lead.lastName].filter(Boolean).join(' ').trim();
 
   return {
@@ -567,5 +668,29 @@ function toSummary(lead: LeadRow): LeadSummary {
     assignedTo: lead.assignedTo,
     createdAt: lead.createdAt.toISOString(),
     deactivatedAt: lead.deactivatedAt?.toISOString() ?? null,
+    country: lead.country,
+    market: leadMarket(lead, homeCountry),
+    lastOutcome: lead.lastOutcome,
+    lastOutcomeAt: lead.lastOutcomeAt?.toISOString() ?? null,
+    lastContactedAt: lead.lastContactedAt?.toISOString() ?? null,
+    latestActivity: latest
+      ? {
+          type: latest.activityType,
+          description: latest.description,
+          at: latest.createdAt.toISOString(),
+        }
+      : null,
+    nextAction: next
+      ? {
+          followUpId: next.id,
+          type: next.type,
+          title: next.title,
+          scheduledAt: next.scheduledAt.toISOString(),
+          assignedTo: next.assignedUser,
+          // Derived, exactly as the follow-up view derives it, so a list row
+          // and the queue can never disagree about what is late.
+          isOverdue: next.scheduledAt.getTime() < Date.now(),
+        }
+      : null,
   };
 }

@@ -25,6 +25,11 @@ import { useAuth } from '../auth/auth-context';
 import { LeadConversationsCard } from '../omnichannel/lead-conversations-card';
 import { WebsiteEnquiryPanel } from '../intakes/website-enquiry-panel';
 import { useLead, type LeadActivity, type LeadDetail } from './use-leads';
+import { LogOutcomeDialog } from './log-outcome-dialog';
+import { OutcomeBadge } from '../../components/outcome-badge';
+import { LeadAttachmentsCard, latestQuotation } from './lead-attachments-card';
+import { LeadCustomerCard } from './lead-customer-card';
+import { useLeadAttachments } from './use-lead-attachments';
 import {
   useAddNote,
   useArchiveLead,
@@ -36,7 +41,6 @@ import {
 import {
   AssignLeadDialog,
   DeactivateLeadDialog,
-  RecordAttemptDialog,
   ReactivateLeadDialog,
   ChangeStatusDialog,
   CompleteFollowUpDialog,
@@ -67,7 +71,8 @@ export function LeadDetailPage(): React.JSX.Element {
    * buttons that mean different things, and reopening it should not silently
    * keep the previous one's selection.
    */
-  const [attempt, setAttempt] = useState<string | null>(null);
+  /** The outcome dialog, and the follow-up it is working when opened from one. */
+  const [logging, setLogging] = useState<{ followUpId?: string } | null>(null);
   const [completing, setCompleting] = useState<FollowUp | null>(null);
   const [rescheduling, setRescheduling] = useState<FollowUp | null>(null);
   const [activityLimit, setActivityLimit] = useState(25);
@@ -107,6 +112,10 @@ export function LeadDetailPage(): React.JSX.Element {
   const openFollowUps = (followUps.data ?? []).filter((f) =>
     ['UPCOMING', 'DUE', 'OVERDUE'].includes(f.status),
   );
+  // The next action is the earliest open follow-up — what the queue shows too.
+  const nextFollowUp =
+    [...openFollowUps].sort((a, b) => a.scheduledAt.localeCompare(b.scheduledAt))[0] ?? null;
+  const outcomeLead = { id: data.id, name: data.name, status: data.status };
 
   return (
     <>
@@ -164,8 +173,9 @@ export function LeadDetailPage(): React.JSX.Element {
 
             <QuickActions
               lead={data}
+              closed={closed}
               onLogged={setNotice}
-              onAttempt={(activityType) => setAttempt(activityType)}
+              onLogOutcome={() => setLogging(nextFollowUp ? { followUpId: nextFollowUp.id } : {})}
             />
 
             <div className="flex flex-wrap gap-2 border-t border-slate-100 px-5 py-3">
@@ -204,6 +214,9 @@ export function LeadDetailPage(): React.JSX.Element {
               )}
             </div>
           </Card>
+
+          {/* Quotations sent, invoices, POs, photos — where the commercial evidence lives. */}
+          <LeadAttachmentsCard leadId={data.id} canEdit={can('lead.update')} />
 
           <Card>
             <CardHeader
@@ -259,11 +272,47 @@ export function LeadDetailPage(): React.JSX.Element {
               subtitle={closed ? 'This lead is closed' : undefined}
             />
             <div className="p-5">
-              {data.nextFollowUpAt ? (
+              {nextFollowUp ? (
+                <>
+                  <p className="text-sm font-medium text-slate-900">
+                    {nextFollowUp.title ?? `${humanise(nextFollowUp.type)} the customer`}
+                  </p>
+                  <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                    <DueBadge iso={nextFollowUp.scheduledAt} label={formatDueDate(nextFollowUp.scheduledAt)} />
+                    <span className="text-sm text-slate-700">{formatDateTime(nextFollowUp.scheduledAt)}</span>
+                  </div>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {humanise(nextFollowUp.type)} · {nextFollowUp.assignedTo.fullName}
+                  </p>
+                  {!closed && (
+                    <div className="mt-3 flex flex-wrap gap-1.5">
+                      {can('lead.update') && (
+                        <button
+                          type="button"
+                          onClick={() => setLogging({ followUpId: nextFollowUp.id })}
+                          className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-slate-800"
+                        >
+                          Log outcome
+                        </button>
+                      )}
+                      {can('followup.create') && (
+                        <button
+                          type="button"
+                          onClick={() => setRescheduling({ ...nextFollowUp, leadName: data.name })}
+                          className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+                        >
+                          Reschedule
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </>
+              ) : data.nextFollowUpAt ? (
                 <>
                   <DueBadge iso={data.nextFollowUpAt} label={formatDueDate(data.nextFollowUpAt)} />
-                  <p className="mt-2 text-sm text-slate-900">
-                    {formatDateTime(data.nextFollowUpAt)}
+                  <p className="mt-2 text-sm text-slate-900">{formatDateTime(data.nextFollowUpAt)}</p>
+                  <p className="mt-1 text-xs text-amber-700">
+                    Not in anyone’s queue — assign an owner so it is worked.
                   </p>
                 </>
               ) : (
@@ -321,7 +370,9 @@ export function LeadDetailPage(): React.JSX.Element {
                         }`}
                       >
                         {followUp.status === 'CANCELLED'
-                          ? 'Cancelled'
+                          ? followUp.rescheduledToId
+                            ? 'Rescheduled'
+                            : 'Cancelled'
                           : followUp.status === 'COMPLETED'
                             ? 'Done'
                             : followUp.isOverdue
@@ -339,19 +390,19 @@ export function LeadDetailPage(): React.JSX.Element {
 
                     {['UPCOMING', 'DUE', 'OVERDUE'].includes(followUp.status) && (
                       <div className="mt-2 flex gap-1.5">
-                        {can('followup.complete') && (
+                        {can('lead.update') && (
                           <button
                             type="button"
-                            onClick={() => setCompleting(followUp)}
+                            onClick={() => setLogging({ followUpId: followUp.id })}
                             className="rounded-lg bg-slate-900 px-2.5 py-1 text-xs font-medium text-white transition hover:bg-slate-800"
                           >
-                            Complete
+                            Log outcome
                           </button>
                         )}
                         {can('followup.create') && (
                           <button
                             type="button"
-                            onClick={() => setRescheduling(followUp)}
+                            onClick={() => setRescheduling({ ...followUp, leadName: data.name })}
                             className="rounded-lg border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
                           >
                             Reschedule
@@ -365,12 +416,24 @@ export function LeadDetailPage(): React.JSX.Element {
             )}
           </Card>
 
+          <CommercialDetails lead={data} />
+
+          <LeadCustomerCard lead={data} canLink={can('account.create')} />
+
           <Card>
             <CardHeader title="Details" />
             <dl className="divide-y divide-slate-100 text-sm">
               <Detail label="Mobile" value={data.mobile} mono />
               <Detail label="Company" value={data.companyName} />
               <Detail label="Owner" value={data.assignedTo?.fullName ?? 'Unassigned'} />
+              <Detail
+                label="Last spoke"
+                value={
+                  data.lastContactedAt
+                    ? `${formatDateTime(data.lastContactedAt)} (${formatRelative(data.lastContactedAt)})`
+                    : 'Not reached yet'
+                }
+              />
               <Detail label="Created" value={formatDate(data.createdAt)} />
             </dl>
           </Card>
@@ -390,11 +453,11 @@ export function LeadDetailPage(): React.JSX.Element {
         open={dialog === 'reactivate'}
         onClose={() => setDialog(null)}
       />
-      <RecordAttemptDialog
-        lead={data}
-        open={attempt !== null}
-        {...(attempt ? { initialAttempt: attempt } : {})}
-        onClose={() => setAttempt(null)}
+      <LogOutcomeDialog
+        lead={outcomeLead}
+        followUpId={logging?.followUpId}
+        open={logging !== null}
+        onClose={() => setLogging(null)}
       />
       <ScheduleFollowUpDialog
         leadId={data.id}
@@ -416,27 +479,25 @@ export function LeadDetailPage(): React.JSX.Element {
 }
 
 /**
- * Call, WhatsApp and note, logged in one step.
+ * Call, WhatsApp, log the outcome, and a note.
  *
- * The call buttons open the dialer AND record the attempt, because a CRM that
- * relies on someone coming back to log it separately ends up with no call
- * history at all.
+ * THE CALL BUTTON NO LONGER LOGS A CALL. It recorded "call completed" on the
+ * click, before anyone had answered — so every unanswered dial became a
+ * completed call and "contacted" meant "somebody pressed a button". It now
+ * opens the dialler and the outcome dialog together; the call is recorded when
+ * the agent says how it went.
  */
 function QuickActions({
   lead,
+  closed,
   onLogged,
-  onAttempt,
+  onLogOutcome,
 }: {
   lead: { id: string; mobile: string | null };
+  closed: boolean;
   onLogged: (message: string) => void;
-  /**
-   * Opens the attempt dialog instead of logging straight away.
-   *
-   * These two buttons used to post one activity row and stop — no retry, no
-   * note, nothing in the queue. They now open a form that records all three in
-   * one action, because that is what a missed call actually needs.
-   */
-  onAttempt: (activityType: string) => void;
+  /** Opens the "How did the call go?" dialog. */
+  onLogOutcome: () => void;
 }): React.JSX.Element {
   const log = useLogActivity(lead.id);
   const addNote = useAddNote(lead.id);
@@ -455,7 +516,7 @@ function QuickActions({
         <a
           href={tel ?? undefined}
           aria-disabled={!tel}
-          onClick={() => tel && record('CALL_COMPLETED', 'Call logged.')}
+          onClick={() => tel && !closed && onLogOutcome()}
           className={`flex-1 rounded-lg px-4 py-2 text-center text-sm font-medium transition sm:flex-none ${
             tel ? 'bg-slate-900 text-white hover:bg-slate-800' : 'pointer-events-none bg-slate-100 text-slate-400'
           }`}
@@ -474,20 +535,15 @@ function QuickActions({
         >
           WhatsApp
         </a>
-        <button
-          type="button"
-          onClick={() => onAttempt('CALL_NOT_ANSWERED')}
-          className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
-        >
-          No answer
-        </button>
-        <button
-          type="button"
-          onClick={() => onAttempt('CALL_BACK_LATER')}
-          className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
-        >
-          Call back later
-        </button>
+        {!closed && (
+          <button
+            type="button"
+            onClick={onLogOutcome}
+            className="flex-1 rounded-lg border border-slate-900 px-4 py-2 text-sm font-semibold text-slate-900 transition hover:bg-slate-50 sm:flex-none"
+          >
+            Log call outcome
+          </button>
+        )}
       </div>
 
       <form
@@ -585,6 +641,8 @@ const ACTIVITY_TONE: Record<string, string> = {
   FOLLOW_UP_RESCHEDULED: 'bg-amber-100 text-amber-700',
   LEAD_WON: 'bg-emerald-100 text-emerald-700',
   LEAD_LOST: 'bg-rose-100 text-rose-700',
+  DOCUMENT_ATTACHED: 'bg-orange-100 text-orange-700',
+  DOCUMENT_REMOVED: 'bg-slate-100 text-slate-600',
 };
 
 function Timeline({ activities }: { activities: LeadActivity[] }): React.JSX.Element {
@@ -711,5 +769,74 @@ function DetailField({ label, value }: { label: string; value: string }): React.
       <dt className="text-xs text-slate-500">{label}</dt>
       <dd className="truncate text-slate-800">{value}</dd>
     </div>
+  );
+}
+
+/**
+ * What the customer wants to buy, and how far it has got.
+ *
+ * Built from fields that already exist — the product, the enquiry text, the
+ * estimated value, the stage — plus the quantity and purchase date a call can
+ * now record. No new commercial module: quotation and sample status are read
+ * from the stage and the last call, which is where this CRM already keeps them.
+ */
+function CommercialDetails({ lead }: { lead: LeadDetail }): React.JSX.Element {
+  const quotation =
+    lead.status === 'QUOTATION_SENT'
+      ? 'Sent — awaiting the customer'
+      : lead.status === 'NEGOTIATION'
+        ? 'In negotiation'
+        : lead.status === 'WON'
+          ? 'Accepted (won)'
+          : lead.lastOutcome === 'QUOTATION_REQUESTED'
+            ? 'Requested — to be sent'
+            : 'Not yet';
+  const sample = lead.lastOutcome === 'SAMPLE_REQUESTED' ? 'Requested on the last call' : null;
+  // The quotation itself, when one was attached: what was quoted, and when.
+  const quoted = latestQuotation(useLeadAttachments(lead.id).data);
+
+  return (
+    <Card>
+      <CardHeader title="Commercial details" />
+      <dl className="divide-y divide-slate-100 text-sm">
+        <Detail label="Product" value={lead.product?.name ?? null} />
+        <Detail label="Requirement" value={lead.productInterest ?? null} />
+        <Detail label="Quantity" value={lead.requirementQuantity ?? null} />
+        <Detail
+          label="Expected purchase"
+          value={lead.expectedPurchaseDate ? formatDate(`${lead.expectedPurchaseDate}T12:00:00Z`) : null}
+        />
+        <Detail label="Estimated value" value={lead.estimatedValue ? formatCurrency(lead.estimatedValue) : null} />
+        <Detail label="Quotation" value={quotation} />
+        {quoted && (
+          <Detail
+            label="Latest quotation"
+            value={`${quoted.amount !== null ? `${formatCurrency(quoted.amount)} · ` : ''}${formatDate(quoted.createdAt)} · ${quoted.fileName}`}
+          />
+        )}
+        <Detail label="Sample" value={sample} />
+        {/* How it ended — the first thing anyone opening a closed lead needs. */}
+        {lead.status === 'WON' && (
+          <Detail
+            label="Won"
+            value={[lead.wonValue ? formatCurrency(lead.wonValue) : null, lead.wonAt ? formatDate(lead.wonAt) : null]
+              .filter(Boolean)
+              .join(' · ') || 'Won'}
+          />
+        )}
+        {lead.status === 'LOST' && (
+          <Detail
+            label="Lost"
+            value={[lead.lostReason, lead.lostAt ? formatDate(lead.lostAt) : null].filter(Boolean).join(' · ') || 'Lost'}
+          />
+        )}
+      </dl>
+      {lead.lastOutcome && (
+        <div className="border-t border-slate-100 px-5 py-3">
+          <p className="mb-1 text-xs text-slate-500">Last call</p>
+          <OutcomeBadge outcome={lead.lastOutcome} at={lead.lastOutcomeAt} />
+        </div>
+      )}
+    </Card>
   );
 }

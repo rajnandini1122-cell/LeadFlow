@@ -79,7 +79,7 @@ describe('Organization chooser', () => {
           <AuthProvider>
             <Routes>
               <Route path="/login" element={<LoginPage />} />
-              <Route path="/dashboard" element={<p>Dashboard</p>} />
+              <Route path="/today" element={<p>My work</p>} />
             </Routes>
           </AuthProvider>
         </MemoryRouter>
@@ -119,7 +119,7 @@ describe('Organization chooser', () => {
    * Specifically `/auth/refresh`: the provider probes for an existing session
    * on mount, and an unauthenticated start is SUPPOSED to be a 401. A blanket
    * `mockResolvedValue` answers that probe with a valid session too, which
-   * lands the test on the dashboard before it has typed anything — how the
+   * lands the test on My work before it has typed anything — how the
    * first version of this file failed all eleven tests at once.
    */
   const scriptLogin = (...responses: Array<() => Promise<unknown>>): void => {
@@ -157,7 +157,7 @@ describe('Organization chooser', () => {
       renderLogin();
       await signIn();
 
-      expect(await screen.findByText('Dashboard')).toBeInTheDocument();
+      expect(await screen.findByText('My work')).toBeInTheDocument();
       expect(screen.queryByText('Choose an organization')).toBeNull();
       expect(loginCalls()).toHaveLength(1);
     });
@@ -203,7 +203,7 @@ describe('Organization chooser', () => {
 
       await userEvent.click(card(OWNER_ORG.name));
 
-      expect(await screen.findByText('Dashboard')).toBeInTheDocument();
+      expect(await screen.findByText('My work')).toBeInTheDocument();
     });
 
     it('completes the login when the PLATFORM_OWNER organization is chosen', async () => {
@@ -215,7 +215,7 @@ describe('Organization chooser', () => {
 
       await userEvent.click(card(PLATFORM_ORG.name));
 
-      expect(await screen.findByText('Dashboard')).toBeInTheDocument();
+      expect(await screen.findByText('My work')).toBeInTheDocument();
     });
 
     it('sends the choice as targetOrganizationId, the name that survives stripping', async () => {
@@ -226,7 +226,7 @@ describe('Organization chooser', () => {
       await screen.findByText('Choose an organization');
 
       await userEvent.click(card(PLATFORM_ORG.name));
-      await screen.findByText('Dashboard');
+      await screen.findByText('My work');
 
       const selection = loginCalls()[1]?.[1] as Record<string, unknown>;
 
@@ -249,7 +249,7 @@ describe('Organization chooser', () => {
       await screen.findByText('Choose an organization');
 
       await userEvent.click(card(OWNER_ORG.name));
-      await screen.findByText('Dashboard');
+      await screen.findByText('My work');
 
       /*
        * Two, not three.
@@ -291,7 +291,7 @@ describe('Organization chooser', () => {
       expect(
         await screen.findByText('You do not have access to that organization.'),
       ).toBeInTheDocument();
-      expect(screen.queryByText('Dashboard')).toBeNull();
+      expect(screen.queryByText('My work')).toBeNull();
       expect(screen.getByText('Choose an organization')).toBeInTheDocument();
     });
 
@@ -311,7 +311,7 @@ describe('Organization chooser', () => {
 
       await userEvent.click(card(OWNER_ORG.name));
 
-      expect(await screen.findByText('Dashboard')).toBeInTheDocument();
+      expect(await screen.findByText('My work')).toBeInTheDocument();
     });
 
     it('does not sign in on a server error', async () => {
@@ -323,7 +323,7 @@ describe('Organization chooser', () => {
 
       await userEvent.click(card(OWNER_ORG.name));
 
-      await waitFor(() => expect(screen.queryByText('Dashboard')).toBeNull());
+      await waitFor(() => expect(screen.queryByText('My work')).toBeNull());
       expect(screen.getByText('Choose an organization')).toBeInTheDocument();
     });
   });

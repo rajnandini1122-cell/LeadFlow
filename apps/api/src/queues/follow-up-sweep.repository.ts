@@ -143,13 +143,19 @@ export class FollowUpSweepRepository {
    * the notification is written, so the worst case is a marker with no
    * notification — a missed reminder, recoverable — rather than a notification
    * with no marker, which would repeat forever.
+   *
+   * Returns 0 too when the follow-up is no longer open (release audit: the
+   * claim used to ignore status, so a row closed between the sweep's read and
+   * this claim could still produce a reminder for work already done).
    */
   async claimMarker(
     id: string,
     marker: 'reminderSentAt' | 'overdueNotifiedAt' | 'escalatedAt',
   ): Promise<number> {
     const result = await this.prisma.client.followUp.updateMany({
-      where: { id, [marker]: null },
+      // Still OPEN as well as unclaimed: a follow-up completed, cancelled or
+      // rescheduled after the sweep read it must not then be reminded about.
+      where: { id, [marker]: null, status: { in: ['UPCOMING', 'DUE', 'OVERDUE'] } },
       data: { [marker]: new Date() },
     });
     return result.count;

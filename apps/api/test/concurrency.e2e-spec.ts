@@ -160,6 +160,42 @@ describe('Concurrency', () => {
     expect(winners).toHaveLength(1);
   });
 
+  it('never claims a reminder for a follow-up that is no longer open', async () => {
+    /*
+     * Release audit. The sweep reads open follow-ups, then claims a marker per
+     * row. A follow-up completed or rescheduled in between used to be claimed
+     * anyway — and the reminder written for work already done.
+     */
+    const lead = await ctx
+      .http()
+      .post('/api/v1/leads')
+      .set(auth(ctx.orgA.owner.accessToken))
+      .send({
+        firstName: 'Closed',
+        lastName: `Marker ${unique()}`,
+        mobile: fixtureMobile(),
+        assignedToId: ctx.orgA.owner.id,
+        nextFollowUpAt: minutesFromNow(60),
+      });
+    const followUp = await ctx
+      .http()
+      .post(`/api/v1/leads/${lead.body.data.id}/follow-ups`)
+      .set(auth(ctx.orgA.owner.accessToken))
+      .send({ scheduledAt: minutesFromNow(30), type: 'CALL' });
+    const id = followUp.body.data.id as string;
+
+    // Somebody reschedules it: the original is now CANCELLED.
+    await ctx
+      .http()
+      .post(`/api/v1/follow-ups/${id}/reschedule`)
+      .set(auth(ctx.orgA.owner.accessToken))
+      .send({ scheduledAt: minutesFromNow(240) })
+      .expect(200);
+
+    const claimed = await inTenant(ctx.orgA.id, async () => sweepRepository.claimMarker(id, 'reminderSentAt'));
+    expect(claimed).toBe(0);
+  });
+
   // ===========================================================================
   // Device registration
   // ===========================================================================

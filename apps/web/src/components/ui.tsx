@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { daysUntil, isPastDue } from '../lib/format';
 import { Link } from 'react-router-dom';
 import type { LeadPriority, LeadStatus } from '@leadflow/api-types';
 import { humanise, initials } from '../lib/format';
@@ -53,7 +54,8 @@ export function PageHeader({
   action,
 }: {
   title: string;
-  subtitle?: string | undefined;
+  /** Text, or text with an inline element (e.g. a scope note). */
+  subtitle?: ReactNode | undefined;
   action?: ReactNode | undefined;
 }): React.JSX.Element {
   return (
@@ -119,14 +121,12 @@ export function PriorityBadge({ priority }: { priority: LeadPriority }): React.J
 export function DueBadge({ iso, label }: { iso: string | null; label: string }): React.JSX.Element {
   if (!iso) return <span className="text-xs text-slate-400">{label}</span>;
 
-  const days = Math.round(
-    (new Date(new Date(iso).toDateString()).getTime() -
-      new Date(new Date().toDateString()).getTime()) /
-      86_400_000,
-  );
+  // Organization calendar, and the exact time: anything past due is red, as
+  // the Overdue queue counts it; later today is amber.
+  const days = daysUntil(iso) ?? 0;
 
   const tone =
-    days < 0
+    isPastDue(iso)
       ? 'bg-red-50 text-red-700 ring-red-600/20'
       : days === 0
         ? 'bg-amber-50 text-amber-800 ring-amber-600/20'

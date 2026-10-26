@@ -129,6 +129,8 @@ export const ACTIVITY_TYPES = [
   'FOLLOW_UP_RESCHEDULED',
   'LEAD_WON',
   'LEAD_LOST',
+  'DOCUMENT_ATTACHED',
+  'DOCUMENT_REMOVED',
 ] as const;
 export type ActivityType = (typeof ACTIVITY_TYPES)[number];
 

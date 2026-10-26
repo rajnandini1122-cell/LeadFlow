@@ -38,6 +38,7 @@ import { DeactivateLeadDto, ReactivateLeadDto } from './dto/lead-lifecycle.dto';
 import { FollowUpsService } from '../follow-ups/follow-ups.service';
 import { IntakeOperationsService } from '../integrations/intake-processing/intake-operations.service';
 import { CreateFollowUpDto, RecordAttemptDto } from '../follow-ups/dto/follow-ups.dto';
+import { RecordOutcomeDto } from '../follow-ups/dto/record-outcome.dto';
 import { Inject, forwardRef } from '@nestjs/common';
 
 /**
@@ -368,6 +369,33 @@ export class LeadsController {
     @IdempotencyKey() idempotencyKey: string | null,
   ) {
     return this.followUps.recordAttempt(id, dto, principal, idempotencyKey);
+  }
+
+  /**
+   * Logs the outcome of one call — reached or not — and everything it decides.
+   *
+   * The single action behind "Log outcome". The outcome's rule decides whether
+   * the follow-up being worked is completed (the call happened) or superseded
+   * by a retry (it did not), whether the stage advances, and which fields are
+   * accepted. Same weight as logging an attempt, so it rides on lead.update.
+   */
+  @Post(':id/outcomes')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSIONS.LEAD_UPDATE)
+  @ApiOperation({
+    summary: 'Log a call outcome',
+    description:
+      'Completes the worked follow-up when the customer was reached, or replaces it ' +
+      'with a retry when not; schedules exactly one next action unless the lead is ' +
+      'closed. Send an Idempotency-Key to make a double submission safe.',
+  })
+  async recordOutcome(
+    @Param('id', new ParseUUIDPipe({ version: '7' })) id: string,
+    @Body() dto: RecordOutcomeDto,
+    @CurrentUser() principal: TenantPrincipal,
+    @IdempotencyKey() idempotencyKey: string | null,
+  ) {
+    return this.followUps.recordOutcome(id, dto, principal, idempotencyKey);
   }
 
   @Get(':id/activities')

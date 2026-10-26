@@ -13,7 +13,7 @@ export function LoginPage(): React.JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  if (status === 'authenticated') return <Navigate to="/dashboard" replace />;
+  if (status === 'authenticated') return <Navigate to="/today" replace />;
 
   /**
    * Signs in, optionally naming which organization to enter.

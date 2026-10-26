@@ -42,6 +42,12 @@ const LEAD: LeadDetail = {
   deactivationReason: null,
   deactivatedBy: null,
   importBatchId: null,
+  market: 'DOMESTIC',
+  lastOutcome: null,
+  lastOutcomeAt: null,
+  lastContactedAt: null,
+  latestActivity: null,
+  nextAction: null,
 };
 
 const OPEN_FOLLOW_UP = {
@@ -109,52 +115,66 @@ beforeEach(() => {
   stubApi(LEAD);
 });
 
-describe('logging a failed attempt', () => {
+describe('logging a call outcome from the lead page', () => {
+  const openOutcome = async (): Promise<void> => {
+    await userEvent.click(await screen.findByRole('button', { name: 'Log call outcome' }));
+  };
+  const choose = async (label: RegExp): Promise<void> => {
+    await userEvent.click(within(screen.getByRole('dialog')).getByRole('radio', { name: label }));
+  };
+
+  it('does NOT log a call when the Call button is pressed', async () => {
+    const apiPost = vi.spyOn(apiClient, 'apiPost');
+    renderDetail();
+
+    /*
+     * THE DEFECT. Pressing Call posted "call completed" before anyone had
+     * answered, so every unanswered dial became a completed call. Dialling now
+     * opens the outcome dialog and records nothing until the agent says how it went.
+     */
+    await userEvent.click(await screen.findByRole('link', { name: 'Call' }));
+
+    expect(apiPost).not.toHaveBeenCalled();
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+
   it('opens a form rather than logging straight away', async () => {
     const apiPost = vi.spyOn(apiClient, 'apiPost');
     renderDetail();
 
-    await userEvent.click(await screen.findByRole('button', { name: 'No answer' }));
+    await openOutcome();
 
-    /*
-     * THE DEFECT. The button used to post immediately — one activity row, no
-     * retry, nothing in the queue. Nothing is sent until the rep says when to
-     * try again.
-     */
     expect(screen.getByRole('dialog')).toBeInTheDocument();
     expect(apiPost).not.toHaveBeenCalled();
   });
 
-  it('starts on the answer the button meant', async () => {
-    renderDetail();
-
-    await userEvent.click(await screen.findByRole('button', { name: 'Call back later' }));
-
-    expect(screen.getByLabelText(/What happened/)).toHaveValue('CALL_BACK_LATER');
-  });
-
-  it('sends the outcome, the note and the retry in one request', async () => {
+  it('sends a missed call as ONE outcome request, with the retry and the worked follow-up', async () => {
     const apiPost = vi.spyOn(apiClient, 'apiPost').mockResolvedValue({
+      leadId: LEAD.id,
+      outcome: 'NOT_ANSWERED',
+      leadStatus: 'QUALIFIED',
+      completedFollowUpId: null,
       followUp: OPEN_FOLLOW_UP,
       nextFollowUpAt: '2026-11-21T09:00:00.000Z',
-      leadStatus: 'QUALIFIED',
+      replayed: false,
     } as never);
     renderDetail();
 
-    await userEvent.click(await screen.findByRole('button', { name: 'No answer' }));
-    await userEvent.type(screen.getByLabelText(/^Note/), 'Rang twice, voicemail');
-    await userEvent.click(inDialog(/Log and reschedule/));
+    await openOutcome();
+    await choose(/^Not answered$/);
+    await userEvent.type(within(screen.getByRole('dialog')).getByLabelText(/^Note/), 'Rang twice, voicemail');
+    await userEvent.click(inDialog(/Save and schedule retry/));
 
-    // ONE call for one phone call. Three facts, one commit.
     await waitFor(() =>
       expect(apiPost).toHaveBeenCalledWith(
-        `/leads/${LEAD.id}/attempts`,
+        `/leads/${LEAD.id}/outcomes`,
         expect.objectContaining({
-          activityType: 'CALL_NOT_ANSWERED',
+          outcome: 'NOT_ANSWERED',
+          followUpId: OPEN_FOLLOW_UP.id,
           note: 'Rang twice, voicemail',
-          retryAt: expect.any(String) as unknown,
+          nextFollowUpAt: expect.any(String) as unknown,
         }),
-        // One Idempotency-Key per dialog opening, so a double click is ONE attempt.
+        // One Idempotency-Key per dialog opening, so a double click is ONE call.
         { headers: { 'Idempotency-Key': expect.stringMatching(/^[A-Za-z0-9_-]{8,100}$/) as unknown } },
       ),
     );
@@ -163,75 +183,85 @@ describe('logging a failed attempt', () => {
 
   it('offers one-click retry times', async () => {
     renderDetail();
-    await userEvent.click(await screen.findByRole('button', { name: 'No answer' }));
+    await openOutcome();
+    await choose(/^Not answered$/);
 
     const before = (screen.getByLabelText(/Try again/) as HTMLInputElement).value;
-    await userEvent.click(inDialog(/In 2 hours/));
+    await userEvent.click(inDialog(/Next week/));
 
-    // The common answers without typing a datetime, because this is the
-    // interaction a rep repeats all day.
+    // The common answers without typing a datetime — the interaction a rep repeats all day.
     expect((screen.getByLabelText(/Try again/) as HTMLInputElement).value).not.toBe(before);
   });
 
-  it('says the retry replaces the pending follow-up', async () => {
+  it('says the follow-up stays open and moves to the retry', async () => {
     renderDetail();
-    await userEvent.click(await screen.findByRole('button', { name: 'No answer' }));
+    await openOutcome();
+    await choose(/^Busy$/);
 
-    // So the rep is not left wondering whether they now have two.
-    expect(screen.getByText(/replaces the follow-up that is pending/)).toBeInTheDocument();
+    // So the rep is not left wondering whether they now have two, or none.
+    expect(screen.getByTestId('outcome-consequence')).toHaveTextContent(
+      /follow-up stays open and moves to the retry time/,
+    );
   });
 
-  it('states plainly that the stage does not move', async () => {
+  it('states plainly that a missed call does not move the stage', async () => {
     renderDetail();
-    await userEvent.click(await screen.findByRole('button', { name: 'No answer' }));
+    await openOutcome();
+    await choose(/^Not answered$/);
 
-    /*
-     * Said on the form, because the opposite is what a rep would assume — and
-     * somebody expecting "No answer" to advance the lead should find out here
-     * rather than from a wrong forecast three weeks later.
-     */
-    const dialog = within(screen.getByRole('dialog'));
-    expect(dialog.getByText(/An attempt nobody answered is not contact/)).toBeInTheDocument();
-    // Scoped: the lead's own status badge on the page behind also says
-    // "Qualified", which is correct for a user and ambiguous for a query.
-    expect(dialog.getByText('Qualified')).toBeInTheDocument();
+    expect(screen.getByTestId('outcome-consequence')).toHaveTextContent(
+      /Stage stays at Qualified — nobody was reached/,
+    );
   });
 
-  it('offers no status control at all', async () => {
+  it('offers no stage control for a missed call', async () => {
     renderDetail();
-    await userEvent.click(await screen.findByRole('button', { name: 'No answer' }));
+    await openOutcome();
+    await choose(/^Switched off/);
 
     const dialog = within(screen.getByRole('dialog'));
-    // Not merely unused — absent. The endpoint accepts none either.
-    expect(dialog.queryByLabelText(/status/i)).toBeNull();
-    expect(dialog.queryByText(/Mark the lead/i)).toBeNull();
+    // Not merely unused — absent. The server refuses it for this outcome too.
+    expect(dialog.queryByLabelText(/Mark the lead Qualified/i)).toBeNull();
+    expect(dialog.queryByText(/Close the lead as Lost/i)).toBeNull();
+  });
+
+  it('asks for the requirement only on an outcome that has one', async () => {
+    renderDetail();
+    await openOutcome();
+
+    await choose(/requirement available/);
+    expect(screen.getByLabelText('Quantity')).toBeInTheDocument();
+
+    await choose(/^Not answered$/);
+    expect(screen.queryByLabelText('Quantity')).toBeNull();
   });
 
   it('surfaces a refusal rather than closing silently', async () => {
     vi.spyOn(apiClient, 'apiPost').mockRejectedValue(
-      new apiClient.ApiError(
-        'VALIDATION_ERROR',
-        'This lead is closed. Reopen it before logging another attempt.',
-        400,
-      ),
+      new apiClient.ApiError('VALIDATION_ERROR', 'This lead is closed. Reopen it before logging another call.', 400),
     );
     renderDetail();
 
-    await userEvent.click(await screen.findByRole('button', { name: 'No answer' }));
-    await userEvent.click(inDialog(/Log and reschedule/));
+    await openOutcome();
+    await choose(/^Not answered$/);
+    await userEvent.click(inDialog(/Save and schedule retry/));
 
     expect(await screen.findByRole('alert')).toHaveTextContent(/This lead is closed/);
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
   });
 
   it('forgets the previous answer when reopened', async () => {
     renderDetail();
 
-    await userEvent.click(await screen.findByRole('button', { name: 'Call back later' }));
+    await openOutcome();
+    await choose(/^Busy$/);
     await userEvent.click(inDialog(/Cancel/));
-    await userEvent.click(screen.getByRole('button', { name: 'No answer' }));
+    await openOutcome();
 
-    // Reopening from a different button must not keep the first one's answer.
-    expect(screen.getByLabelText(/What happened/)).toHaveValue('CALL_NOT_ANSWERED');
+    // A new call starts blank: nothing is chosen, so nothing can be saved by accident.
+    const dialog = within(screen.getByRole('dialog'));
+    expect(dialog.getByRole('radio', { name: /^Busy$/ })).toHaveAttribute('aria-checked', 'false');
+    expect(dialog.getByRole('button', { name: /Choose what happened/ })).toBeDisabled();
   });
 });
 
