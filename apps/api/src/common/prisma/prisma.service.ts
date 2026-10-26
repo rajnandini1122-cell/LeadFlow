@@ -3,6 +3,7 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '../../generated/prisma/client';
 import { AppConfig } from '../config/config.module';
 import { TenantContextService } from '../tenancy/tenant-context.service';
+import { sessionTimezoneProblem } from './session-timezone';
 import { createTenantScopeExtension } from './tenant-scope.extension';
 
 /**
@@ -53,6 +54,34 @@ export class PrismaService implements OnModuleInit, OnModuleDestroy {
   async onModuleInit(): Promise<void> {
     await this.base.$connect();
     this.logger.log('Database connection established');
+    await this.checkSessionTimezone();
+  }
+
+  /**
+   * Logs an error when the session is not UTC — see session-timezone.ts.
+   * Deliberately never throws: refusing to start would turn a data-accuracy
+   * problem into an outage.
+   */
+  private async checkSessionTimezone(): Promise<void> {
+    try {
+      // Reads server settings only — no table, so there is no tenant data to scope.
+      // eslint-disable-next-line no-restricted-syntax
+      const [row] = await this.base.$queryRaw<
+        { timezone: string; winter: number; summer: number }[]
+      >`SELECT current_setting('TimeZone') AS timezone,
+               EXTRACT(TIMEZONE FROM TIMESTAMPTZ '2026-01-15 12:00:00+00')::int AS winter,
+               EXTRACT(TIMEZONE FROM TIMESTAMPTZ '2026-07-15 12:00:00+00')::int AS summer`;
+      const problem = row
+        ? sessionTimezoneProblem({
+            timezone: row.timezone,
+            winterOffsetSeconds: Number(row.winter),
+            summerOffsetSeconds: Number(row.summer),
+          })
+        : null;
+      if (problem) this.logger.error(problem);
+    } catch (error) {
+      this.logger.warn(`Could not read the database session time zone: ${(error as Error).message}`);
+    }
   }
 
   async onModuleDestroy(): Promise<void> {
