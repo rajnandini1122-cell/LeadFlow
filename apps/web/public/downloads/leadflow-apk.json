@@ -1,11 +1,14 @@
 {
   "fileName": "leadflow.apk",
   "url": "/downloads/leadflow.apk",
-  "variant": "debug",
+  "variant": "release",
   "applicationId": "app.leadflow.crm",
-  "versionName": "1.0",
-  "versionCode": 1,
-  "bytes": 5603356,
-  "sha256": "5ed45ed13593a5e9a44fdcc65c0713f97ae729ff50ba2e10fb7c24047bff2524",
-  "builtAt": "2026-08-22T13:38:09.506Z"
+  "versionName": "1.1.0",
+  "versionCode": 2,
+  "bytes": 4947769,
+  "sha256": "26f6714a73432794fdd6679aef26b64aaf6d4e3fe55782da20e5669fa6d4557a",
+  "builtAt": "2026-10-26T16:25:51.313Z",
+  "apiOrigin": "https://leadflow.cravionventures.com",
+  "sourceCommit": "9b7921b0193266571969a210e7f0cb2ed1f565a6",
+  "sourceDirty": false
 }
