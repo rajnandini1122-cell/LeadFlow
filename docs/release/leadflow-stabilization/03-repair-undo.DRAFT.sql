@@ -29,7 +29,7 @@ UPDATE follow_ups f
 UPDATE follow_ups f
    SET status = 'CANCELLED',
        cancelled_at = now(),
-       cancelled_reason = 'Data repair 2026-10-21 undone',
+       cancelled_reason = 'Data repair undone',
        updated_at = now()
   FROM repair_20261021_follow_ups r
  WHERE r.kind = 'created'
