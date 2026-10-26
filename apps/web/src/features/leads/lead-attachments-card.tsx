@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { Card, CardHeader, EmptyState, ErrorNotice, SkeletonRows } from '../../components/ui';
 import { useToast } from '../../components/toast';
+import { useBusyLabel } from '../../components/offline-banner';
 import { formatCurrency, formatDateTime, formatRelative } from '../../lib/format';
 import { newIdempotencyKey } from '../../lib/idempotency';
 import { useAuthedImage } from '../../lib/use-authed-image';
@@ -69,6 +70,7 @@ export function LeadAttachmentsCard({
 function UploadForm({ leadId }: { leadId: string }): React.JSX.Element {
   const toast = useToast();
   const upload = useUploadAttachment(leadId);
+  const attachingLabel = useBusyLabel('Attaching…');
   const fileInput = useRef<HTMLInputElement>(null);
 
   const [file, setFile] = useState<File | null>(null);
@@ -210,7 +212,7 @@ function UploadForm({ leadId }: { leadId: string }): React.JSX.Element {
           disabled={upload.isPending}
           className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:opacity-60"
         >
-          {upload.isPending ? 'Attaching…' : 'Attach file'}
+          {upload.isPending ? attachingLabel : 'Attach file'}
         </button>
       </div>
     </form>

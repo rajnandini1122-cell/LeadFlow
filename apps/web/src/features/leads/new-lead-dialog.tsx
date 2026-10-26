@@ -1,6 +1,6 @@
 import { useActiveProducts } from '../products/use-products';
 import { useAccountOptions, ACCOUNT_STATUS_PRESENTATION } from '../accounts/use-accounts';
-import { useEffect, useState, type FormEvent } from 'react';
+import { cloneElement, isValidElement, useEffect, useId, useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import type { OrganizationDetail } from '@leadflow/api-types';
@@ -554,13 +554,31 @@ function Field({
   error?: string | undefined;
   children: React.ReactNode;
 }): React.JSX.Element {
+  /*
+   * Ties the label to its control when the field holds a single native input.
+   * Without it, tapping "First name" on a phone focused nothing and a screen
+   * reader announced an unlabelled box.
+   */
+  const generated = useId();
+  let controlId: string | undefined;
+  let control: React.ReactNode = children;
+  if (
+    isValidElement<{ id?: string }>(children) &&
+    typeof children.type === 'string' &&
+    ['input', 'select', 'textarea'].includes(children.type)
+  ) {
+    const id = children.props.id ?? generated;
+    controlId = id;
+    control = cloneElement(children, { id });
+  }
+
   return (
     <div>
-      <label className="mb-1 block text-sm font-medium text-slate-700">
+      <label htmlFor={controlId} className="mb-1 block text-sm font-medium text-slate-700">
         {label}
         {required && <span className="ml-0.5 text-red-500">*</span>}
       </label>
-      {children}
+      {control}
       {error ? (
         <p className="mt-1 text-xs text-red-600">{error}</p>
       ) : hint ? (

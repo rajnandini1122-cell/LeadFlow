@@ -1,6 +1,7 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './app';
+import { installNativeShell } from './lib/native-shell';
 import './index.css';
 
 const container = document.getElementById('root');
@@ -18,6 +19,9 @@ if (!container) throw new Error('Root element #root not found');
  * contents when it renders.
  */
 document.documentElement.setAttribute('data-booted', '');
+
+// Android: hardware Back and refresh-on-resume. Nothing in a browser.
+void installNativeShell();
 
 createRoot(container).render(
   <StrictMode>

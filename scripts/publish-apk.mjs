@@ -37,6 +37,53 @@ if (!existsSync(apkPath)) {
 
 const outDir = join(root, 'apps/web/public/downloads');
 mkdirSync(outDir, { recursive: true });
+const manifestPath = join(outDir, 'leadflow-apk.json');
+
+/*
+ * Refuse to publish an APK that cannot work, or that cannot replace the one
+ * people already have. All of this is checked BEFORE anything is copied.
+ *
+ * The APK published on 2026-08-22 had no API address compiled in: it
+ * installed, opened and failed every request. `build-info.json` is written into
+ * the app's assets by `android:sync` and packaged into the APK; publishing now
+ * requires it, and requires it to name a reachable API.
+ */
+const refusals = [];
+const buildInfoPath = join(root, 'apps/web/android/app/src/main/assets/public/build-info.json');
+const buildInfo = existsSync(buildInfoPath) ? JSON.parse(readFileSync(buildInfoPath, 'utf8')) : null;
+
+if (!buildInfo) {
+  refusals.push('No build-info.json in the Android assets — build with `npm run android:build`.');
+} else {
+  if (!buildInfo.apiOrigin) refusals.push('The APK has no API address compiled in (VITE_API_BASE_URL was unset).');
+  const host = buildInfo.apiOrigin ? new URL(buildInfo.apiOrigin).hostname : '';
+  if (['localhost', '127.0.0.1', '0.0.0.0', '10.0.2.2', '[::1]'].includes(host) && !process.argv.includes('--allow-local')) {
+    refusals.push(`The APK points at ${host}, which only works on the build machine. Pass --allow-local if that is intended.`);
+  }
+  // The assets must predate the APK, or the APK was built from older assets.
+  if (Date.parse(buildInfo.builtAt) > statSync(apkPath).mtimeMs) {
+    refusals.push('build-info.json is newer than the APK — the APK was not built from these assets. Rebuild.');
+  }
+}
+
+// Android installs an update only if its versionCode is higher.
+const previous = existsSync(manifestPath) ? JSON.parse(readFileSync(manifestPath, 'utf8')) : null;
+const builtCode = existsSync(metadataPath)
+  ? (JSON.parse(readFileSync(metadataPath, 'utf8')).elements?.[0]?.versionCode ?? null)
+  : null;
+if (previous?.versionCode != null && (builtCode === null || builtCode <= previous.versionCode)) {
+  refusals.push(
+    `versionCode ${builtCode ?? 'unknown'} is not higher than the published ${previous.versionCode}; ` +
+      'phones would refuse it as an update. Bump versionCode in android/app/build.gradle.',
+  );
+}
+
+if (refusals.length > 0) {
+  console.error('\nPublish refused — nothing was copied:\n');
+  for (const refusal of refusals) console.error(`  • ${refusal}`);
+  console.error('');
+  process.exit(1);
+}
 
 const fileName = 'leadflow.apk';
 copyFileSync(apkPath, join(outDir, fileName));
@@ -67,13 +114,19 @@ const manifest = {
   bytes,
   sha256,
   builtAt: statSync(apkPath).mtime.toISOString(),
+  // Which source and which API this APK is — answerable for every APK now.
+  apiOrigin: buildInfo.apiOrigin,
+  sourceCommit: buildInfo.sourceCommit,
+  sourceDirty: buildInfo.sourceDirty,
 };
 
-writeFileSync(join(outDir, 'leadflow-apk.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
 console.log(`Published ${fileName}`);
 console.log(`  variant     ${variant}`);
 console.log(`  version     ${versionName ?? 'unknown'} (code ${versionCode ?? 'unknown'})`);
 console.log(`  size        ${(bytes / 1024 / 1024).toFixed(1)} MB`);
 console.log(`  sha256      ${sha256}`);
+console.log(`  api         ${buildInfo.apiOrigin}`);
+console.log(`  source      ${buildInfo.sourceCommit ?? 'unknown'}${buildInfo.sourceDirty ? ' (uncommitted changes)' : ''}`);
 console.log(`  served at   /downloads/${fileName}`);

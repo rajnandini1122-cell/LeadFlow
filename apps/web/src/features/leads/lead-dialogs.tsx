@@ -24,6 +24,7 @@ import {
 import { zonedDefault, zonedFromNow, zonedInputToIso, toZonedInput } from '../../lib/zoned-input';
 import { newIdempotencyKey } from '../../lib/idempotency';
 import { useToast } from '../../components/toast';
+import { useBusyLabel } from '../../components/offline-banner';
 
 const FOLLOW_UP_TYPES = ['CALL', 'WHATSAPP', 'EMAIL', 'MEETING', 'OTHER'];
 
@@ -63,6 +64,18 @@ export function Dialog({
 }): React.JSX.Element | null {
   const panel = useRef<HTMLDivElement>(null);
   const opener = useRef<Element | null>(null);
+  /*
+   * The latest onClose, read at the moment it is needed.
+   *
+   * The focus effect below used to depend on onClose itself. Callers pass it
+   * inline, so any re-render of the page behind the dialog — a queue refetching
+   * on its 30 s cycle, the app coming back from the dialer — re-ran the effect:
+   * focus jumped to the first button mid-sentence, and keystrokes were lost.
+   */
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  });
 
   useEffect(() => {
     if (!open) return;
@@ -79,7 +92,7 @@ export function Dialog({
 
     const onKey = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') {
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (event.key !== 'Tab') return;
@@ -104,7 +117,7 @@ export function Dialog({
       window.removeEventListener('keydown', onKey);
       (opener.current as HTMLElement | null)?.focus();
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
 
@@ -856,6 +869,7 @@ function DialogActions({
    */
   disabled?: boolean;
 }): React.JSX.Element {
+  const pendingLabel = useBusyLabel(busyLabel);
   return (
     <div className="flex justify-end gap-2 border-t border-slate-100 pt-4">
       <button type="button" onClick={onCancel} className="rounded-lg px-4 py-2 text-sm text-slate-600 transition hover:bg-slate-100">
@@ -867,7 +881,7 @@ function DialogActions({
         aria-busy={busy}
         className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:opacity-50"
       >
-        {busy ? busyLabel : label}
+        {busy ? pendingLabel : label}
       </button>
     </div>
   );

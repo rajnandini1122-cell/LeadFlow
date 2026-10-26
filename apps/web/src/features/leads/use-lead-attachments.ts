@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient, type UseQueryResult } from '@tan
 import type { LeadStatus } from '@leadflow/api-types';
 import { api, apiDelete, apiGet, apiPost } from '../../lib/api-client';
 import { idempotencyHeaders } from '../../lib/idempotency';
+import { saveFile } from '../../lib/save-file';
 import { useRefreshLeadData } from './use-lead-mutations';
 
 export const ATTACHMENT_KINDS = [
@@ -111,27 +112,17 @@ export function useRemoveAttachment(leadId: string) {
 }
 
 /**
- * Saves an attachment to the device.
+ * Saves an attachment to the device — or, in the Android app, opens the share
+ * sheet so the quotation can go straight to WhatsApp or Drive.
  *
  * Fetched by code because the endpoint needs the Authorization header, which
- * a plain link cannot carry; then handed to the browser as a download.
+ * a plain link cannot carry.
  */
 export async function downloadAttachment(attachment: LeadAttachment): Promise<void> {
   const response = await api.get<Blob>(attachmentDownloadPath(attachment.leadId, attachment.id), {
     responseType: 'blob',
   });
-  const url = URL.createObjectURL(response.data);
-  try {
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = attachment.fileName;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-  } finally {
-    // Let the click start the download before the URL goes away.
-    setTimeout(() => URL.revokeObjectURL(url), 1_000);
-  }
+  await saveFile(response.data, attachment.fileName);
 }
 
 export function formatFileSize(bytes: number): string {

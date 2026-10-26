@@ -9,6 +9,7 @@ import { UserAvatar } from './user-avatar';
 import { Copyright, LogoMark } from './brand';
 import { OrganizationSwitcher } from './organization-switcher';
 import { NotificationsMenu, type AttentionItem } from './notifications-menu';
+import { OfflineBanner } from './offline-banner';
 import { useNotifications } from '../features/notifications/use-notifications';
 import { formatApkSize, useApkManifest } from '../lib/use-apk-manifest';
 
@@ -411,6 +412,8 @@ export function AppShell(): React.JSX.Element {
             <NotificationsMenu items={attention} />
           </div>
         </header>
+
+        <OfflineBanner />
 
         <main className="px-4 py-6 lg:px-8">
           <Outlet />

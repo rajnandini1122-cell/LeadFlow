@@ -40,6 +40,17 @@ export class ApiError extends Error {
   }
 }
 
+export const REQUEST_TIMEOUT_MS = 30_000;
+/** A file upload on a slow mobile link legitimately takes longer. */
+export const UPLOAD_TIMEOUT_MS = 120_000;
+
+/** What the user reads when no response arrived at all. */
+export function networkFailureMessage(error: Pick<AxiosError, 'code'>): string {
+  return error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT'
+    ? 'The connection timed out. Check your network and try again.'
+    : 'No connection. Check your network and try again.';
+}
+
 export const api: AxiosInstance = axios.create({
   /*
    * Relative in a browser, absolute in the Android app.
@@ -51,6 +62,13 @@ export const api: AxiosInstance = axios.create({
   baseURL: apiBaseUrl(),
   withCredentials: true, // lets the browser send the httpOnly refresh cookie
   headers: { 'Content-Type': 'application/json' },
+  /*
+   * A request must END. Without a timeout, a save on a dead mobile connection
+   * waited forever: the button said "Saving…" with no error and no way to
+   * retry, even after the network came back (found on the emulator). Retrying
+   * is safe — outcome and upload forms keep one Idempotency-Key while open.
+   */
+  timeout: REQUEST_TIMEOUT_MS,
 });
 
 api.interceptors.request.use((config: InternalAxiosRequestConfig) => {
@@ -73,6 +91,20 @@ api.interceptors.request.use((config: InternalAxiosRequestConfig) => {
  */
 let refreshInFlight: Promise<string> | null = null;
 
+/**
+ * The body of every POST /auth/refresh: empty in a browser (the httpOnly
+ * cookie carries the token), the stored token in the app.
+ *
+ * Used by BOTH refresh paths. The cold-start restore in auth-context used to
+ * post an empty body, which in the app — no cookie — could only 401: every
+ * time Android killed the app in the background, the rep was signed out.
+ * Found on the emulator.
+ */
+export function refreshRequestBody(): { refreshToken?: string } {
+  const stored = readStoredRefreshToken();
+  return stored ? { refreshToken: stored } : {};
+}
+
 type RetriableConfig = InternalAxiosRequestConfig & { _retried?: boolean };
 
 async function refreshAccessToken(): Promise<string> {
@@ -86,11 +118,9 @@ async function refreshAccessToken(): Promise<string> {
    * would weaken CSRF protection for every browser user. So the app sends the
    * token in the body, which is the path the API has supported since Phase 1.
    */
-  const stored = readStoredRefreshToken();
-
   const response = await axios.post<ApiResponse<{ tokens: TokenPair; user: AuthenticatedUser }>>(
     `${apiBaseUrl()}/auth/refresh`,
-    stored ? { refreshToken: stored } : {},
+    refreshRequestBody(),
     { withCredentials: true },
   );
 
@@ -161,6 +191,9 @@ api.interceptors.response.use(
       );
     }
 
+    // No response at all: offline, dropped, or timed out. Say so plainly.
+    if (!error.response) throw new ApiError('INTERNAL_ERROR', networkFailureMessage(error), 0);
+
     throw new ApiError('INTERNAL_ERROR', error.message || 'Network error', status ?? 0);
   },
 );
@@ -226,7 +259,7 @@ function formDataConfig(body: unknown) {
   // `null` removes the header; axios and the browser then agree on
   // multipart/form-data with a generated boundary. (`undefined` also works at
   // runtime but is rejected under exactOptionalPropertyTypes.)
-  return isFormData ? { headers: { 'Content-Type': null } } : undefined;
+  return isFormData ? { headers: { 'Content-Type': null }, timeout: UPLOAD_TIMEOUT_MS } : undefined;
 }
 
 export async function apiPatch<T>(url: string, body?: unknown): Promise<T> {

@@ -12,6 +12,7 @@ import {
   apiGet,
   apiPost,
   mayHaveSession,
+  refreshRequestBody,
   setAccessToken,
   setSessionExpiredHandler,
 } from '../../lib/api-client';
@@ -118,6 +119,11 @@ interface AuthState {
    * lands at a password box.
    */
   signedOut: boolean;
+  /**
+   * True after a session ENDED on its own (refresh refused mid-use), until the
+   * next sign-in. Lets the login page say why the rep is there.
+   */
+  sessionExpired: boolean;
   can: (permission: Permission) => boolean;
 }
 
@@ -137,6 +143,7 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
   const [user, setUser] = useState<AuthenticatedUser | null>(null);
   const [status, setStatus] = useState<AuthState['status']>('loading');
   const [signedOut, setSignedOut] = useState(false);
+  const [sessionExpired, setSessionExpired] = useState(false);
   const [pendingOrganizations, setPendingOrganizations] = useState<OrganizationSummary[] | null>(
     null,
   );
@@ -173,12 +180,14 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
       }
 
       try {
-        const result = await apiPost<RefreshResult>('/auth/refresh');
+        // The stored token in the app (no cookie there); nothing in a browser.
+        const result = await apiPost<RefreshResult>('/auth/refresh', refreshRequestBody());
 
         if (cancelled) return;
         keepRefreshToken(result.tokens);
         enablePush();
         setSignedOut(false);
+      setSessionExpired(false);
         setAccessToken(result.tokens.accessToken);
         applyOrganizationFormatting(result.user);
         setUser(result.user);
@@ -200,6 +209,7 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
     setSessionExpiredHandler(() => {
       storeRefreshToken(null);
       setUser(null);
+      setSessionExpired(true);
       setStatus('anonymous');
     });
   }, []);
@@ -229,6 +239,7 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
 
       setPendingOrganizations(null);
       setSignedOut(false);
+      setSessionExpired(false);
       keepRefreshToken(result.tokens);
       enablePush();
       setAccessToken(result.tokens.accessToken);
@@ -269,6 +280,7 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
       // Reached only for a provider-verified identity (Google), where the
       // server did issue a session.
       setSignedOut(false);
+      setSessionExpired(false);
       keepRefreshToken(result.tokens);
       enablePush();
       setAccessToken(result.tokens.accessToken);
@@ -335,6 +347,7 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
 
       setPendingOrganizations(null);
       setSignedOut(false);
+      setSessionExpired(false);
       keepRefreshToken(result.tokens);
       enablePush();
       setAccessToken(result.tokens.accessToken);
@@ -358,6 +371,7 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
       });
 
       setSignedOut(false);
+      setSessionExpired(false);
       keepRefreshToken(result.tokens);
       enablePush();
       setAccessToken(result.tokens.accessToken);
@@ -426,6 +440,7 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
       logout,
       refreshUser,
       signedOut,
+      sessionExpired,
       can,
     }),
     [
@@ -440,6 +455,7 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
       logout,
       refreshUser,
       signedOut,
+      sessionExpired,
       can,
     ],
   );

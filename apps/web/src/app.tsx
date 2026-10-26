@@ -1,5 +1,5 @@
 import { Suspense, lazy } from 'react';
-import { BrowserRouter, Navigate, Outlet, Route, Routes } from 'react-router-dom';
+import { BrowserRouter, Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AuthProvider, useAuth } from './features/auth/auth-context';
 import { ScrollToTop } from './components/scroll-to-top';
@@ -12,6 +12,7 @@ import { ResetPasswordPage } from './features/auth/reset-password-page';
 import { HomePage } from './features/marketing/home-page';
 import { AppShell } from './components/app-shell';
 import { ApiError } from './lib/api-client';
+import { isNativeApp } from './lib/platform';
 import { ToastProvider } from './components/toast';
 
 const queryClient = new QueryClient({
@@ -93,6 +94,7 @@ function Restoring(): React.JSX.Element {
 /** Gate for authenticated routes. Real enforcement is server-side. */
 function RequireAuth(): React.JSX.Element {
   const { status, signedOut } = useAuth();
+  const location = useLocation();
 
   if (status === 'loading') return <Restoring />;
 
@@ -109,7 +111,12 @@ function RequireAuth(): React.JSX.Element {
    * agree on where a deliberate sign-out lands.
    */
   if (status === 'anonymous') {
-    return <Navigate to={signedOut ? '/' : '/login'} replace />;
+    // Remember where they were, so signing in again returns them there.
+    return signedOut ? (
+      <Navigate to="/" replace />
+    ) : (
+      <Navigate to="/login" replace state={{ from: `${location.pathname}${location.search}` }} />
+    );
   }
 
   return <Outlet />;
@@ -129,6 +136,9 @@ function Home(): React.JSX.Element {
 
   if (status === 'loading') return <Restoring />;
   if (status === 'authenticated') return <Navigate to="/today" replace />;
+  // The Android app is for people who already work here: no sales pitch (and
+  // no "Download the app" card inside the app) — straight to sign in.
+  if (isNativeApp()) return <Navigate to="/login" replace />;
 
   return <HomePage />;
 }

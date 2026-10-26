@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import {
   CALL_OUTCOME_RULES,
   type CallOutcome,
@@ -51,6 +51,59 @@ function suggestedNext(outcome: CallOutcome): string {
   return hours < 24 ? zonedFromNow(hours) : zonedDefault(Math.round(hours / 24), 11);
 }
 
+/**
+ * What the agent had entered, kept until it is saved or deliberately cancelled.
+ *
+ * A session can end mid-entry (expired sign-in on a phone left in a pocket).
+ * Signing in again used to mean the dialog — and everything typed into it —
+ * was gone. The draft lives in sessionStorage (this tab or app session only,
+ * never shared, cleared on save or Cancel) and comes back when the dialog is
+ * next opened for the same lead.
+ */
+interface OutcomeDraft {
+  outcome: CallOutcome;
+  note: string;
+  nextAt: string;
+  nextType: string;
+  close: boolean;
+  lostReason: string;
+  markQualified: boolean;
+  productInterest: string;
+  quantity: string;
+  expectedPurchaseDate: string;
+  savedAt: number;
+}
+
+const DRAFT_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+const draftKey = (leadId: string): string => `leadflow.outcome-draft.${leadId}`;
+
+export function readOutcomeDraft(leadId: string): OutcomeDraft | null {
+  try {
+    const raw = sessionStorage.getItem(draftKey(leadId));
+    if (!raw) return null;
+    const draft = JSON.parse(raw) as OutcomeDraft;
+    if (!draft.outcome || !(draft.outcome in CALL_OUTCOME_RULES)) return null;
+    if (Date.now() - draft.savedAt > DRAFT_MAX_AGE_MS) return null;
+    return draft;
+  } catch {
+    return null;
+  }
+}
+function writeOutcomeDraft(leadId: string, draft: OutcomeDraft): void {
+  try {
+    sessionStorage.setItem(draftKey(leadId), JSON.stringify(draft));
+  } catch {
+    // Storage unavailable: the form still works, it just cannot be restored.
+  }
+}
+export function clearOutcomeDraft(leadId: string): void {
+  try {
+    sessionStorage.removeItem(draftKey(leadId));
+  } catch {
+    // Nothing to clear.
+  }
+}
+
 export interface LogOutcomeLead {
   id: string;
   name: string;
@@ -86,15 +139,22 @@ export function LogOutcomeDialog({
   const [expectedPurchaseDate, setExpectedPurchaseDate] = useState('');
   const [note, setNote] = useState('');
   const [idempotencyKey, setIdempotencyKey] = useState(newIdempotencyKey);
+  const [restored, setRestored] = useState(false);
+  // A draft waiting to be applied once its outcome's defaults would run.
+  const pendingDraft = useRef<OutcomeDraft | null>(null);
 
-  // Fresh state per opening, including a fresh key: reopening is a new call.
+  // Fresh state per opening, including a fresh key: reopening is a new call —
+  // unless an unsaved entry for this lead is waiting, which comes back.
   useEffect(() => {
     if (!open) return;
-    setOutcome(initialOutcome ?? null);
-    setNote('');
-    setProductInterest('');
-    setQuantity('');
-    setExpectedPurchaseDate('');
+    const draft = initialOutcome ? null : readOutcomeDraft(lead.id);
+    pendingDraft.current = draft;
+    setRestored(draft !== null);
+    setOutcome(draft?.outcome ?? initialOutcome ?? null);
+    setNote(draft?.note ?? '');
+    setProductInterest(draft?.productInterest ?? '');
+    setQuantity(draft?.quantity ?? '');
+    setExpectedPurchaseDate(draft?.expectedPurchaseDate ?? '');
     setIdempotencyKey(newIdempotencyKey());
     record.reset();
     // Keyed on the lead's id, not the object: callers build it inline, and a
@@ -104,6 +164,16 @@ export function LogOutcomeDialog({
   // Each outcome brings its own sensible defaults.
   useEffect(() => {
     if (!outcome) return;
+    const draft = pendingDraft.current;
+    if (draft && draft.outcome === outcome) {
+      pendingDraft.current = null;
+      setNextAt(draft.nextAt);
+      setNextType(draft.nextType);
+      setClose(draft.close);
+      setLostReason(draft.lostReason);
+      setMarkQualified(draft.markQualified);
+      return;
+    }
     const rule = CALL_OUTCOME_RULES[outcome];
     setNextAt(suggestedNext(outcome));
     setNextType('CALL');
@@ -111,6 +181,26 @@ export function LogOutcomeDialog({
     setLostReason(rule.defaultLostReason ?? '');
     setMarkQualified(rule.suggestsQualified && BEFORE_QUALIFIED.includes(lead.status));
   }, [outcome, lead.id, lead.status]);
+
+  // Keep the entry as it is typed, so an interruption cannot lose it.
+  useEffect(() => {
+    if (!open || !outcome || pendingDraft.current) return;
+    writeOutcomeDraft(lead.id, {
+      outcome, note, nextAt, nextType, close, lostReason, markQualified,
+      productInterest, quantity, expectedPurchaseDate, savedAt: Date.now(),
+    });
+  }, [open, lead.id, outcome, note, nextAt, nextType, close, lostReason, markQualified, productInterest, quantity, expectedPurchaseDate]);
+
+  /**
+   * A deliberate close discards the entry; an interruption does not.
+   *
+   * Stable on purpose: the Dialog re-runs its focus effect when onClose
+   * changes, and a new function per keystroke moved focus out of the note.
+   */
+  const cancel = useCallback((): void => {
+    clearOutcomeDraft(lead.id);
+    onClose();
+  }, [lead.id, onClose]);
 
   if (!open) return null;
 
@@ -157,6 +247,7 @@ export function LogOutcomeDialog({
       },
       {
         onSuccess: (result) => {
+          clearOutcomeDraft(lead.id);
           toast.success(
             close
               ? `${rule.label}. ${lead.name} closed as Lost.`
@@ -186,8 +277,13 @@ export function LogOutcomeDialog({
   );
 
   return (
-    <Dialog open={open} title={`How did the call go? — ${lead.name}`} onClose={onClose}>
+    <Dialog open={open} title={`How did the call go? — ${lead.name}`} onClose={cancel}>
       <form onSubmit={submit} className="space-y-4 p-5" noValidate>
+        {restored && (
+          <p role="status" className="rounded-lg bg-sky-50 px-3 py-2 text-sm text-sky-900">
+            Restored what you entered before. Check it and save.
+          </p>
+        )}
         <fieldset>
           <legend className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-emerald-700">
             Reached them
@@ -301,7 +397,7 @@ export function LogOutcomeDialog({
         )}
 
         <div className="flex justify-end gap-2 border-t border-slate-100 pt-4">
-          <button type="button" onClick={onClose} className="rounded-lg px-4 py-2 text-sm text-slate-600 transition hover:bg-slate-100">
+          <button type="button" onClick={cancel} className="rounded-lg px-4 py-2 text-sm text-slate-600 transition hover:bg-slate-100">
             Cancel
           </button>
           <button
@@ -310,7 +406,10 @@ export function LogOutcomeDialog({
             aria-busy={record.isPending}
             className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:opacity-50"
           >
-            {record.isPending
+            {record.isPaused
+              ? // Offline: the save is held and sent on reconnect.
+                'Waiting for connection…'
+              : record.isPending
               ? 'Saving…'
               : !rule
                 ? 'Choose what happened'
