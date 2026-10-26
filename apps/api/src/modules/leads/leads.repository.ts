@@ -3,6 +3,7 @@ import type { LeadPriority, LeadStatus } from '@leadflow/api-types';
 import type { ActivityType } from '../../generated/prisma/enums';
 import { sideEffectsFor } from './lead-status';
 import { PrismaService, type PrismaTransaction } from '../../common/prisma/prisma.service';
+import { initialFollowUpStatus } from '../follow-ups/follow-ups.repository';
 import { TenantContextService } from '../../common/tenancy/tenant-context.service';
 import { AppConfig } from '../../common/config/config.module';
 
@@ -21,6 +22,58 @@ import { AppConfig } from '../../common/config/config.module';
  * Creating a lead is implemented; editing, reassignment and status-transition
  * rules remain Phase 2.
  */
+/**
+ * Everything the lead list and its total can be narrowed by.
+ *
+ * ONE type, used by `listWhere`, `list` and `countMatching` alike. They
+ * previously declared three different inline shapes and the two narrow ones
+ * omitted several real filters; the values still arrived through a spread, so
+ * the compiler never objected and the omission was invisible. A filter added to
+ * the page but not the count produces "showing 25 of 812" over a list of
+ * fourteen, which is the kind of wrong that gets reported as a data bug.
+ */
+/**
+ * What the creation entry on the timeline says.
+ *
+ * The duplicate clause is appended rather than replacing the source, because
+ * both facts matter to whoever reads the record later: where the lead came
+ * from, and that somebody deliberately allowed it alongside an existing one.
+ */
+function creationDescription(source?: string, duplicateOfLeadNumber?: string): string {
+  const base = source ? `Lead captured from ${source}` : 'Lead created';
+
+  return duplicateOfLeadNumber
+    ? `${base} — created deliberately alongside existing lead ${duplicateOfLeadNumber}`
+    : base;
+}
+
+export interface LeadListFilters {
+  status?: LeadStatus | undefined;
+  assignedToId?: string | undefined;
+  /** Only leads with no owner — the ones no follow-up queue can show. */
+  unassigned?: boolean | undefined;
+  productId?: string | undefined;
+  accountId?: string | undefined;
+  search?: string | undefined;
+  /**
+   * Owner restriction derived from the caller's permissions. Applied AFTER the
+   * caller-supplied assignedToId filter so a rep cannot widen their own
+   * visibility by passing someone else's id in the query string.
+   */
+  restrictToUserId?: string | undefined;
+  /** Every lead from one CSV import, for correcting a bad run. */
+  importBatchId?: string | undefined;
+  /**
+   * Which lifecycle states to include. Defaults to ACTIVE only.
+   *
+   * Not a boolean, because there are three useful answers and a boolean gives
+   * two: the working pipeline, the records somebody took out of service, and —
+   * for the import-correction screen — everything from one batch whatever state
+   * it is in.
+   */
+  lifecycle?: 'ACTIVE' | 'INACTIVE' | 'ALL' | undefined;
+}
+
 @Injectable()
 export class LeadsRepository {
   constructor(
@@ -35,17 +88,29 @@ export class LeadsRepository {
    * Extracted so the two cannot drift: a total computed from different filters
    * than the page is worse than no total at all.
    */
-  private listWhere(filters: {
-    status?: LeadStatus | undefined;
-    assignedToId?: string | undefined;
-    productId?: string | undefined;
-    accountId?: string | undefined;
-    search?: string | undefined;
-    restrictToUserId?: string | undefined;
-  }): Record<string, unknown> {
+  private listWhere(filters: LeadListFilters): Record<string, unknown> {
     const where: Record<string, unknown> = { deletedAt: null };
+
+    /*
+     * Deactivated leads are OUT of the default list, every count and every
+     * dashboard that goes through here.
+     *
+     * That is the whole point of the state: a wrongly imported lead must stop
+     * distorting the forecast. `INACTIVE` is the explicit filter that makes
+     * those rows reachable again, and `ALL` exists for the import-correction
+     * screen, which has to show what it is about to act on regardless of state.
+     */
+    if (filters.lifecycle === 'INACTIVE') where['deactivatedAt'] = { not: null };
+    else if (filters.lifecycle !== 'ALL') where['deactivatedAt'] = null;
+
+    if (filters.importBatchId) where['importBatchId'] = filters.importBatchId;
     if (filters.status) where['status'] = filters.status;
     if (filters.assignedToId) where['assignedToId'] = filters.assignedToId;
+    // An AND clause rather than `assignedToId = null`, so the owner restriction
+    // below INTERSECTS with it instead of overwriting it. A rep who may see only
+    // their own leads gets an empty list here — never their own leads mislabelled
+    // as unassigned.
+    if (filters.unassigned) where['AND'] = [{ assignedToId: null }];
     if (filters.productId) where['productId'] = filters.productId;
     if (filters.accountId) where['accountId'] = filters.accountId;
     if (filters.restrictToUserId) where['assignedToId'] = filters.restrictToUserId;
@@ -56,34 +121,21 @@ export class LeadsRepository {
         { lastName: { contains: filters.search, mode: 'insensitive' } },
         { companyName: { contains: filters.search, mode: 'insensitive' } },
         { mobile: { contains: filters.search } },
+        // Email was missing, so searching for a customer by the address they
+        // wrote from found nothing — on exactly the leads that have no phone
+        // number and are hardest to find any other way.
+        { email: { contains: filters.search, mode: 'insensitive' } },
       ];
     }
 
     return where;
   }
 
-  async countMatching(filters: {
-    status?: LeadStatus | undefined;
-    assignedToId?: string | undefined;
-    search?: string | undefined;
-    restrictToUserId?: string | undefined;
-  }): Promise<number> {
+  async countMatching(filters: LeadListFilters): Promise<number> {
     return this.prisma.client.lead.count({ where: this.listWhere(filters) });
   }
 
-  async list(filters: {
-    status?: LeadStatus | undefined;
-    assignedToId?: string | undefined;
-    search?: string | undefined;
-    cursor?: string | undefined;
-    limit: number;
-    /**
-     * Owner restriction derived from the caller's permissions. Applied AFTER
-     * the caller-supplied assignedToId filter so a rep cannot widen their own
-     * visibility by passing someone else's id in the query string.
-     */
-    restrictToUserId?: string | undefined;
-  }) {
+  async list(filters: LeadListFilters & { cursor?: string | undefined; limit: number }) {
     const where = this.listWhere(filters);
 
     // Fetch one extra row to determine hasMore without a second count query.
@@ -155,7 +207,82 @@ export class LeadsRepository {
    */
   async findActiveByMobile(mobile: string) {
     return this.prisma.client.lead.findFirst({
-      where: { mobile, deletedAt: null, status: { not: 'LOST' } },
+      where: {
+        mobile,
+        deletedAt: null,
+        // Mirrors `leads_org_mobile_uniq` / `leads_org_email_uniq`, which gained
+        // this clause in 20261013090000: a deactivated lead RELEASES its mobile
+        // and email so the corrected record can be created. Without it here the
+        // pre-check would refuse a lead the database would accept, blocking the
+        // deactivate-then-recreate workflow with its own guard.
+        deactivatedAt: null,
+        status: { not: 'LOST' },
+      },
+      select: {
+        id: true,
+        leadNumber: true,
+        firstName: true,
+        lastName: true,
+        companyName: true,
+        status: true,
+      },
+    });
+  }
+
+  /**
+   * Just enough of a lead to decide a lifecycle change.
+   *
+   * Deliberately NOT `findById`, which applies the assignee visibility filter
+   * and returns the whole detail projection. Deactivation is an administrative
+   * correction aimed at records that may be assigned to somebody else or to
+   * nobody, so a visibility filter here would make the feature unable to reach
+   * the rows it exists for. Tenant isolation is untouched — this read runs in
+   * the tenant context like every other.
+   *
+   * Soft-deleted rows are excluded: an archived lead is already out of service
+   * and is not the thing deactivation is for.
+   */
+  async findLifecycleState(id: string) {
+    return this.prisma.client.lead.findFirst({
+      where: { id, deletedAt: null },
+      select: {
+        id: true,
+        leadNumber: true,
+        status: true,
+        mobile: true,
+        email: true,
+        deactivatedAt: true,
+        deactivationReason: true,
+      },
+    });
+  }
+
+  /**
+   * The same question, asked of the email address.
+   *
+   * Secondary to mobile but a real duplicate key since
+   * `leads_org_email_uniq` — an enquiry carrying an address and no number used
+   * to have no key at all. Case-insensitive, because that index is keyed on
+   * lower(email) and stored addresses are not uniformly normalised: comparing
+   * raw strings would miss the duplicate it exists to catch.
+   *
+   * Acknowledged duplicates are excluded here as well as in the predicate, so
+   * a deliberately created second lead is not reported as an accident.
+   */
+  async findActiveByEmail(email: string) {
+    return this.prisma.client.lead.findFirst({
+      where: {
+        email: { equals: email, mode: 'insensitive' },
+        deletedAt: null,
+        // Mirrors `leads_org_mobile_uniq` / `leads_org_email_uniq`, which gained
+        // this clause in 20261013090000: a deactivated lead RELEASES its mobile
+        // and email so the corrected record can be created. Without it here the
+        // pre-check would refuse a lead the database would accept, blocking the
+        // deactivate-then-recreate workflow with its own guard.
+        deactivatedAt: null,
+        status: { not: 'LOST' },
+        duplicateAcknowledgedAt: null,
+      },
       select: {
         id: true,
         leadNumber: true,
@@ -273,6 +400,19 @@ export class LeadsRepository {
     email?: string | undefined;
     companyName?: string | undefined;
     city?: string | undefined;
+    /**
+     * The rest of the postal address.
+     *
+     * `city` above predates these and is unchanged. Together they are what a
+     * CSV with an "Address Line 1" column can finally be mapped onto — before
+     * this the importer had nowhere to put it, so it was dropped.
+     */
+    addressLine1?: string | undefined;
+    addressLine2?: string | undefined;
+    state?: string | undefined;
+    postalCode?: string | undefined;
+    /** ISO 3166-1 alpha-2. Upper-cased by the caller. */
+    country?: string | undefined;
     source?: string | undefined;
     productId?: string | undefined;
     /** Verified to belong to this tenant by the service before it reaches here. */
@@ -292,6 +432,23 @@ export class LeadsRepository {
      */
     duplicateAcknowledged?: boolean | undefined;
     /**
+     * What this lead knowingly duplicates, e.g. "LD-00042".
+     *
+     * Written onto the creation activity, because `duplicate_acknowledged_at`
+     * records only THAT a second lead was allowed — not which record it is a
+     * second copy of, which is the first thing anybody reviewing two live leads
+     * for one customer asks. The timeline is append-only and lives on the lead
+     * itself, so the answer survives the import batch row being deleted.
+     */
+    duplicateOfLeadNumber?: string | undefined;
+    /**
+     * The import run that created this lead, when one did.
+     *
+     * Carried on the row so "every lead from that badly mapped file" is one
+     * query rather than a manual hunt. Null for a lead a person typed in.
+     */
+    importBatchId?: string | undefined;
+    /**
      * Null for a SYSTEM write.
      *
      * `created_by` and `updated_by` are nullable columns with no foreign key,
@@ -301,6 +458,14 @@ export class LeadsRepository {
      * not resolve to a row, and the insert would fail.
      */
     actorId: string | null;
+    /**
+     * What to call the first follow-up. Defaults to 'First contact'.
+     *
+     * The website pipeline passes its own wording because the row means
+     * something more specific there — a first RESPONSE, against an SLA
+     * measured from when the enquiry arrived.
+     */
+    followUpTitle?: string | undefined;
     /** Supplied when this write belongs to a caller's larger transaction. */
     tx?: PrismaTransaction | undefined;
   }) {
@@ -328,6 +493,11 @@ export class LeadsRepository {
           email: input.email ?? null,
           companyName: input.companyName ?? null,
           city: input.city ?? null,
+          addressLine1: input.addressLine1 ?? null,
+          addressLine2: input.addressLine2 ?? null,
+          state: input.state ?? null,
+          postalCode: input.postalCode ?? null,
+          country: input.country ?? null,
           source: input.source ?? null,
           productId: input.productId ?? null,
           accountId: input.accountId ?? null,
@@ -340,6 +510,7 @@ export class LeadsRepository {
           nextFollowUpAt: input.nextFollowUpAt,
           contactId: input.contactId ?? null,
           duplicateAcknowledgedAt: input.duplicateAcknowledged ? new Date() : null,
+          importBatchId: input.importBatchId ?? null,
           lastActivityAt: new Date(),
           createdBy: input.actorId,
           updatedBy: input.actorId,
@@ -352,7 +523,7 @@ export class LeadsRepository {
           organizationId,
           leadId: created.id,
           activityType: 'LEAD_CREATED',
-          description: input.source ? `Lead captured from ${input.source}` : 'Lead created',
+          description: creationDescription(input.source, input.duplicateOfLeadNumber),
           performedById: input.actorId,
         },
       });
@@ -367,6 +538,48 @@ export class LeadsRepository {
             performedById: input.actorId,
           },
         });
+
+        /*
+         * The next action becomes a REAL follow-up, in this same transaction.
+         *
+         * Before this, create set `next_follow_up_at` and nothing else — so
+         * every manually created and every imported lead showed a next-action
+         * date beside "Follow-ups: 0 open", and the work never appeared in
+         * anybody's queue. The column is a MIRROR of the earliest open
+         * follow-up; a lead promising an action with no row behind it is the
+         * inconsistency this model exists to rule out.
+         *
+         * Guarded by `assignedToId` because `follow_ups.assigned_user_id` is
+         * NOT NULL with a foreign key: an unassigned follow-up cannot exist.
+         * For an unassigned lead the mirror alone is the honest answer — "this
+         * needs doing by then, and nobody owns it yet" — and inventing an
+         * assignee would hand the work to whoever imported a file.
+         *
+         * The intake pipeline already did this correctly and is unchanged;
+         * these are the three paths that did not.
+         */
+        if (input.nextFollowUpAt) {
+          await tx.followUp.create({
+            data: {
+              organizationId,
+              leadId: created.id,
+              assignedUserId: input.assignedToId,
+              scheduledAt: input.nextFollowUpAt,
+              type: 'CALL',
+              /*
+               * DUE from the first instant when the date has already passed.
+               *
+               * The website pipeline measures its SLA from when the enquiry
+               * ARRIVED, so a sweep that ran late converts with a schedule in
+               * the past — and a row left UPCOMING would appear in neither the
+               * due nor the overdue view.
+               */
+              status: initialFollowUpStatus(input.nextFollowUpAt),
+              title: input.followUpTitle ?? 'First contact',
+              createdBy: input.actorId,
+            },
+          });
+        }
       }
 
       // Re-read through findById so the caller always gets the same shape as
@@ -511,10 +724,12 @@ export class LeadsRepository {
     description: string;
     actorId: string;
     cancelReason?: string | undefined;
+    /** Supplied when this is one step of a caller's larger atomic operation. */
+    tx?: PrismaTransaction | undefined;
   }): Promise<{ leadsChanged: number; followUpsCancelled: number }> {
     const organizationId = this.tenantContext.requireOrganizationId();
 
-    return this.prisma.client.$transaction(async (tx) => {
+    const run = async (tx: PrismaTransaction) => {
       const updated = await tx.lead.updateMany({
         where: { id: input.leadId, deletedAt: null },
         data: input.data,
@@ -602,7 +817,9 @@ export class LeadsRepository {
       });
 
       return { leadsChanged: updated.count, followUpsCancelled };
-    });
+    };
+
+    return input.tx ? run(input.tx) : this.prisma.client.$transaction(run);
   }
 
   async applyUpdate(leadId: string, data: Record<string, unknown>): Promise<number> {
@@ -611,6 +828,115 @@ export class LeadsRepository {
       data,
     });
     return result.count;
+  }
+
+  /**
+   * Changes the owner AND moves the owed work with the lead, in one commit.
+   *
+   * THE DEFECT THIS FIXES. Reassignment set `assigned_to` and nothing else, so
+   * the open follow-up kept the previous owner. The new owner's queue never
+   * showed the lead, and the previous owner kept being reminded about a lead
+   * their visibility no longer let them open. An unassigned lead — which can
+   * only carry the date mirror, because a follow-up row needs an owner — stayed
+   * out of every queue for good even after somebody was given it.
+   *
+   * WHAT MOVES. Open follow-ups owed by the PREVIOUS owner move to the new one.
+   * A follow-up a manager scheduled for themselves on this lead stays theirs —
+   * that is a commitment the manager made, not the lead's owner.
+   *
+   * WHAT IS CREATED. When nothing is open afterwards but the lead is live and
+   * carries a next-action date, a follow-up is created for the new owner AT
+   * THAT DATE. No date is invented: it is the one the lead already promised,
+   * finally given a row so it reaches a queue.
+   *
+   * The lead's row is updated first, which takes its row lock — the same lock
+   * every follow-up write holds — so a "no answer" logged mid-reassignment
+   * cannot be handed to the wrong person.
+   */
+  async reassign(input: {
+    leadId: string;
+    previousOwnerId: string | null;
+    newOwnerId: string;
+    actorId: string;
+    activityType: ActivityType;
+    description: string;
+  }): Promise<{ leadsChanged: number; followUpsMoved: number; followUpCreated: boolean }> {
+    const organizationId = this.tenantContext.requireOrganizationId();
+
+    return this.prisma.client.$transaction(async (tx) => {
+      const updated = await tx.lead.updateMany({
+        where: { id: input.leadId, deletedAt: null },
+        data: {
+          assignedToId: input.newOwnerId,
+          assignedById: input.actorId,
+          updatedBy: input.actorId,
+        },
+      });
+      if (updated.count === 0) return { leadsChanged: 0, followUpsMoved: 0, followUpCreated: false };
+
+      const moved = input.previousOwnerId
+        ? await tx.followUp.updateMany({
+            where: {
+              leadId: input.leadId,
+              assignedUserId: input.previousOwnerId,
+              status: { in: ['UPCOMING', 'DUE', 'OVERDUE'] },
+            },
+            data: { assignedUserId: input.newOwnerId },
+          })
+        : { count: 0 };
+
+      const lead = await tx.lead.findFirst({
+        where: { id: input.leadId },
+        select: { status: true, deactivatedAt: true, nextFollowUpAt: true },
+      });
+      const live =
+        lead !== null &&
+        lead.deactivatedAt === null &&
+        lead.status !== 'WON' &&
+        lead.status !== 'LOST';
+
+      let followUpCreated = false;
+      if (live && lead.nextFollowUpAt) {
+        const open = await tx.followUp.count({
+          where: { leadId: input.leadId, status: { in: ['UPCOMING', 'DUE', 'OVERDUE'] } },
+        });
+
+        if (open === 0) {
+          await tx.followUp.create({
+            data: {
+              organizationId,
+              leadId: input.leadId,
+              assignedUserId: input.newOwnerId,
+              scheduledAt: lead.nextFollowUpAt,
+              type: 'CALL',
+              status: initialFollowUpStatus(lead.nextFollowUpAt),
+              title: 'First contact',
+              createdBy: input.actorId,
+            },
+          });
+          followUpCreated = true;
+        }
+      }
+
+      const description =
+        moved.count > 0
+          ? `${input.description} — ${moved.count} open follow-${moved.count === 1 ? 'up' : 'ups'} handed over`
+          : followUpCreated
+            ? `${input.description} — next action added to the new owner's queue`
+            : input.description;
+
+      await tx.leadActivity.create({
+        data: {
+          organizationId,
+          leadId: input.leadId,
+          activityType: input.activityType,
+          description,
+          performedById: input.actorId,
+        },
+      });
+
+      return { leadsChanged: updated.count, followUpsMoved: moved.count, followUpCreated };
+    });
   }
 
   /** Appends one timeline entry. The timeline is append-only by design. */
@@ -648,6 +974,7 @@ export class LeadsRepository {
     lostReason?: string | undefined;
     wonValue?: number | undefined;
     actorId: string;
+    tx?: PrismaTransaction | undefined;
   }): Promise<void> {
     const effects = sideEffectsFor(input.status, {
       lostReason: input.lostReason,
@@ -679,6 +1006,7 @@ export class LeadsRepository {
           : `Status changed to ${input.status}`,
       actorId: input.actorId,
       cancelReason: `Lead marked ${input.status}`,
+      tx: input.tx,
     });
   }
 

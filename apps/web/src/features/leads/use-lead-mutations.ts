@@ -1,17 +1,30 @@
 import { useMutation, useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query';
 import type { LeadPriority, LeadStatus, Paginated } from '@leadflow/api-types';
 import { api, apiGet, apiPatch, apiPost } from '../../lib/api-client';
+import { idempotencyHeaders } from '../../lib/idempotency';
 import type { LeadActivity, LeadSummary } from './use-leads';
 
+/**
+ * One follow-up, as the API returns it.
+ *
+ * A follow-up hangs off a LEAD or a CUSTOMER ACCOUNT, never both. The lead
+ * fields are null for an account follow-up — the API says so explicitly — but
+ * this type used to declare them always present, so the queue rendered a
+ * customer follow-up as a link to `/leads/null` with no name. They are typed
+ * as the API sends them now, so the compiler makes every screen handle both.
+ */
 export interface FollowUp {
   id: string;
-  leadId: string;
-  leadNumber: string;
-  leadName: string;
+  leadId: string | null;
+  leadNumber: string | null;
+  leadName: string | null;
+  /** The customer, for a follow-up owed on the relationship rather than a deal. */
+  accountId: string | null;
+  accountName: string | null;
   companyName: string | null;
   mobile: string | null;
-  leadStatus: string;
-  leadPriority: string;
+  leadStatus: string | null;
+  leadPriority: string | null;
   estimatedValue: string | null;
   scheduledAt: string;
   type: string;
@@ -153,6 +166,79 @@ export function useArchiveLead(leadId: string) {
   });
 }
 
+/**
+ * Takes a lead out of the live pipeline, reversibly.
+ *
+ * A different thing from `useArchiveLead` above, and the difference matters:
+ * archiving records no reason and cannot be undone, while this records who,
+ * when and why — and can be reversed. A wrongly imported lead needs the second.
+ */
+export function useDeactivateLead(leadId: string) {
+  const refresh = useRefreshLeadData();
+
+  return useMutation({
+    mutationFn: (input: { reason: string }) =>
+      apiPost<LeadSummary>(`/leads/${leadId}/deactivate`, input),
+    onSuccess: () => refresh(leadId),
+  });
+}
+
+/**
+ * Puts it back.
+ *
+ * CAN FAIL with 409: deactivation released this lead's mobile and email, so
+ * another active lead may have taken them in the meantime. The error names the
+ * lead that holds the identifier, so the caller should surface its message
+ * rather than a generic failure.
+ */
+export function useReactivateLead(leadId: string) {
+  const refresh = useRefreshLeadData();
+
+  return useMutation({
+    mutationFn: (input: { nextFollowUpAt?: string; reason?: string }) =>
+      apiPost<LeadSummary>(`/leads/${leadId}/reactivate`, input),
+    onSuccess: () => refresh(leadId),
+  });
+}
+
+/**
+ * "I tried and could not reach them."
+ *
+ * One request for the three facts about one failed call — what happened, the
+ * note, and when to try again — so they commit together. Previously the lead
+ * screen needed three: log the activity, type a note, open the reschedule
+ * dialog. That produced three timeline entries for one call, and a rep who
+ * stopped after the first left the retry unscheduled.
+ *
+ * Deliberately NOT useCompleteFollowUp: an unanswered call is an attempt, not
+ * an outcome, so the work is still owed and the follow-up must stay open.
+ */
+export function useRecordAttempt(leadId: string) {
+  const refresh = useRefreshLeadData();
+
+  return useMutation({
+    mutationFn: ({
+      idempotencyKey,
+      ...input
+    }: {
+      activityType: string;
+      note?: string;
+      retryAt: string;
+      type?: string;
+      /** One per dialog opening, so a double click is ONE attempt. */
+      idempotencyKey?: string;
+    }) =>
+      apiPost<{
+        followUp: FollowUp | null;
+        nextFollowUpAt: string | null;
+        leadStatus: LeadStatus;
+      }>(`/leads/${leadId}/attempts`, input, idempotencyHeaders(idempotencyKey)),
+    // Every queue the attempt touches: the lead, its timeline, its follow-ups,
+    // the follow-up buckets and the dashboard counts.
+    onSuccess: () => refresh(leadId),
+  });
+}
+
 export function useLogActivity(leadId: string) {
   const refresh = useRefreshLeadData();
 
@@ -179,13 +265,17 @@ export function useCreateFollowUp(leadId: string) {
   const refresh = useRefreshLeadData();
 
   return useMutation({
-    mutationFn: (input: {
+    mutationFn: ({
+      idempotencyKey,
+      ...input
+    }: {
       scheduledAt: string;
       type?: string;
       title?: string;
       notes?: string;
       assignedUserId?: string;
-    }) => apiPost<FollowUp>(`/leads/${leadId}/follow-ups`, input),
+      idempotencyKey?: string;
+    }) => apiPost<FollowUp>(`/leads/${leadId}/follow-ups`, input, idempotencyHeaders(idempotencyKey)),
     onSuccess: () => refresh(leadId),
   });
 }
@@ -203,19 +293,16 @@ export function useCompleteFollowUp() {
   const refresh = useRefreshLeadData();
 
   return useMutation({
-    /*
-     * `leadId` is taken OUT of the body. It is here only so onSuccess knows
-     * which lead's caches to refresh. The API whitelists DTO fields and refuses
-     * anything else, so sending it rejected every completion from a dialog.
-     */
     mutationFn: ({
       id,
+      idempotencyKey,
       leadId: _leadId,
       ...input
-    }: CompleteFollowUpInput & { id: string; leadId?: string }) =>
+    }: CompleteFollowUpInput & { id: string; leadId?: string; idempotencyKey?: string }) =>
       apiPost<{ followUp: FollowUp; nextFollowUpAt: string | null }>(
         `/follow-ups/${id}/complete`,
         input,
+        idempotencyHeaders(idempotencyKey),
       ),
     onSuccess: (_result, variables) => refresh(variables.leadId),
   });
@@ -225,9 +312,9 @@ export function useRescheduleFollowUp() {
   const refresh = useRefreshLeadData();
 
   return useMutation({
-    // `leadId` stays client-side for the same reason as in useCompleteFollowUp.
     mutationFn: ({
       id,
+      idempotencyKey,
       leadId: _leadId,
       ...input
     }: {
@@ -236,7 +323,8 @@ export function useRescheduleFollowUp() {
       scheduledAt: string;
       type?: string;
       reason?: string;
-    }) => apiPost<FollowUp>(`/follow-ups/${id}/reschedule`, input),
+      idempotencyKey?: string;
+    }) => apiPost<FollowUp>(`/follow-ups/${id}/reschedule`, input, idempotencyHeaders(idempotencyKey)),
     onSuccess: (_result, variables) => refresh(variables.leadId),
   });
 }

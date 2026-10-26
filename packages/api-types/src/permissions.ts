@@ -13,6 +13,19 @@ export const PERMISSIONS = {
   LEAD_CREATE: 'lead.create',
   LEAD_UPDATE: 'lead.update',
   LEAD_DELETE: 'lead.delete',
+  /**
+   * Take a lead out of the live pipeline, and put it back.
+   *
+   * SEPARATE from `lead.delete`, which archives irreversibly and is the heavier
+   * right. Deactivation is the correction tool — it is what a bad CSV import
+   * needs — and tying it to archival would mean either handing out irreversible
+   * deletion to get it, or leaving nobody able to clean up an import.
+   *
+   * Not granted to SALES_REP: the records that need it are typically assigned
+   * to somebody else or to nobody, so the operation cannot be visibility-scoped
+   * and a rep holding it could take another rep's lead out of the pipeline.
+   */
+  LEAD_DEACTIVATE: 'lead.deactivate',
   LEAD_ASSIGN: 'lead.assign',
 
   ACCOUNT_VIEW: 'account.view',
@@ -213,6 +226,16 @@ const ADMIN_PERMISSIONS: Permission[] = [
   ...MANAGER_PERMISSIONS,
   PERMISSIONS.LEAD_VIEW_ALL,
   PERMISSIONS.LEAD_DELETE,
+  /*
+   * Paired with LEAD_IMPORT below, and that pairing is the point.
+   *
+   * Whoever can import two thousand leads from a spreadsheet is who needs to be
+   * able to take the wrong ones back out. Granting the import without the
+   * correction is what left bad rows sitting in the pipeline distorting every
+   * forecast, because the only alternatives were irreversible archival or
+   * marking them LOST, which poisons loss analysis.
+   */
+  PERMISSIONS.LEAD_DEACTIVATE,
   PERMISSIONS.CONTACT_MERGE,
   PERMISSIONS.ACCOUNT_MERGE,
   PERMISSIONS.LEAD_IMPORT,

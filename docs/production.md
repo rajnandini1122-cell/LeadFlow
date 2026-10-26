@@ -473,7 +473,148 @@ identity, lifecycle and counts — never a customer's leads, contacts or
 conversations. Every cross-tenant action is audited against the **target**
 organization, so a customer can see that it happened.
 
-### 3.3 Creating the first customer organization
+### 3.3 Preflight before the email duplicate guard
+
+Migration `20261002090000_lead_email_duplicate_guard` adds **one index** and
+changes **no data**:
+
+```sql
+CREATE UNIQUE INDEX "leads_org_email_uniq"
+  ON "leads" ("organization_id", lower("email"))
+  WHERE "email" IS NOT NULL
+    AND "deleted_at" IS NULL
+    AND "status" <> 'LOST'
+    AND "duplicate_acknowledged_at" IS NULL;
+```
+
+**It can fail, and that is deliberate.** If a tenant already holds two active,
+unacknowledged leads sharing an email address, PostgreSQL refuses to build the
+index and the migration aborts with nothing applied. Forcing it past real
+duplicates would mean choosing which customer record to break, and that is a
+person's decision, not a migration's.
+
+So run this **read-only** query first. It writes nothing, locks nothing, and is
+safe against production at any time:
+
+```sql
+-- Groups that would refuse the index. An empty result means it will build.
+SELECT organization_id,
+       lower(email)                     AS email_key,
+       count(*)                         AS active_leads,
+       array_agg(lead_number ORDER BY created_at) AS lead_numbers
+FROM leads
+WHERE email IS NOT NULL
+  AND deleted_at IS NULL
+  AND status <> 'LOST'
+  AND duplicate_acknowledged_at IS NULL
+GROUP BY organization_id, lower(email)
+HAVING count(*) > 1
+ORDER BY count(*) DESC;
+```
+
+> **Note the predicate, if you re-run this later.** The query above matches
+> `leads_org_email_uniq` as §3.3 creates it. §3.4 then adds
+> `AND deactivated_at IS NULL` to that index, because a deactivated lead
+> releases its identifiers. The query deliberately does **not** mention
+> `deactivated_at` — that column does not exist yet when the preflight is run,
+> and no row can be deactivated before §3.4 applies. If you re-run it on a
+> database where §3.4 is already applied, add `AND deactivated_at IS NULL` or it
+> will over-report: it would count pairs the live index now permits.
+
+**An empty result is the go signal.** Deploy normally.
+
+**Rows mean stop and resolve them through the product**, not through SQL. For
+each group, somebody decides which it is and acts in the CRM:
+
+| What it actually is | What to do |
+|---|---|
+| The same customer, written in twice | Close the later lead, or merge the contacts |
+| Deliberately two pieces of work | Mark one as an acknowledged duplicate — that is exactly what the exclusion in the index is for |
+| A typo putting one address on two customers | Correct the wrong address |
+| An opportunity that is over | Set it to `LOST`, which releases the address |
+
+Then re-run the query. When it returns nothing, deploy.
+
+Note the index keys on **`lower(email)`**, which is the one deliberate
+difference from `leads_org_mobile_uniq`. Historical addresses are not stored
+with consistent casing — the website intake has always lowercased, the manual
+create and update paths did not until this change — so an index on the raw
+column would treat `Dana@Example.test` and `dana@example.test` as two
+customers, which is precisely the duplicate it exists to catch. An expression
+index gets that right with **no backfill and no rewritten rows**.
+
+### 3.4 The address, deactivation and import-batch migration
+
+`20261013090000_lead_address_deactivation_import_batches`
+
+**No preflight. This one cannot fail on existing data**, and the difference from
+§3.3 is worth being precise about, because the two ship together.
+
+| | §3.3 email index | §3.4 this migration |
+|---|---|---|
+| Narrows a constraint | **Yes** — can be refused by existing duplicates | No |
+| Preflight required | **Yes** | No |
+| Changes any row | No | No |
+
+Everything here either adds a nullable column with no default, widens a CHECK,
+or adds an exclusion clause to a partial index — and a widened constraint
+accepts a strict superset of the rows accepted today. Two tables are created.
+
+**What it does, in the order it matters:**
+
+1. **Five address columns on `leads`** — `address_line1`, `address_line2`,
+   `state`, `postal_code`, `country`. `city` already existed and is untouched.
+   Until this, `leads` could hold only `city`, so a CSV with an address column
+   had nowhere to put it.
+2. **`deactivated_at` / `deactivation_reason` / `deactivated_by`** — a third
+   lifecycle, deliberately NOT a fourth meaning for `status = LOST` or
+   `deleted_at`. Reversible, reasoned and attributed.
+3. **`leads_active_requires_followup` widened** to exempt deactivated rows.
+   Without this, deactivating a lead and clearing its follow-up would violate
+   the constraint.
+4. **Both partial unique indexes rebuilt** with `AND deactivated_at IS NULL`.
+   A deactivated lead **releases** its mobile and email, which is the point: the
+   whole purpose of deactivating a wrongly imported lead is to create the right
+   one with the same details.
+5. **`lead_import_batches` and `lead_import_mapping_templates`**, plus
+   `leads.import_batch_id` with a composite tenant-carrying foreign key and
+   `ON DELETE SET NULL` — deleting a batch record must never delete customer
+   leads.
+
+**One operational note.** On a database where §3.3 has not yet run, that
+migration builds `leads_org_email_uniq` and this one immediately rebuilds it
+with the extra clause. A few seconds of wasted index build on first deploy, and
+the correct trade for keeping migration history append-only: a migration that
+changes after it may already have been applied somewhere is not a migration.
+
+**Lock behaviour.** Both index rebuilds take `ACCESS EXCLUSIVE` on `leads` for
+the duration, so run this in the same low-traffic window as §3.3 and expect it
+to queue behind any long-running transaction touching that table.
+
+### 3.5 Rolling back these two migrations
+
+There is **no down migration**, here or anywhere in this project — Prisma
+`migrate deploy` is forward-only by design. Reversal is a new forward migration,
+and what that migration should do depends on which half is being reversed:
+
+* **The email duplicate guard (§3.3)** — `DROP INDEX "leads_org_email_uniq";`
+  Safe at any time. It removes a guarantee; it destroys nothing.
+* **The deactivation index clause (§3.4)** — rebuild both indexes without
+  `AND deactivated_at IS NULL`. **This can fail**, and for a reason worth
+  anticipating: if anybody has already deactivated a lead and created its
+  replacement, both rows are active under the old predicate and the index will
+  refuse to build. Deal with those pairs the same way §3.3's preflight says to.
+* **The columns and tables (§3.4)** — leave them. Dropping `address_line1` or
+  `lead_import_batches` destroys customer data and import provenance to undo a
+  feature; an unused nullable column costs nothing. Only the application's
+  reading of them needs reverting, which is a deploy rather than a migration.
+
+The practical rollback for both is therefore **redeploy the previous API
+image**. The new columns sit unread, the new tables sit empty, and the only
+behaviour that differs is that the email duplicate guard keeps protecting rows
+the old code did not know about — which is the safe direction.
+
+### 3.6 Creating the first customer organization
 
 Through the application's supported registration flow, not a script:
 
@@ -544,6 +685,7 @@ website components:
 | # | Step | Note |
 |---|---|---|
 | 0a | Provision PostgreSQL and Redis; configure `DATABASE_URL` and `DIRECT_DATABASE_URL` | |
+| 0a&#189; | **Run the email-duplicate preflight query** | Read-only. See §3.3 — a non-empty result means `db:migrate:deploy` will abort |
 | 0b | `db:migrate:deploy`, then `prisma migrate status` | Schema only — see §3.1 |
 | 0c | **`db:bootstrap`** | Reference data. Without it registration fails on a missing OWNER role |
 | 1 | Deploy LeadFlow API + worker, **automation and both integrations OFF** | `INTAKE_AUTO_PROCESSING_ENABLED=false` |

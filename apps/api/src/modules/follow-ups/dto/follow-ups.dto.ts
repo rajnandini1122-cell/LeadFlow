@@ -1,4 +1,4 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   IsIn,
   IsISO8601,
@@ -125,4 +125,64 @@ export class ListFollowUpsDto {
   @Min(1)
   @Max(200)
   limit?: number;
+}
+
+/**
+ * The activity types that represent a failed attempt.
+ *
+ * Exported so the web client offers exactly these and no others.
+ */
+export const ATTEMPT_ACTIVITY_TYPES = [
+  'CALL_NOT_ANSWERED',
+  'CALL_BACK_LATER',
+  'WHATSAPP_OPENED',
+] as const;
+
+/**
+ * A failed contact attempt, and the retry it earns.
+ *
+ * ONE request for the three facts about one phone call: what happened, what the
+ * rep wants remembered, and when to try again. They used to need three
+ * separate writes from the lead screen — log the activity, type a note, open
+ * the reschedule dialog — which produced three timeline entries for one call
+ * and could leave the retry unscheduled if the rep stopped halfway.
+ *
+ * NOTE WHAT IS ABSENT: there is no `leadStatus`. A failed attempt must not be
+ * able to move the sales stage, and the way to guarantee that is to give no
+ * caller the means. "Contacted" means somebody was reached.
+ */
+export class RecordAttemptDto {
+  /**
+   * Restricted to the types that mean "I tried and did not get through".
+   *
+   * `CALL_COMPLETED` is deliberately not here: a call that connected is an
+   * outcome for the follow-up, so it belongs on the complete endpoint where a
+   * stage change is a legitimate part of the conversation.
+   */
+  @IsIn(ATTEMPT_ACTIVITY_TYPES, {
+    message: `must be one of: ${ATTEMPT_ACTIVITY_TYPES.join(', ')}`,
+  })
+  activityType!: (typeof ATTEMPT_ACTIVITY_TYPES)[number];
+
+  /** Goes on the timeline entry for this attempt. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() || undefined : value))
+  note?: string;
+
+  /**
+   * When to try again. REQUIRED.
+   *
+   * A failed attempt with no retry is how a lead goes quiet: the activity is
+   * logged, the overdue follow-up stays at its original date, and nobody is
+   * told to try again. Making this mandatory is the fix.
+   */
+  @IsISO8601({}, { message: 'must be an ISO 8601 date' })
+  retryAt!: string;
+
+  /** Optionally changes how to try next — a call that failed becoming a visit. */
+  @IsOptional()
+  @IsIn(FOLLOW_UP_TYPES, { message: `must be one of: ${FOLLOW_UP_TYPES.join(', ')}` })
+  type?: string;
 }

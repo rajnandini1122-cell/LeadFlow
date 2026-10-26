@@ -242,6 +242,8 @@ model Organization {
   messages            Message[]
   channelIdentities   ContactChannelIdentity[]
   integrationIntakes  IntegrationIntake[]
+  leadImportBatches   LeadImportBatch[]
+  leadImportMappings  LeadImportMappingTemplate[]
   teams               Team[]
   teamMembers         TeamMember[]
   assignmentRules     AssignmentRule[]
@@ -690,6 +692,35 @@ model Lead {
   email       String? @db.VarChar(320)
   companyName String? @map("company_name") @db.VarChar(200)
   city        String? @db.VarChar(80)
+
+  // --- where it goes ---------------------------------------------------------
+  //
+  /// Street address, as supplied. Never parsed into components.
+  ///
+  /// `city` above predates these and is kept exactly as it was. Together they
+  /// are the whole postal address, which `leads` previously could not hold at
+  /// all — a CSV with an "Address Line 1" column had nowhere to put it, so the
+  /// importer either dropped it or concatenated it into a field that meant
+  /// something else.
+  ///
+  /// On the LEAD rather than only the contact, following the same rule `city`,
+  /// `companyName` and `email` already follow: a lead holds what THIS enquiry
+  /// said. An export business needs two leads for one person to carry two
+  /// different delivery addresses, which an address held only on the contact
+  /// could not express.
+  addressLine1 String? @map("address_line1") @db.VarChar(200)
+  addressLine2 String? @map("address_line2") @db.VarChar(200)
+  /// Sub-national region, as supplied. Free text, not an enum: every country
+  /// divides itself differently and a closed list would be wrong somewhere.
+  state        String? @db.VarChar(80)
+  /// VARCHAR, never numeric. Indian PIN codes have meaningful leading zeroes
+  /// and UK and Canadian codes contain letters — a number column corrupts all
+  /// three.
+  postalCode   String? @map("postal_code") @db.VarChar(20)
+  /// ISO 3166-1 alpha-2, like every other country column here. Two characters
+  /// rather than free text so it cannot hold "India" in one row and "IN" in
+  /// the next, which is how a country filter quietly stops working.
+  country      String? @db.VarChar(2)
   source      String? @db.VarChar(60)
   /// The standardised product this enquiry is FOR — the grouping key for every
   /// product KPI.
@@ -761,6 +792,46 @@ model Lead {
    */
   duplicateAcknowledgedAt DateTime? @map("duplicate_acknowledged_at") @db.Timestamptz(6)
 
+  // --- deactivation: a THIRD lifecycle, not a fourth meaning for an existing one
+  //
+  /// Set when this record should not exist as live work.
+  ///
+  /// A bad import row, a duplicate somebody created by mistake, a test lead.
+  /// REVERSIBLE, REASONED and ATTRIBUTED, which is what distinguishes it from
+  /// the two states that already existed:
+  ///
+  ///   status = LOST   a real opportunity that was pursued and not won. It is
+  ///                   business history and it counts in loss analysis. Filing
+  ///                   import mistakes here would poison the most valuable
+  ///                   question in the dataset — "why do we lose?".
+  ///   deletedAt       archived. No reason, no actor, and no reverse operation.
+  ///
+  /// Collapsing the three would be the easy choice and the wrong one: each
+  /// answers a different question and one flag answers none of them.
+  ///
+  /// EXCLUDED FROM BOTH DUPLICATE INDEXES, which is the point rather than a
+  /// side effect — deactivating a wrongly imported lead exists so the RIGHT one
+  /// can be created with the same number. The cost is that reactivation can
+  /// fail, so it re-checks both keys first and reports which lead holds them.
+  deactivatedAt      DateTime? @map("deactivated_at") @db.Timestamptz(6)
+  /// Required by a CHECK constraint whenever deactivatedAt is set. Enforced in
+  /// the database, not only in a DTO: a reason enforced in one code path goes
+  /// missing the first time anything writes through another.
+  deactivationReason String?   @map("deactivation_reason") @db.VarChar(255)
+  /// No foreign key, matching createdBy and updatedBy on this table — so
+  /// removing a user cannot erase the record of what they did.
+  deactivatedBy      String?   @map("deactivated_by") @db.Uuid
+
+  /// The import this lead came from, or null if a person created it.
+  ///
+  /// What makes a mis-mapped import correctable: "every lead from that batch"
+  /// is the only query the correction workflow needs.
+  ///
+  /// RESTRICT, never Cascade: deleting a batch must not delete customer leads,
+  /// and must not quietly orphan their provenance either. A batch cannot be
+  /// deleted while any lead still points at it.
+  importBatchId String? @map("import_batch_id") @db.Uuid
+
   deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
   createdBy String?   @map("created_by") @db.Uuid
   updatedBy String?   @map("updated_by") @db.Uuid
@@ -785,6 +856,14 @@ model Lead {
   /// because the relation is defined by the intake side, not because a lead is
   /// expected to have several.
   sourceIntakes IntegrationIntake[] @relation("IntakeConversion")
+  /// Composite, so another tenant's batch has nothing to match.
+  ///
+  /// Restrict rather than SetNull. On a MULTI-COLUMN key SetNull nulls every
+  /// referencing column, including `organizationId`, which is NOT NULL — so the
+  /// delete was refused anyway, by a not-null violation rather than a readable
+  /// constraint, while the comment claimed the link would be cleared. A test
+  /// established which it actually was; see the migration for the reasoning.
+  importBatch   LeadImportBatch?    @relation(fields: [importBatchId, organizationId], references: [id, organizationId], onDelete: Restrict)
 
   /// Lets an intake point a COMPOSITE foreign key at the lead it became and
   /// carry the tenant into the key. `id` is unique on its own; this adds
@@ -804,6 +883,11 @@ model Lead {
   @@index([organizationId, opportunityKind])
   @@index([organizationId, mobile])
   @@index([organizationId, contactId])
+  /// The inactive list, most recently deactivated first. Partial in SQL — see
+  /// the migration; Prisma cannot express the predicate.
+  @@index([organizationId, deactivatedAt])
+  /// Every lead from one import batch: the correction workflow's only query.
+  @@index([organizationId, importBatchId])
   /// Customer 360 lists an account's opportunities by status.
   @@index([organizationId, accountId, status])
   /// Product demand split by prospect vs existing customer joins lead to
@@ -2714,4 +2798,77 @@ model AdminControlCommand {
   /// "What has this administrator done lately?"
   @@index([organizationId, createdAt(sort: Desc)])
   @@map("admin_control_commands")
+}
+
+
+// =============================================================================
+// CSV lead import
+// =============================================================================
+
+/// One run of the CSV importer.
+///
+/// THE GAP THIS CLOSES. An import used to return a count and nothing else, so
+/// once the response was closed there was no way to ask "which leads came from
+/// that badly mapped file?" — correcting one meant finding its rows by eye.
+///
+/// Written when an import RUNS. Preview writes nothing, which is the contract
+/// preview exists to keep: a user must be able to check a mapping without
+/// touching production records.
+model LeadImportBatch {
+  id             String @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String @map("organization_id") @db.Uuid
+
+  /// As the uploader's browser reported it. Displayed back to the same tenant,
+  /// never used as a path.
+  fileName String? @map("file_name") @db.VarChar(255)
+
+  /// WHICH COLUMN WENT WHERE — the answer to "how did the address end up in the
+  /// wrong field". Header names and field names only: no cell values, so this
+  /// holds no customer data and needs no redaction path.
+  mapping Json
+
+  totalRows    Int @map("total_rows")
+  createdCount Int @default(0) @map("created_count")
+  skippedCount Int @default(0) @map("skipped_count")
+  failedCount  Int @default(0) @map("failed_count")
+
+  /// Who ran it. Nullable with no foreign key, like every other actor column on
+  /// these tables.
+  importedBy String? @map("imported_by") @db.Uuid
+
+  startedAt   DateTime  @default(now()) @map("started_at") @db.Timestamptz(6)
+  completedAt DateTime? @map("completed_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  leads        Lead[]
+
+  /// Carries the tenant into the key `leads.import_batch_id` references, which
+  /// is what makes attaching one tenant's lead to another's batch
+  /// unrepresentable rather than merely prevented in code.
+  @@unique([id, organizationId])
+  @@index([organizationId, startedAt])
+  @@map("lead_import_batches")
+}
+
+/// A saved column mapping, so the same monthly export is not re-mapped by hand
+/// twelve times a year — which is where the wrong mapping gets picked.
+///
+/// Header names and field names. No customer data.
+model LeadImportMappingTemplate {
+  id             String @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String @map("organization_id") @db.Uuid
+
+  name    String @db.VarChar(80)
+  mapping Json
+
+  createdBy String?  @map("created_by") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  /// One name per tenant, so "Tally export" means one thing inside an
+  /// organization. Per tenant, never global.
+  @@unique([organizationId, name])
+  @@map("lead_import_mapping_templates")
 }

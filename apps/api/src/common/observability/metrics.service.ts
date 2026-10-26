@@ -96,6 +96,13 @@ export class MetricsService {
     uptimeSeconds: number;
     api: { requests: number; errors: number; errorRate: number | null; p95Ms: number | null };
     database: { queryFailures: number };
+    intake: {
+      received: number;
+      converted: number;
+      blocked: number;
+      duplicate: number;
+      failed: number;
+    };
     worker: { sweeps: number; failures: number; lastSweepAt: string | null };
     push: {
       attempts: number;
@@ -120,6 +127,22 @@ export class MetricsService {
         p95Ms: this.percentile(95),
       },
       database: { queryFailures: this.counter(METRIC.DB_QUERY_FAILURES) },
+      /*
+       * The enquiry funnel, in one place.
+       *
+       * `received` counts what arrived at the boundary; the rest count what
+       * conversion decided. They do not have to add up: an enquiry can be
+       * received today and converted tomorrow, and a blocked one that is
+       * retried successfully increments both `blocked` and `converted`. That
+       * is the honest shape of a queue rather than a reconciliation.
+       */
+      intake: {
+        received: this.counter(METRIC.INTAKE_RECEIVED),
+        converted: this.counter(METRIC.INTAKE_CONVERTED),
+        blocked: this.counter(METRIC.INTAKE_BLOCKED),
+        duplicate: this.counter(METRIC.INTAKE_DUPLICATE),
+        failed: this.counter(METRIC.INTAKE_FAILED),
+      },
       worker: {
         sweeps: this.counter(METRIC.WORKER_SWEEPS),
         failures: this.counter(METRIC.WORKER_FAILURES),
@@ -174,4 +197,30 @@ export const METRIC = {
   WORKER_FAILURES: 'worker.failures',
   NOTIFICATIONS_CREATED: 'notifications.created',
   NOTIFICATIONS_SUPPRESSED: 'notifications.suppressed',
+  /*
+   * Website / channel enquiries, by what happened to them.
+   *
+   * Deliberately five flat counters and NO labels. Labelling by submission id,
+   * email, phone or lead id would make the cardinality unbounded — one series
+   * per customer — and these are in-process counters held in a Map, so an
+   * unbounded key space is a memory leak rather than a dashboard. The question
+   * these answer is "how many enquiries arrived and how many became work",
+   * which needs no label; "which enquiry" is the intake list's job, and it is
+   * queryable by submission id.
+   */
+  INTAKE_RECEIVED: 'intake.received',
+  INTAKE_CONVERTED: 'intake.converted',
+  INTAKE_BLOCKED: 'intake.blocked',
+  INTAKE_DUPLICATE: 'intake.duplicate',
+  /*
+   * Declared, and currently never incremented — deliberately.
+   *
+   * `FAILED` is a real IntakeStatus that retry accepts and the Admin Control
+   * summary counts, but NO code path writes it today. Inventing a transition
+   * to make this counter move would be worse than a zero: it would report
+   * failures the pipeline does not actually have. The DB-backed status totals
+   * in the Admin Control summary are the authority for how many rows sit in
+   * each status; this counter is here for the day something writes FAILED.
+   */
+  INTAKE_FAILED: 'intake.failed',
 } as const;

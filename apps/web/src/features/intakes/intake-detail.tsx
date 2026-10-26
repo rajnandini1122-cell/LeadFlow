@@ -1,6 +1,8 @@
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import type { IntegrationIntakeDetail } from '@leadflow/api-types';
 import { ApiError } from '../../lib/api-client';
+import { ENQUIRY_TYPE_LABELS } from './enquiry-types';
 import { useIntake, useRetryIntake } from './use-intakes';
 
 /**
@@ -55,6 +57,36 @@ export function IntakeDetail({
         <Field label="Page" value={intake.sourcePage} />
         <Field label="Arrived" value={new Date(intake.receivedAt).toLocaleString()} />
       </dl>
+
+      {/*
+        What the customer said they want.
+        Rendered as its own block and ONLY when something is there: an enquiry
+        from a simple contact form carries none of this, and six empty dashes
+        would bury the fields that do have values.
+      */}
+      {hasClassification(intake) && (
+        <div>
+          <h3 className="mb-1 text-xs font-medium text-slate-600">Enquiry</h3>
+          <dl className="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
+            {intake.enquiryType && (
+              <Field label="Type" value={ENQUIRY_TYPE_LABELS[intake.enquiryType]} />
+            )}
+            {intake.quantity && <Field label="Quantity" value={intake.quantity} />}
+            {intake.destinationCountry && (
+              <Field label="Ships to" value={intake.destinationCountry} />
+            )}
+            {(intake.city || intake.state) && (
+              <Field
+                label="Location"
+                value={[intake.city, intake.state].filter(Boolean).join(', ')}
+              />
+            )}
+            {intake.sampleRequired !== null && (
+              <Field label="Sample requested" value={intake.sampleRequired ? 'Yes' : 'No'} />
+            )}
+          </dl>
+        </div>
+      )}
 
       <div>
         <h3 className="mb-1 text-xs font-medium text-slate-600">Routing</h3>
@@ -116,6 +148,8 @@ export function IntakeDetail({
         </div>
       )}
 
+      <SubmissionReference submissionId={intake.submissionId} />
+
       <p className="text-xs text-slate-400">
         {intake.processingAttempts === 0
           ? 'Not yet processed.'
@@ -155,6 +189,74 @@ function DuplicateNotice({
           Open the matching lead
         </Link>
       )}
+    </div>
+  );
+}
+
+/**
+ * Whether this enquiry carries any classification at all.
+ *
+ * `sampleRequired` is compared against null rather than truth-tested, because
+ * `false` is a real answer — the visitor was asked and said no — and hiding it
+ * would lose the distinction from never having been asked.
+ */
+function hasClassification(intake: IntegrationIntakeDetail): boolean {
+  return (
+    intake.enquiryType !== null ||
+    intake.quantity !== null ||
+    intake.destinationCountry !== null ||
+    intake.city !== null ||
+    intake.state !== null ||
+    intake.sampleRequired !== null
+  );
+}
+
+/**
+ * The website's own reference for this submission.
+ *
+ * The question this answers is support's: "did submission X reach LeadFlow?"
+ * Somebody holding a reference from the website side can now paste it into the
+ * queue filter and see the answer, instead of asking for a database query.
+ *
+ * Shown in monospace and selectable on focus because it is read aloud and
+ * pasted, not skimmed. Copying is best-effort: `navigator.clipboard` is absent
+ * over plain HTTP and may be refused outright, so the input beside the button
+ * remains the reliable way to get the value out.
+ */
+function SubmissionReference({ submissionId }: { submissionId: string }): React.JSX.Element {
+  const [copied, setCopied] = useState(false);
+
+  return (
+    <div>
+      <label
+        htmlFor={`submission-${submissionId}`}
+        className="mb-1 block text-xs text-slate-500"
+      >
+        Submission reference
+      </label>
+      <div className="flex gap-2">
+        <input
+          id={`submission-${submissionId}`}
+          readOnly
+          value={submissionId}
+          onFocus={(event) => event.currentTarget.select()}
+          className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-2 py-1 font-mono text-xs text-slate-700"
+        />
+        <button
+          type="button"
+          onClick={() => {
+            void navigator.clipboard?.writeText(submissionId);
+            setCopied(true);
+          }}
+          className="shrink-0 rounded-lg border border-slate-300 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
+        >
+          {copied ? 'Copied' : 'Copy'}
+        </button>
+      </div>
+      <p className="mt-1 text-xs text-slate-400">
+        The website&rsquo;s own id for this submission. Quote it when asking whether an enquiry
+        arrived.
+      </p>
     </div>
   );
 }

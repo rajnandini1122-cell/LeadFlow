@@ -79,12 +79,24 @@ export class CreateLeadDto {
   )
   mobile?: string;
 
+  /*
+   * Trimmed and lower-cased, like every other email this product stores.
+   *
+   * It was not, until `leads_org_email_uniq` made the address a duplicate key:
+   * the website intake DTO has always normalised, these did not, so the same
+   * customer could arrive as `Dana@Example.test` from one path and
+   * `dana@example.test` from another. The index keys on lower(email) so it
+   * catches that regardless, and normalising here keeps what is STORED
+   * consistent too rather than relying on the index to paper over it.
+   */
   @IsOptional()
   @IsEmail({}, { message: 'must be a valid email address' })
   @MaxLength(320)
-  @Transform(({ value }) =>
-    typeof value === 'string' && value.trim() === '' ? undefined : value,
-  )
+  @Transform(({ value }) => {
+    if (typeof value !== 'string') return value;
+    const trimmed = value.trim().toLowerCase();
+    return trimmed === '' ? undefined : trimmed;
+  })
   email?: string;
 
   @IsOptional()

@@ -15,6 +15,7 @@ import { PERMISSIONS } from '@leadflow/api-types';
 import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
+import { IdempotencyKey } from '../../common/web/idempotency-key.decorator';
 import { FollowUpsService, type FollowUpView } from './follow-ups.service';
 import {
   CancelFollowUpDto,
@@ -67,8 +68,9 @@ export class FollowUpsController {
     @Param('id', new ParseUUIDPipe({ version: '7' })) id: string,
     @Body() dto: CompleteFollowUpDto,
     @CurrentUser() principal: TenantPrincipal,
+    @IdempotencyKey() idempotencyKey: string | null,
   ) {
-    return this.followUps.complete(id, dto, principal);
+    return this.followUps.complete(id, dto, principal, idempotencyKey);
   }
 
   @Post(':id/reschedule')
@@ -84,8 +86,9 @@ export class FollowUpsController {
     @Param('id', new ParseUUIDPipe({ version: '7' })) id: string,
     @Body() dto: RescheduleFollowUpDto,
     @CurrentUser() principal: TenantPrincipal,
+    @IdempotencyKey() idempotencyKey: string | null,
   ): Promise<FollowUpView> {
-    return this.followUps.reschedule(id, dto, principal);
+    return this.followUps.reschedule(id, dto, principal, idempotencyKey);
   }
 
   @Delete(':id')

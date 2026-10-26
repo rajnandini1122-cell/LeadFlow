@@ -57,6 +57,7 @@ const InboxPage = lazy(() => import('./features/omnichannel/inbox-page').then((m
 const ChannelIntegrationsPage = lazy(() => import('./features/settings/channel-integrations-page').then((m) => ({ default: m.ChannelIntegrationsPage })));
 const LeadDetailPage = lazy(() => import('./features/leads/lead-detail-page').then((m) => ({ default: m.LeadDetailPage })));
 const ImportLeadsPage = lazy(() => import('./features/leads/import-leads-page').then((m) => ({ default: m.ImportLeadsPage })));
+const ImportBatchesPage = lazy(() => import('./features/leads/import-batches-page').then((m) => ({ default: m.ImportBatchesPage })));
 const ContactsPage = lazy(() => import('./features/contacts/contacts-page').then((m) => ({ default: m.ContactsPage })));
 const ProductsPage = lazy(() => import('./features/products/products-page').then((m) => ({ default: m.ProductsPage })));
 const ProductIntelligencePage = lazy(() => import('./features/products/product-intelligence-page').then((m) => ({ default: m.ProductIntelligencePage })));
@@ -184,6 +185,9 @@ export function App(): React.JSX.Element {
                 {/* Before :id, or the router matches "import" as a lead id. */}
                 <Route path="leads/review" element={<ChannelReviewPage />} />
                 <Route path="leads/import" element={<ImportLeadsPage />} />
+                {/* Before "leads/:id", which would otherwise match
+                    "import" and try to load it as a lead. */}
+                <Route path="leads/import/batches" element={<ImportBatchesPage />} />
                 <Route path="leads/:id" element={<LeadDetailPage />} />
                 <Route path="products" element={<ProductsPage />} />
                 {/* Before ':id'-style routes would matter; both are literal. */}

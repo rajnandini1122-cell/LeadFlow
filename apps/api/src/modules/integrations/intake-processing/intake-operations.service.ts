@@ -42,6 +42,8 @@ export class IntakeOperationsService {
     const page = await this.repository.list({
       status: query.status as IntakeStatus | undefined,
       source: query.source,
+      submissionId: query.submissionId,
+      enquiryType: query.enquiryType,
       receivedFrom: query.receivedFrom ? new Date(query.receivedFrom) : undefined,
       receivedTo: query.receivedTo ? new Date(query.receivedTo) : undefined,
       limit: query.limit ?? 25,
@@ -119,6 +121,7 @@ export class IntakeOperationsService {
     return {
       id: intake.id,
       source: intake.source,
+      submissionId: intake.externalEventId,
       receivedAt: intake.receivedAt.toISOString(),
       sourcePage: intake.sourcePage,
       message: intake.message,
@@ -145,6 +148,22 @@ function toListItem(row: ListRow): IntegrationIntakeListItem {
   return {
     id: row.id,
     source: row.source,
+    /*
+     * The sender's id, renamed on the way out.
+     *
+     * `externalEventId` is what the column is called because that is what the
+     * signed header carries; `submissionId` is what the website and whoever
+     * reads a support ticket call it. Renaming here keeps the storage name
+     * honest and the contract readable, and exposes nothing else from the
+     * envelope — no signature, no payload hash.
+     */
+    submissionId: row.externalEventId,
+    /*
+     * In the list as well as the detail, so filtering by enquiry type shows
+     * its own effect: a queue filtered to SAMPLE whose rows say nothing about
+     * enquiry type leaves an operator unable to tell the filter applied.
+     */
+    enquiryType: row.enquiryType,
     status: row.status as IntakeStatus,
     receivedAt: row.receivedAt.toISOString(),
     name: row.name,
@@ -175,8 +194,7 @@ function toDetail(row: DetailRow): IntegrationIntakeDetail {
     matchedLeadId: row.matchedLeadId,
     // Structured classification, surfaced so an operator can see WHY a
     // rule matched — capturing it and hiding it would be worse than not
-    // capturing it.
-    enquiryType: row.enquiryType,
+    // capturing it. `enquiryType` arrives through the list spread above.
     state: row.state,
     city: row.city,
     quantity: row.quantity,

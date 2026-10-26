@@ -127,6 +127,14 @@ export const AUDIT_ACTIONS = {
   /** A new opportunity raised against an existing customer, with its origin. */
   REPEAT_OPPORTUNITY_CREATED: 'account.repeat_opportunity_created',
   ACCOUNT_FOLLOW_UP_CREATED: 'account.follow_up_created',
+  /**
+   * Completing or rescheduling a follow-up owed on a CUSTOMER rather than a
+   * lead. A lead follow-up is recorded on the lead timeline; an account one has
+   * no timeline, so this entry is its record — and carries the Idempotency-Key
+   * a retried request is matched against.
+   */
+  ACCOUNT_FOLLOW_UP_COMPLETED: 'account.follow_up_completed',
+  ACCOUNT_FOLLOW_UP_RESCHEDULED: 'account.follow_up_rescheduled',
   ACCOUNT_CONTACT_LINKED: 'account.contact_linked',
   SUBSCRIPTION_CHANGED: 'subscription.changed',
 

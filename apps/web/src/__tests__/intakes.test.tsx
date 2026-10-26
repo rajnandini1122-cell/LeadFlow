@@ -23,6 +23,12 @@ import * as authContext from '../features/auth/auth-context';
 const PROCESSED: IntegrationIntakeListItem = {
   id: 'intake-1',
   source: 'WEBSITE',
+  // The website's own reference for the submission. Every intake has one: it
+  // is the id that travelled in the signed header, and storage requires it.
+  submissionId: 'sub-0000000001',
+  // Null, which is what every enquiry submitted before the form asked looks
+  // like — and that is every enquiry in production today.
+  enquiryType: null,
   status: 'PROCESSED',
   receivedAt: '2026-09-22T09:00:00.000Z',
   name: 'Dana Whitfield',
@@ -65,6 +71,33 @@ const DUPLICATE: IntegrationIntakeListItem = {
   failureReason: 'An active lead (LD-00009) already exists for this number.',
 };
 
+/**
+ * An enquiry from the richer form, carrying what the visitor said they want.
+ *
+ * Kept as its own fixture rather than mutating PROCESSED, so the "classified"
+ * and "never asked" cases are both exercised in the same run — a UI that only
+ * ever saw populated fields would hide the far more common null case.
+ */
+const CLASSIFIED: IntegrationIntakeListItem = {
+  ...PROCESSED,
+  id: 'intake-4',
+  submissionId: 'sub-0000000004',
+  name: 'Mateo Rivas',
+  company: 'Rivas Trading',
+  enquiryType: 'SAMPLE',
+};
+
+const CLASSIFICATION: Pick<
+  IntegrationIntakeDetail,
+  'state' | 'city' | 'quantity' | 'destinationCountry' | 'sampleRequired'
+> = {
+  state: 'Maharashtra',
+  city: 'Pune',
+  quantity: '500 kg',
+  destinationCountry: 'OM',
+  sampleRequired: true,
+};
+
 const detailFor = (item: IntegrationIntakeListItem): IntegrationIntakeDetail => ({
   ...item,
   email: 'dana@example.test',
@@ -74,18 +107,16 @@ const detailFor = (item: IntegrationIntakeListItem): IntegrationIntakeDetail => 
   matchedContactId: null,
   matchedLeadId: item.status === 'DUPLICATE' ? 'lead-9' : null,
   /*
-   * The structured classification fields, all null.
+   * The structured classification fields.
    *
-   * Null rather than omitted: the API always returns them, and null is what an
-   * enquiry submitted before the website asked these questions looks like —
-   * which is every enquiry in production today.
+   * Null rather than omitted when the form did not ask: the API always returns
+   * them, and null is what an enquiry submitted before the website asked these
+   * questions looks like. The classified fixture carries real values, keyed off
+   * `enquiryType` so the two cases cannot drift apart.
    */
-  enquiryType: null,
-  state: null,
-  city: null,
-  quantity: null,
-  destinationCountry: null,
-  sampleRequired: null,
+  ...(item.enquiryType
+    ? CLASSIFICATION
+    : { state: null, city: null, quantity: null, destinationCountry: null, sampleRequired: null }),
 });
 
 function signedInAs(permissions: string[]): void {
@@ -211,6 +242,25 @@ describe('the queue', () => {
     expect(await screen.findByText(/could not be loaded/i)).toBeInTheDocument();
   });
 
+  it('shows the enquiry classification beside what they asked about', async () => {
+    stubApi([CLASSIFIED]);
+    renderPage();
+    const rows = within(await screen.findByRole('table'));
+
+    // The classification is what rules route on, so it reads in the queue
+    // rather than only inside a panel somebody has to open.
+    expect(rows.getByText('Sample request')).toBeInTheDocument();
+  });
+
+  it('shows no classification for an enquiry the form never asked', async () => {
+    const rows = within(await table());
+
+    // Not a dash and not "General" — the form did not ask, and inventing an
+    // answer here would be the UI claiming the customer chose one.
+    expect(rows.queryByText(/general enquiry/i)).toBeNull();
+    expect(rows.queryByText(/sample request/i)).toBeNull();
+  });
+
   it('filters by status', async () => {
     const apiGet = vi.spyOn(apiClient, 'apiGet');
     renderPage();
@@ -223,6 +273,115 @@ describe('the queue', () => {
         expect.stringContaining('status=BLOCKED') as unknown as string,
       ),
     );
+  });
+
+  it('filters by enquiry type', async () => {
+    const apiGet = vi.spyOn(apiClient, 'apiGet');
+    renderPage();
+
+    await screen.findByText('Dana Whitfield');
+    await userEvent.selectOptions(screen.getByLabelText(/filter by enquiry type/i), 'SAMPLE');
+
+    // Server-side: the queue is paginated, so filtering in the browser would
+    // filter one page of twenty-five and call it the answer.
+    await waitFor(() =>
+      expect(apiGet).toHaveBeenCalledWith(
+        expect.stringContaining('enquiryType=SAMPLE') as unknown as string,
+      ),
+    );
+  });
+});
+
+/**
+ * The question support actually gets asked: "did submission X reach LeadFlow?"
+ *
+ * Previously unanswerable without a database query — the id was stored and
+ * never returned.
+ */
+describe('tracing one submission', () => {
+  it('finds an enquiry by the reference the website gave it', async () => {
+    const apiGet = vi.spyOn(apiClient, 'apiGet');
+    renderPage();
+
+    await screen.findByText('Dana Whitfield');
+    await userEvent.type(
+      screen.getByLabelText(/find by submission reference/i),
+      'sub-0000000001',
+    );
+    await userEvent.click(screen.getByRole('button', { name: /find/i }));
+
+    await waitFor(() =>
+      expect(apiGet).toHaveBeenCalledWith(
+        expect.stringContaining('submissionId=sub-0000000001') as unknown as string,
+      ),
+    );
+  });
+
+  it('trims a reference pasted with surrounding whitespace', async () => {
+    const apiGet = vi.spyOn(apiClient, 'apiGet');
+    renderPage();
+
+    await screen.findByText('Dana Whitfield');
+    // Pasting out of a support ticket brings whitespace with it, and the match
+    // is exact — so an untrimmed value would report a real submission missing.
+    await userEvent.type(
+      screen.getByLabelText(/find by submission reference/i),
+      '  sub-0000000001  ',
+    );
+    await userEvent.click(screen.getByRole('button', { name: /find/i }));
+
+    await waitFor(() =>
+      expect(apiGet).toHaveBeenCalledWith(
+        expect.stringContaining('submissionId=sub-0000000001') as unknown as string,
+      ),
+    );
+  });
+
+  it('says the submission never arrived, rather than that the queue is empty', async () => {
+    stubApi([]);
+    renderPage();
+    // The filter bar does not exist while the first query is in flight — the
+    // page renders skeleton rows. Waiting for the unfiltered empty state is
+    // also what makes the final assertion mean something: that message is on
+    // screen first, and the search has to replace it.
+    await screen.findByText(/no enquiries yet/i);
+
+    await userEvent.type(screen.getByLabelText(/find by submission reference/i), 'sub-nope');
+    await userEvent.click(screen.getByRole('button', { name: /find/i }));
+
+    // The difference matters: "no enquiries yet" reads as the integration
+    // never having worked, which is a different incident entirely.
+    expect(await screen.findByText(/nothing matches those filters/i)).toBeInTheDocument();
+    expect(screen.getByText(/never sent it/i)).toBeInTheDocument();
+    expect(screen.queryByText(/no enquiries yet/i)).toBeNull();
+  });
+
+  it('shows the reference on the enquiry so it can be quoted back', async () => {
+    renderPage();
+    await userEvent.click(await screen.findByRole('button', { name: /Dana Whitfield/ }));
+    const panel = await screen.findByTestId('intake-detail');
+
+    expect(within(panel).getByLabelText(/submission reference/i)).toHaveValue(
+      'sub-0000000001',
+    );
+  });
+
+  it('copies the reference without exposing anything else from the envelope', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } });
+
+    renderPage();
+    await userEvent.click(await screen.findByRole('button', { name: /Dana Whitfield/ }));
+    const panel = await screen.findByTestId('intake-detail');
+    await userEvent.click(within(panel).getByRole('button', { name: 'Copy' }));
+
+    expect(writeText).toHaveBeenCalledWith('sub-0000000001');
+    expect(within(panel).getByRole('button', { name: 'Copied' })).toBeInTheDocument();
+    // The signature and the payload hash are HMAC material and never leave the
+    // server; nothing on this panel is derived from them.
+    expect(within(panel).queryByText(/signature/i)).toBeNull();
+    expect(within(panel).queryByText(/payload hash/i)).toBeNull();
+    vi.unstubAllGlobals();
   });
 });
 
@@ -297,6 +456,69 @@ describe('one enquiry', () => {
       'href',
       '/leads/lead-9',
     );
+  });
+
+  it('shows what the customer said they want', async () => {
+    stubApi([CLASSIFIED]);
+    renderPage();
+    await userEvent.click(await screen.findByRole('button', { name: /Mateo Rivas/ }));
+    const panel = within(await screen.findByTestId('intake-detail'));
+
+    expect(panel.getByText('Sample request')).toBeInTheDocument();
+    expect(panel.getByText('500 kg')).toBeInTheDocument();
+    // The destination, not the enquirer's own country: an Indian buying office
+    // shipping to Oman is both, and showing one as the other misroutes it.
+    expect(panel.getByText('OM')).toBeInTheDocument();
+    expect(panel.getByText('Pune, Maharashtra')).toBeInTheDocument();
+    expect(panel.getByText('Yes')).toBeInTheDocument();
+  });
+
+  it('shows a declined sample as No, not as nothing', async () => {
+    stubApi([CLASSIFIED]);
+    vi.spyOn(apiClient, 'apiGet').mockImplementation((url: string) =>
+      url.startsWith('/integration-intakes?')
+        ? (Promise.resolve({ items: [CLASSIFIED], total: 1 }) as never)
+        : (Promise.resolve({
+            ...detailFor(CLASSIFIED),
+            sampleRequired: false,
+          }) as never),
+    );
+
+    renderPage();
+    await userEvent.click(await screen.findByRole('button', { name: /Mateo Rivas/ }));
+    const panel = within(await screen.findByTestId('intake-detail'));
+
+    // Asked and declined is a real answer. Hiding it would make it
+    // indistinguishable from never having been asked.
+    expect(panel.getByText('No')).toBeInTheDocument();
+  });
+
+  it('omits the classification block entirely when the form never asked', async () => {
+    const panel = within(await open('Dana Whitfield'));
+
+    // Six empty dashes would bury the fields that do have values, and would
+    // read as data lost rather than never collected. The heading is asserted
+    // too: every field inside is individually guarded, so without this the
+    // block could render as a bare "Enquiry" heading over nothing and the
+    // field assertions below would still pass.
+    expect(panel.queryByRole('heading', { name: 'Enquiry' })).toBeNull();
+    expect(panel.queryByText(/sample requested/i)).toBeNull();
+    expect(panel.queryByText(/^Quantity$/)).toBeNull();
+    expect(panel.queryByText(/ships to/i)).toBeNull();
+  });
+
+  it('still shows the routing beside the classification', async () => {
+    stubApi([CLASSIFIED]);
+    renderPage();
+    await userEvent.click(await screen.findByRole('button', { name: /Mateo Rivas/ }));
+    const panel = within(await screen.findByTestId('intake-detail'));
+
+    // The new block must not have displaced what a rep asking "why did this
+    // reach me?" comes here for.
+    expect(panel.getByText('Territory')).toBeInTheDocument();
+    expect(panel.getByText('Website enquiries')).toBeInTheDocument();
+    expect(panel.getByText('Pune Sales')).toBeInTheDocument();
+    expect(panel.getByText('Asha Rep')).toBeInTheDocument();
   });
 
   it('shows no cursor, sequence or rotation internals', async () => {

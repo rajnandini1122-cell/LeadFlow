@@ -1,7 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { ERROR_CODES, type LeadStatus, type Paginated } from '@leadflow/api-types';
 import { AppException } from '../../common/errors/app.exception';
+import { Inject, forwardRef } from '@nestjs/common';
 import { AuditRepository } from '../../common/audit/audit.repository';
+import { FollowUpsService } from '../follow-ups/follow-ups.service';
 import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
 import { PhoneParseError, toE164 } from '../../common/utils/phone';
 import { LeadsRepository } from './leads.repository';
@@ -29,6 +31,16 @@ export class LeadMutationsService {
   constructor(
     private readonly repository: LeadsRepository,
     private readonly audit: AuditRepository,
+    /*
+     * forwardRef because FollowUpsModule imports LeadsModule back.
+     *
+     * The dependency is real rather than incidental: a lead's next action IS a
+     * follow-up, so moving one has to go through the domain that owns the
+     * queue. Writing the mirror column from here instead is exactly the
+     * shortcut that produced "Next action: a date" with "0 open".
+     */
+    @Inject(forwardRef(() => FollowUpsService))
+    private readonly followUps: FollowUpsService,
   ) {}
 
   async update(
@@ -139,10 +151,31 @@ export class LeadMutationsService {
       data['wonValue'] = effects.wonValue ?? null;
     }
 
-    // The CHECK constraint permits a null next action only for terminal
-    // statuses. Catching it here produces a field error rather than a 500.
+    /*
+     * The CHECK constraint permits a null next action only for terminal
+     * statuses. Catching it here produces a field error rather than a 500.
+     *
+     * The column IS still written here, and that is deliberate rather than the
+     * old shortcut: `leads_active_requires_followup` is checked by the same
+     * statement that sets the status, so reopening a lost lead has to carry its
+     * new date in that write or the constraint refuses it. Restructuring this
+     * to defer the date broke exactly that case.
+     *
+     * What follows the status change is the RECONCILIATION — see
+     * `movesNextAction` below. The queue row is created there and the mirror is
+     * recomputed from the rows, so this write is a transient that the next step
+     * either confirms or corrects. What it must never be again is the ONLY
+     * write, which is what left a date on the lead with nothing in the queue.
+     */
+    const movesNextAction =
+      dto.nextFollowUpAt !== undefined && !isTerminal(targetStatus)
+        ? new Date(dto.nextFollowUpAt)
+        : null;
+
     if (dto.nextFollowUpAt !== undefined) {
-      data['nextFollowUpAt'] = new Date(dto.nextFollowUpAt);
+      data['nextFollowUpAt'] = isTerminal(targetStatus)
+        ? null
+        : new Date(dto.nextFollowUpAt);
     } else if (isTerminal(targetStatus)) {
       data['nextFollowUpAt'] = null;
     } else if (!lead.nextFollowUpAt) {
@@ -187,6 +220,28 @@ export class LeadMutationsService {
 
     if (leadsChanged === 0) throw AppException.leadNotFound();
 
+    /*
+     * The next action is moved AFTER the status change, and through the
+     * follow-up domain.
+     *
+     * After, because closing a lead cancels its open follow-ups in the
+     * transaction above — doing this first would schedule a retry that the
+     * close then cancelled, leaving a cancelled row and a null mirror where the
+     * user expected a date.
+     *
+     * Through the domain, because `leads.next_follow_up_at` mirrors the
+     * earliest open follow-up. Writing it inline moved the date on the lead
+     * while the queue kept the old one.
+     */
+    if (movesNextAction) {
+      await this.followUps.setNextForLead(
+        id,
+        movesNextAction,
+        principal,
+        'Next action moved on the lead',
+      );
+    }
+
     await this.audit.record({
       action: 'lead.updated',
       entityType: 'lead',
@@ -215,26 +270,28 @@ export class LeadMutationsService {
       });
     }
 
-    const updated = await this.repository.applyUpdate(id, {
-      assignedToId: dto.assignedToId,
-      assignedById: principal.userId,
-      updatedBy: principal.userId,
-    });
-    if (updated === 0) throw AppException.leadNotFound();
-
-    await this.repository.recordActivity({
+    // Owner, owed work and timeline in one commit — see `reassign` for why the
+    // follow-ups have to move with the lead.
+    const result = await this.repository.reassign({
       leadId: id,
+      previousOwnerId: lead.assignedToId,
+      newOwnerId: dto.assignedToId,
+      actorId: principal.userId,
       activityType: lead.assignedToId ? 'LEAD_REASSIGNED' : 'LEAD_ASSIGNED',
       description: dto.reason ?? 'Lead ownership changed',
-      performedById: principal.userId,
     });
+    if (result.leadsChanged === 0) throw AppException.leadNotFound();
 
     await this.audit.record({
       action: 'lead.assigned',
       entityType: 'lead',
       entityId: id,
       before: { assignedToId: lead.assignedToId },
-      after: { assignedToId: dto.assignedToId },
+      after: {
+        assignedToId: dto.assignedToId,
+        followUpsMoved: result.followUpsMoved,
+        followUpCreated: result.followUpCreated,
+      },
     });
 
     return { id };
@@ -282,13 +339,23 @@ export class LeadMutationsService {
       performedById: principal.userId,
     });
 
-    // Lets "logged a call" and "scheduled the next one" be a single action,
-    // which is the whole interaction after a phone call.
+    /*
+     * Lets "logged a call" and "scheduled the next one" be a single action,
+     * which is the whole interaction after a phone call.
+     *
+     * Goes through the follow-up domain rather than writing
+     * `leads.next_follow_up_at` directly. That column is a MIRROR of the
+     * earliest open follow-up; writing it here created a lead that promised a
+     * next action with no row behind it, so the lead screen showed a date
+     * beside "Follow-ups: 0 open" and the work never reached anybody's queue.
+     */
     if (dto.nextFollowUpAt) {
-      await this.repository.applyUpdate(id, {
-        nextFollowUpAt: new Date(dto.nextFollowUpAt),
-        updatedBy: principal.userId,
-      });
+      await this.followUps.setNextForLead(
+        id,
+        new Date(dto.nextFollowUpAt),
+        principal,
+        'Rescheduled while logging an activity',
+      );
     }
   }
 

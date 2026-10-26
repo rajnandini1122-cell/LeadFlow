@@ -16,6 +16,7 @@ import { PERMISSIONS, type LeadSourceIntake, type Paginated } from '@leadflow/ap
 import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
+import { IdempotencyKey } from '../../common/web/idempotency-key.decorator';
 import { LeadsService, type LeadSummary } from './leads.service';
 import { ListLeadsDto } from './dto/leads.dto';
 import { CreateLeadDto } from './dto/create-lead.dto';
@@ -27,10 +28,16 @@ import {
 } from './dto/update-lead.dto';
 import { LeadMutationsService } from './lead-mutations.service';
 import { LeadImportService } from './import/lead-import.service';
-import { ImportLeadsDto, PreviewImportDto } from './dto/import-leads.dto';
+import {
+  ImportLeadsDto,
+  PreviewImportDto,
+  SaveMappingTemplateDto,
+} from './dto/import-leads.dto';
+import { LeadLifecycleService } from './lead-lifecycle.service';
+import { DeactivateLeadDto, ReactivateLeadDto } from './dto/lead-lifecycle.dto';
 import { FollowUpsService } from '../follow-ups/follow-ups.service';
 import { IntakeOperationsService } from '../integrations/intake-processing/intake-operations.service';
-import { CreateFollowUpDto } from '../follow-ups/dto/follow-ups.dto';
+import { CreateFollowUpDto, RecordAttemptDto } from '../follow-ups/dto/follow-ups.dto';
 import { Inject, forwardRef } from '@nestjs/common';
 
 /**
@@ -47,6 +54,7 @@ export class LeadsController {
     private readonly leads: LeadsService,
     private readonly mutations: LeadMutationsService,
     private readonly imports: LeadImportService,
+    private readonly lifecycle: LeadLifecycleService,
     @Inject(forwardRef(() => FollowUpsService))
     private readonly followUps: FollowUpsService,
     private readonly intakes: IntakeOperationsService,
@@ -114,6 +122,66 @@ export class LeadsController {
     @CurrentUser() principal: TenantPrincipal,
   ) {
     return this.imports.import(dto, principal);
+  }
+
+  /**
+   * Past imports, newest first.
+   *
+   * Declared with the other `import/` routes and before `:id`, for the same
+   * reason they are: Nest matches in declaration order, so `:id` would
+   * otherwise swallow `import/batches` and try to parse it as a uuid.
+   */
+  @Get('import/batches')
+  @RequirePermissions(PERMISSIONS.LEAD_IMPORT)
+  @ApiOperation({
+    summary: 'Past CSV imports',
+    description:
+      'Each batch reports what it created and how many of those leads are ' +
+      'still live — which is what makes a badly mapped run correctable.',
+  })
+  async importBatches(@Query('limit') limit?: string) {
+    return this.imports.listBatches(limit ? Number(limit) : undefined);
+  }
+
+  @Get('import/batches/:batchId')
+  @RequirePermissions(PERMISSIONS.LEAD_IMPORT)
+  @ApiOperation({ summary: 'One past CSV import' })
+  async importBatch(
+    @Param('batchId', new ParseUUIDPipe({ version: '7' })) batchId: string,
+  ) {
+    return this.imports.findBatch(batchId);
+  }
+
+  @Get('import/mappings')
+  @RequirePermissions(PERMISSIONS.LEAD_IMPORT)
+  @ApiOperation({ summary: 'Saved column mappings' })
+  async mappingTemplates() {
+    return this.imports.listTemplates();
+  }
+
+  @Post('import/mappings')
+  @RequirePermissions(PERMISSIONS.LEAD_IMPORT)
+  @ApiOperation({
+    summary: 'Save a reusable column mapping',
+    description:
+      'Saving under an existing name replaces it, so refining one mapping ' +
+      'over three attempts leaves one template rather than three.',
+  })
+  async saveMappingTemplate(
+    @Body() dto: SaveMappingTemplateDto,
+    @CurrentUser() principal: TenantPrincipal,
+  ) {
+    return this.imports.saveTemplate(dto, principal);
+  }
+
+  @Delete('import/mappings/:templateId')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @RequirePermissions(PERMISSIONS.LEAD_IMPORT)
+  @ApiOperation({ summary: 'Delete a saved column mapping' })
+  async deleteMappingTemplate(
+    @Param('templateId', new ParseUUIDPipe({ version: '7' })) templateId: string,
+  ): Promise<void> {
+    await this.imports.deleteTemplate(templateId);
   }
 
   @Post()
@@ -201,6 +269,54 @@ export class LeadsController {
     return this.leads.findOne(id, principal);
   }
 
+  /**
+   * Takes a lead out of the live pipeline, reversibly.
+   *
+   * NOT the same thing as archiving it below, and not the same thing as marking
+   * it LOST. A wrongly imported lead is neither a lost opportunity nor
+   * something to erase: it is a record that should not be live work, and this
+   * is the only one of the three that records WHY and can be undone.
+   */
+  @Post(':id/deactivate')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSIONS.LEAD_DEACTIVATE)
+  @ApiOperation({
+    summary: 'Deactivate a lead',
+    description:
+      'Removes it from the active pipeline, cancels its open follow-ups and ' +
+      'records who did it and why. Nothing is deleted: the lead, its ' +
+      'timeline, its contact, its account link and its originating enquiry ' +
+      'all remain. Its mobile and email are released, so the corrected lead ' +
+      'can be created with the same details.',
+  })
+  async deactivate(
+    @Param('id', new ParseUUIDPipe({ version: '7' })) id: string,
+    @Body() dto: DeactivateLeadDto,
+    @CurrentUser() principal: TenantPrincipal,
+  ) {
+    await this.lifecycle.deactivate(id, dto, principal);
+    return this.leads.findOne(id, principal);
+  }
+
+  @Post(':id/reactivate')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSIONS.LEAD_DEACTIVATE)
+  @ApiOperation({
+    summary: 'Reactivate a lead',
+    description:
+      'Can fail with 409: deactivation released this lead\'s mobile and ' +
+      'email, so another active lead may have taken them in the meantime. ' +
+      'The response names the lead that holds the identifier.',
+  })
+  async reactivate(
+    @Param('id', new ParseUUIDPipe({ version: '7' })) id: string,
+    @Body() dto: ReactivateLeadDto,
+    @CurrentUser() principal: TenantPrincipal,
+  ) {
+    await this.lifecycle.reactivate(id, dto, principal);
+    return this.leads.findOne(id, principal);
+  }
+
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
   @RequirePermissions(PERMISSIONS.LEAD_DELETE)
@@ -215,6 +331,43 @@ export class LeadsController {
     @CurrentUser() principal: TenantPrincipal,
   ): Promise<void> {
     await this.mutations.archive(id, principal);
+  }
+
+  /**
+   * "I tried and could not reach them."
+   *
+   * One request for the three facts about one failed call: what happened, the
+   * rep's note, and when to try again. It logs the attempt, SUPERSEDES the
+   * pending follow-up with one at the retry time, and leaves the sales stage
+   * exactly where it was.
+   *
+   * Deliberately NOT the complete endpoint. An unanswered call is an attempt,
+   * not an outcome — the work is still owed, so completing the follow-up would
+   * drop the lead out of the queue, which is the opposite of what a missed call
+   * means.
+   *
+   * `lead.update` rather than a new permission: logging that you rang somebody
+   * is the same weight of action as logging that you spoke to them, and anybody
+   * who may work a lead may record having tried.
+   */
+  @Post(':id/attempts')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSIONS.LEAD_UPDATE)
+  @ApiOperation({
+    summary: 'Log a failed contact attempt and schedule the retry',
+    description:
+      'Records the attempt on the timeline, replaces the pending follow-up ' +
+      'with one at the retry time, and returns the lead status unchanged. ' +
+      'There is no way to move the sales stage from here: a failed attempt is ' +
+      'not contact.',
+  })
+  async recordAttempt(
+    @Param('id', new ParseUUIDPipe({ version: '7' })) id: string,
+    @Body() dto: RecordAttemptDto,
+    @CurrentUser() principal: TenantPrincipal,
+    @IdempotencyKey() idempotencyKey: string | null,
+  ) {
+    return this.followUps.recordAttempt(id, dto, principal, idempotencyKey);
   }
 
   @Get(':id/activities')
@@ -278,7 +431,8 @@ export class LeadsController {
     @Param('id', new ParseUUIDPipe({ version: '7' })) id: string,
     @Body() dto: CreateFollowUpDto,
     @CurrentUser() principal: TenantPrincipal,
+    @IdempotencyKey() idempotencyKey: string | null,
   ) {
-    return this.followUps.create(id, dto, principal);
+    return this.followUps.create(id, dto, principal, idempotencyKey);
   }
 }

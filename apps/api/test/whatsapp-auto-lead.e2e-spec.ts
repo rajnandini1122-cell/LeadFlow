@@ -61,8 +61,16 @@ describe('WhatsApp automatic lead generation', () => {
    */
   const numbers = { a: '306540000000021', b: '306540000000022' };
 
-  /** A sender number that is valid and unique to one test. */
-  let senderCounter = 70_000_000;
+  /**
+   * A sender number that is valid and unique to one test.
+   *
+   * The 40M band, and it had to move: this file and intake-operations both
+   * started at 70M, so the same number was live in two tenants at once. The
+   * assertion below counts leads by mobile, and it was finding the OTHER
+   * suite's lead — a failure that appeared and disappeared with suite
+   * execution order, which is the worst kind to debug.
+   */
+  let senderCounter = 40_000_000;
   const freshSender = (): string => `9198${String((senderCounter += 1)).padStart(8, '0')}`;
 
   const asSystem = async <T>(reason: string, run: () => Promise<T>): Promise<T> =>
@@ -592,7 +600,8 @@ describe('WhatsApp automatic lead generation', () => {
       expect((second as { leadId: string }).leadId).toBe((first as { leadId: string }).leadId);
 
       const leads = await asSystem('e2e count leads', () =>
-        prisma.client.lead.findMany({ where: { mobile: `+${from}` } }),
+        // Tenant-scoped for the same reason as the count below.
+        prisma.client.lead.findMany({ where: { organizationId: ctx.orgA.id, mobile: `+${from}` } }),
       );
       expect(leads).toHaveLength(1);
     });
@@ -638,8 +647,18 @@ describe('WhatsApp automatic lead generation', () => {
       expect(second.result).toBe('DUPLICATE');
       expect((second as { code: string }).code).toBe('DUPLICATE_LEAD');
 
+      /*
+       * Scoped to THIS organization, which is the claim being made.
+       *
+       * `runAsSystem` lifts the tenant filter, so an unscoped read here asks
+       * "does any tenant anywhere hold a lead with this number" — a question
+       * whose answer depends on what every other suite in the directory did.
+       * Uniqueness is per tenant by design; the assertion has to be too.
+       */
       const leads = await asSystem('e2e count leads', () =>
-        prisma.client.lead.findMany({ where: { mobile: `+${from}`, deletedAt: null } }),
+        prisma.client.lead.findMany({
+          where: { organizationId: ctx.orgA.id, mobile: `+${from}`, deletedAt: null },
+        }),
       );
       expect(leads).toHaveLength(1);
     });
