@@ -175,15 +175,23 @@ export function useFollowUps(
 // Writes
 // -----------------------------------------------------------------------------
 
+/** `null` clears a field; leaving it out keeps what is stored. */
 export interface UpdateLeadInput {
   firstName?: string;
-  lastName?: string;
+  lastName?: string | null;
+  designation?: string | null;
   mobile?: string;
-  email?: string;
-  companyName?: string;
-  city?: string;
-  source?: string;
-  productInterest?: string;
+  email?: string | null;
+  companyName?: string | null;
+  city?: string | null;
+  addressLine1?: string | null;
+  addressLine2?: string | null;
+  state?: string | null;
+  postalCode?: string | null;
+  additionalPhones?: string[];
+  additionalEmails?: string[];
+  source?: string | null;
+  productInterest?: string | null;
   estimatedValue?: number;
   priority?: LeadPriority;
   status?: LeadStatus;

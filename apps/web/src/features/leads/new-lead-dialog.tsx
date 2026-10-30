@@ -15,6 +15,7 @@ import { ApiError, apiGet, apiPost } from '../../lib/api-client';
 import { currencySymbol, humanise } from '../../lib/format';
 import type { LeadSummary } from './use-leads';
 import { zonedDefault, zonedInputToIso } from '../../lib/zoned-input';
+import { ContactListField } from './contact-list-field';
 
 /**
  * Neutral fallback, used only when an organization has configured none of its
@@ -86,10 +87,17 @@ export function NewLeadDialog({
 
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
+  const [designation, setDesignation] = useState('');
   const [mobile, setMobile] = useState('');
   const [email, setEmail] = useState('');
   const [companyName, setCompanyName] = useState('');
   const [city, setCity] = useState('');
+  const [addressLine1, setAddressLine1] = useState('');
+  const [addressLine2, setAddressLine2] = useState('');
+  const [stateName, setStateName] = useState('');
+  const [postalCode, setPostalCode] = useState('');
+  const [phones, setPhones] = useState<string[]>([]);
+  const [emails, setEmails] = useState<string[]>([]);
   const [source, setSource] = useState('');
   const products = useActiveProducts();
   const accounts = useAccountOptions('');
@@ -124,10 +132,17 @@ export function NewLeadDialog({
   const reset = (): void => {
     setFirstName('');
     setLastName('');
+    setDesignation('');
     setMobile('');
     setEmail('');
     setCompanyName('');
     setCity('');
+    setAddressLine1('');
+    setAddressLine2('');
+    setStateName('');
+    setPostalCode('');
+    setPhones([]);
+    setEmails([]);
     setProductInterest('');
     setEstimatedValue('');
     setStatus('NEW');
@@ -173,6 +188,7 @@ export function NewLeadDialog({
       apiPost<LeadSummary>('/leads', {
         firstName,
         ...(lastName ? { lastName } : {}),
+        ...(designation.trim() ? { designation: designation.trim() } : {}),
         // Omitted when empty rather than sent as "": the server treats a
         // missing mobile as "this lead has no phone number", which is a real
         // state for an Instagram or Messenger enquiry.
@@ -180,6 +196,12 @@ export function NewLeadDialog({
         ...(email ? { email } : {}),
         ...(companyName ? { companyName } : {}),
         ...(city ? { city } : {}),
+        ...(addressLine1.trim() ? { addressLine1 } : {}),
+        ...(addressLine2.trim() ? { addressLine2 } : {}),
+        ...(stateName.trim() ? { state: stateName } : {}),
+        ...(postalCode.trim() ? { postalCode } : {}),
+        ...(phones.some((p) => p.trim()) ? { additionalPhones: phones.filter((p) => p.trim()) } : {}),
+        ...(emails.some((e) => e.trim()) ? { additionalEmails: emails.filter((e) => e.trim()) } : {}),
         ...(source ? { source } : {}),
         ...(productId ? { productId } : {}),
         ...(accountId ? { accountId } : {}),
@@ -295,6 +317,16 @@ export function NewLeadDialog({
             </Field>
           </div>
 
+          <Field label="Designation" hint="Their role, e.g. Purchase Manager, Proprietor." error={fieldError('designation')}>
+            <input
+              autoComplete="organization-title"
+              maxLength={100}
+              value={designation}
+              onChange={(event) => setDesignation(event.target.value)}
+              className={inputClass}
+            />
+          </Field>
+
           <div className="grid gap-4 sm:grid-cols-2">
             <Field
               label="Mobile"
@@ -330,21 +362,80 @@ export function NewLeadDialog({
           </div>
 
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Company">
-              <input
-                value={companyName}
-                onChange={(event) => setCompanyName(event.target.value)}
-                className={inputClass}
-              />
-            </Field>
-            <Field label="City">
-              <input
-                value={city}
-                onChange={(event) => setCity(event.target.value)}
-                className={inputClass}
-              />
-            </Field>
+            <ContactListField
+              id="new-more-phones"
+              label="Additional phones"
+              kind="phone"
+              values={phones}
+              onChange={setPhones}
+              error={fieldError('additionalPhones')}
+            />
+            <ContactListField
+              id="new-more-emails"
+              label="Additional emails"
+              kind="email"
+              values={emails}
+              onChange={setEmails}
+              error={fieldError('additionalEmails')}
+            />
           </div>
+
+          <Field label="Company">
+            <input
+              value={companyName}
+              onChange={(event) => setCompanyName(event.target.value)}
+              className={inputClass}
+            />
+          </Field>
+
+          <fieldset className="space-y-3">
+            <legend className="text-sm font-medium text-slate-700">Address</legend>
+            <Field label="Address line 1" error={fieldError('addressLine1')}>
+              <input
+                autoComplete="address-line1"
+                placeholder="Building, survey no., street"
+                value={addressLine1}
+                onChange={(event) => setAddressLine1(event.target.value)}
+                className={inputClass}
+              />
+            </Field>
+            <Field label="Address line 2" error={fieldError('addressLine2')}>
+              <input
+                autoComplete="address-line2"
+                placeholder="Area, landmark"
+                value={addressLine2}
+                onChange={(event) => setAddressLine2(event.target.value)}
+                className={inputClass}
+              />
+            </Field>
+            <div className="grid gap-4 sm:grid-cols-3">
+              <Field label="City" error={fieldError('city')}>
+                <input
+                  autoComplete="address-level2"
+                  value={city}
+                  onChange={(event) => setCity(event.target.value)}
+                  className={inputClass}
+                />
+              </Field>
+              <Field label="State" error={fieldError('state')}>
+                <input
+                  autoComplete="address-level1"
+                  value={stateName}
+                  onChange={(event) => setStateName(event.target.value)}
+                  className={inputClass}
+                />
+              </Field>
+              <Field label="PIN code" error={fieldError('postalCode')}>
+                <input
+                  autoComplete="postal-code"
+                  inputMode="numeric"
+                  value={postalCode}
+                  onChange={(event) => setPostalCode(event.target.value)}
+                  className={inputClass}
+                />
+              </Field>
+            </div>
+          </fieldset>
 
           {/*
             Which customer this enquiry belongs to.

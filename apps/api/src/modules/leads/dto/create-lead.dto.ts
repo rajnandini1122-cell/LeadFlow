@@ -1,5 +1,7 @@
 import { Transform, Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
+  IsArray,
   IsBoolean,
   IsEmail,
   IsIn,
@@ -19,7 +21,9 @@ import {
   LEAD_STATUSES,
   type LeadPriority,
   type LeadStatus,
+  MAX_ADDITIONAL_CONTACTS,
 } from '@leadflow/api-types';
+import { optionalText, emailList, optionalEmail, phoneList } from './contact-fields';
 
 /**
  * Note what is NOT here: `organizationId`, `leadNumber`, `createdBy`.
@@ -41,6 +45,13 @@ export class CreateLeadDto {
   @MaxLength(80)
   @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   lastName?: string;
+
+  /** The person's role at the customer, e.g. "Purchase Manager". */
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  @Transform(optionalText)
+  designation?: string;
 
   /**
    * Raw phone input, in whatever form the user typed it.
@@ -92,11 +103,7 @@ export class CreateLeadDto {
   @IsOptional()
   @IsEmail({}, { message: 'must be a valid email address' })
   @MaxLength(320)
-  @Transform(({ value }) => {
-    if (typeof value !== 'string') return value;
-    const trimmed = value.trim().toLowerCase();
-    return trimmed === '' ? undefined : trimmed;
-  })
+  @Transform(optionalEmail)
   email?: string;
 
   @IsOptional()
@@ -108,6 +115,57 @@ export class CreateLeadDto {
   @IsString()
   @MaxLength(80)
   city?: string;
+
+  /*
+   * The rest of the address. The columns arrived with 20261013090000 for the
+   * CSV import; until 2026-10-30 nothing else could write them, so a full
+   * address typed by hand ended up crammed into `city`.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  @Transform(optionalText)
+  addressLine1?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  @Transform(optionalText)
+  addressLine2?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  @Transform(optionalText)
+  state?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(20)
+  @Transform(optionalText)
+  postalCode?: string;
+
+  /*
+   * Other ways to reach the same customer — an office landline, a second
+   * mobile, a personal address. Up to {MAX} each. Phones are canonicalised to
+   * E.164 by the service (same rule as `mobile`); neither list is a duplicate
+   * key: only the primary mobile and email identify a lead.
+   */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(MAX_ADDITIONAL_CONTACTS, { message: `at most ${MAX_ADDITIONAL_CONTACTS} additional phone numbers` })
+  @IsString({ each: true })
+  @MaxLength(32, { each: true })
+  @Transform(phoneList)
+  additionalPhones?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(MAX_ADDITIONAL_CONTACTS, { message: `at most ${MAX_ADDITIONAL_CONTACTS} additional email addresses` })
+  @IsEmail({}, { each: true, message: 'each must be a valid email address' })
+  @MaxLength(320, { each: true })
+  @Transform(emailList)
+  additionalEmails?: string[];
 
   @IsOptional()
   @IsString()

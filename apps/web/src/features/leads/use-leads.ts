@@ -80,6 +80,11 @@ export type LeadDetail = LeadSummary & {
   state: string | null;
   postalCode: string | null;
   country: string | null;
+  /** Other ways to reach the customer (E.164 / lower-cased). Empty when none. */
+  additionalPhones: string[];
+  additionalEmails: string[];
+  /** The contact person's role, e.g. "Purchase Manager". */
+  designation?: string | null;
   /** Why this record is not live work, and who decided. Null when it is. */
   deactivationReason: string | null;
   deactivatedBy: string | null;

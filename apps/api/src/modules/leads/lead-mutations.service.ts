@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable } from '@nestjs/common';
 import { ERROR_CODES, type LeadStatus, type Paginated } from '@leadflow/api-types';
 import { AppException } from '../../common/errors/app.exception';
 import { Inject, forwardRef } from '@nestjs/common';
@@ -6,6 +6,7 @@ import { AuditRepository } from '../../common/audit/audit.repository';
 import { FollowUpsService } from '../follow-ups/follow-ups.service';
 import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
 import { PhoneParseError, toE164 } from '../../common/utils/phone';
+import { normaliseAdditionalPhones } from './additional-phones';
 import { LeadsRepository } from './leads.repository';
 import { visibilityFilter } from './lead-visibility';
 import { canTransition, isTerminal, sideEffectsFor } from './lead-status';
@@ -55,15 +56,35 @@ export class LeadMutationsService {
     for (const field of [
       'firstName',
       'lastName',
+      'designation',
       'email',
       'companyName',
       'city',
+      'addressLine1',
+      'addressLine2',
+      'state',
+      'postalCode',
       'source',
       'productInterest',
       'estimatedValue',
       'priority',
     ] as const) {
       if (dto[field] !== undefined) data[field] = dto[field];
+    }
+
+    // Extra phones canonicalised like `mobile`; anything that merely repeats the
+    // primary mobile or email is dropped, so the list holds only OTHER ways in.
+    if (dto.additionalPhones !== undefined) {
+      const primary = dto.mobile !== undefined ? await this.normaliseMobile(dto.mobile) : lead.mobile;
+      data['additionalPhones'] = normaliseAdditionalPhones(
+        dto.additionalPhones,
+        primary,
+        await this.repository.organizationCountry(),
+      );
+    }
+    if (dto.additionalEmails !== undefined) {
+      const primary = dto.email !== undefined ? dto.email : lead.email;
+      data['additionalEmails'] = dto.additionalEmails.filter((email) => email !== primary);
     }
 
     /*
@@ -194,7 +215,7 @@ export class LeadMutationsService {
      */
     const closesLead = statusChanging && isTerminal(targetStatus);
 
-    const { leadsChanged } = await this.repository.applyLifecycleChange({
+    const { leadsChanged } = await this.applyOrExplainDuplicate(id, data, {
       leadId: id,
       data,
       closesLead,
@@ -408,6 +429,46 @@ export class LeadMutationsService {
     const lead = await this.repository.findById(id, visibilityFilter(principal)?.assignedToId);
     if (!lead) throw AppException.leadNotFound();
     return lead;
+  }
+
+  /**
+   * Writes the change; a collision with ANOTHER lead's mobile or email becomes
+   * a 409 that names that lead.
+   *
+   * Before 2026-10-30 an edit that gave a lead an address another live lead
+   * already had hit `leads_org_email_uniq` / `leads_org_mobile_uniq` and came
+   * back as a 500 carrying Prisma's raw message — server file paths included —
+   * instead of the "already exists" that creating the same lead says.
+   */
+  private async applyOrExplainDuplicate(
+    id: string,
+    data: Record<string, unknown>,
+    change: Parameters<LeadsRepository['applyLifecycleChange']>[0],
+  ): Promise<{ leadsChanged: number }> {
+    try {
+      return await this.repository.applyLifecycleChange(change);
+    } catch (error) {
+      if ((error as { code?: string }).code !== 'P2002') throw error;
+
+      const mobile = typeof data['mobile'] === 'string' ? data['mobile'] : null;
+      const email = typeof data['email'] === 'string' ? data['email'] : null;
+      const byMobile = mobile ? await this.repository.findActiveByMobile(mobile) : null;
+      const byEmail = !byMobile && email ? await this.repository.findActiveByEmail(email) : null;
+      const existing = [byMobile, byEmail].find((lead) => lead && lead.id !== id) ?? null;
+      if (!existing) throw error;
+
+      throw new AppException(
+        ERROR_CODES.DUPLICATE_LEAD,
+        `Another lead already has this ${byMobile ? 'mobile number' : 'email address'} (${existing.leadNumber}). ` +
+          'Put it under Additional phones / emails instead, or update that lead.',
+        HttpStatus.CONFLICT,
+        {
+          [byMobile ? 'mobile' : 'email']: [`already used by ${existing.leadNumber}`],
+          existingLeadId: [existing.id],
+          existingLeadNumber: [existing.leadNumber],
+        },
+      );
+    }
   }
 
   private async normaliseMobile(input: string): Promise<string> {

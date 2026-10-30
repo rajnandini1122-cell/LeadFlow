@@ -316,7 +316,13 @@ export class FollowUpsService {
         leadId,
         activityType: 'FOLLOW_UP_CREATED',
         // In the organization's time, not a UTC ISO string nobody can read.
-        description: `Follow-up scheduled for ${formatZonedDateTime(scheduledAt, await this.repository.organizationTimezone(tx))}`,
+        // The label and comment ride along: follow-up notes are shown nowhere
+        // else, so without this a comment typed here was saved and never seen.
+        description: scheduledDescription(
+          formatZonedDateTime(scheduledAt, await this.repository.organizationTimezone(tx)),
+          dto.title,
+          dto.notes,
+        ),
         actorId: principal.userId,
         idempotencyKey,
         result: { followUpId: followUp.id },
@@ -1143,4 +1149,18 @@ function toView(row: FollowUpRow): FollowUpView {
     // means the UI is correct today and stays correct once the worker lands.
     isOverdue: open && row.scheduledAt.getTime() < Date.now(),
   };
+}
+
+/** lead_activities.description is VARCHAR(1000). */
+const ACTIVITY_DESCRIPTION_MAX = 1000;
+
+/**
+ * "Follow-up scheduled for 31 Oct, 11:00 — Send revised quotation: customer
+ * wants 2 kg samples first", capped to fit the timeline column.
+ */
+export function scheduledDescription(when: string, title?: string, notes?: string): string {
+  let text = `Follow-up scheduled for ${when}`;
+  if (title?.trim()) text += ` — ${title.trim()}`;
+  if (notes?.trim()) text += `: ${notes.trim()}`;
+  return text.length > ACTIVITY_DESCRIPTION_MAX ? `${text.slice(0, ACTIVITY_DESCRIPTION_MAX - 1)}…` : text;
 }

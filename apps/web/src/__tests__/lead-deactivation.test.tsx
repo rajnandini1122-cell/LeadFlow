@@ -45,6 +45,8 @@ const LEAD: LeadDetail = {
   state: 'Maharashtra',
   postalCode: '411001',
   country: 'IN',
+  additionalPhones: [],
+  additionalEmails: [],
   deactivationReason: null,
   deactivatedBy: null,
   importBatchId: 'batch-1',

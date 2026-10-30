@@ -1,5 +1,7 @@
 import { Transform, Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
+  IsArray,
   IsEmail,
   IsIn,
   IsISO8601,
@@ -19,7 +21,9 @@ import {
   type ActivityType,
   type LeadPriority,
   type LeadStatus,
+  MAX_ADDITIONAL_CONTACTS,
 } from '@leadflow/api-types';
+import { clearableText, emailList, optionalEmail, phoneList } from './contact-fields';
 
 /**
  * Partial update. Every field optional — PATCH semantics.
@@ -41,6 +45,13 @@ export class UpdateLeadDto {
   @MaxLength(80)
   lastName?: string;
 
+  /** The person's role at the customer, e.g. "Purchase Manager". */
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  @Transform(clearableText)
+  designation?: string | null;
+
   /** Re-normalised to E.164 by the service against the tenant country. */
   @IsOptional()
   @IsString()
@@ -51,11 +62,7 @@ export class UpdateLeadDto {
   @IsOptional()
   @IsEmail({}, { message: 'must be a valid email address' })
   @MaxLength(320)
-  @Transform(({ value }) => {
-    if (typeof value !== 'string') return value;
-    const trimmed = value.trim().toLowerCase();
-    return trimmed === '' ? undefined : trimmed;
-  })
+  @Transform(optionalEmail)
   email?: string;
 
   @IsOptional()
@@ -67,6 +74,57 @@ export class UpdateLeadDto {
   @IsString()
   @MaxLength(80)
   city?: string;
+
+  /*
+   * The rest of the address. The columns arrived with 20261013090000 for the
+   * CSV import; until 2026-10-30 nothing else could write them, so a full
+   * address typed by hand ended up crammed into `city`.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  @Transform(clearableText)
+  addressLine1?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  @Transform(clearableText)
+  addressLine2?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  @Transform(clearableText)
+  state?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(20)
+  @Transform(clearableText)
+  postalCode?: string | null;
+
+  /*
+   * Other ways to reach the same customer — an office landline, a second
+   * mobile, a personal address. Up to {MAX} each. Phones are canonicalised to
+   * E.164 by the service (same rule as `mobile`); neither list is a duplicate
+   * key: only the primary mobile and email identify a lead.
+   */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(MAX_ADDITIONAL_CONTACTS, { message: `at most ${MAX_ADDITIONAL_CONTACTS} additional phone numbers` })
+  @IsString({ each: true })
+  @MaxLength(32, { each: true })
+  @Transform(phoneList)
+  additionalPhones?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(MAX_ADDITIONAL_CONTACTS, { message: `at most ${MAX_ADDITIONAL_CONTACTS} additional email addresses` })
+  @IsEmail({}, { each: true, message: 'each must be a valid email address' })
+  @MaxLength(320, { each: true })
+  @Transform(emailList)
+  additionalEmails?: string[];
 
   @IsOptional()
   @IsString()
