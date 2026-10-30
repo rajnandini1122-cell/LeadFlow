@@ -6,6 +6,7 @@ import { Card, CardHeader, ErrorNotice, PageHeader, SkeletonRows } from '../../c
 import { formatDateTime } from '../../lib/format';
 import { useAuth } from '../auth/auth-context';
 import { ChannelSetupGuide } from './channel-setup-guide';
+import { WhatsAppWebhookSetup } from './whatsapp-webhook-setup';
 import { useState, type FormEvent } from 'react';
 import {
   CHANNEL_PRESENTATION,
@@ -435,6 +436,8 @@ function IntegrationCard({
           deployment being able to use one, and letting the client decide would
           put a working-looking form in front of a build that cannot honour it.
         */}
+        {integration.channel === 'WHATSAPP' && canManage && <WhatsAppWebhookSetup />}
+
         {integration.connectable && canManage && <ProviderSetup integration={integration} />}
 
         <div className="flex flex-wrap items-center gap-3">
