@@ -39,6 +39,8 @@ const LEAD: LeadDetail = {
   state: null,
   postalCode: null,
   country: null,
+  additionalPhones: [],
+  additionalEmails: [],
   deactivationReason: null,
   deactivatedBy: null,
   importBatchId: null,

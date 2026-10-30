@@ -25,6 +25,7 @@ import { zonedDefault, zonedFromNow, zonedInputToIso, toZonedInput } from '../..
 import { newIdempotencyKey } from '../../lib/idempotency';
 import { useToast } from '../../components/toast';
 import { useBusyLabel } from '../../components/offline-banner';
+import { ContactListField } from './contact-list-field';
 
 const FOLLOW_UP_TYPES = ['CALL', 'WHATSAPP', 'EMAIL', 'MEETING', 'OTHER'];
 
@@ -147,6 +148,11 @@ export function Dialog({
   );
 }
 
+/** The API's limits (follow-ups.dto.ts): a label, a comment, a reschedule reason. */
+export const FOLLOW_UP_TITLE_MAX = 200;
+export const FOLLOW_UP_COMMENT_MAX = 800;
+export const RESCHEDULE_REASON_MAX = 255;
+
 export const inputClass =
   'w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-slate-900 focus:ring-1 focus:ring-slate-900 disabled:bg-slate-50 disabled:text-slate-400';
 
@@ -209,18 +215,30 @@ export function EditLeadDialog({
   const [form, setForm] = useState({
     firstName: '',
     lastName: '',
+    designation: '',
     mobile: '',
     email: '',
     companyName: '',
+    addressLine1: '',
+    addressLine2: '',
     city: '',
-    source: '',
+    state: '',
+    postalCode: '',
     productInterest: '',
     estimatedValue: '',
     priority: 'MEDIUM' as LeadPriority,
   });
+  const [phones, setPhones] = useState<string[]>([]);
+  const [emails, setEmails] = useState<string[]>([]);
 
-  // Reload from the record each time it opens, so a cancelled edit does not
-  // leave stale values behind on the next open.
+  /*
+   * Reload from the record each time it opens, so a cancelled edit does not
+   * leave stale values behind on the next open.
+   *
+   * EVERY stored field is loaded. Email, city and product interest used to open
+   * blank — so the form showed nothing where the lead had values, and saving
+   * could never clear one, because blanks were simply not sent.
+   */
   useEffect(() => {
     if (!open) return;
     const [firstName = '', ...rest] = lead.name === '(no name)' ? [''] : lead.name.split(' ');
@@ -228,19 +246,28 @@ export function EditLeadDialog({
     setForm({
       firstName,
       lastName: rest.join(' '),
+      designation: lead.designation ?? '',
       mobile: lead.mobile ?? '',
-      email: '',
+      email: lead.email ?? '',
       companyName: lead.companyName ?? '',
-      city: '',
-      source: '',
-      productInterest: '',
+      addressLine1: lead.addressLine1 ?? '',
+      addressLine2: lead.addressLine2 ?? '',
+      city: lead.city ?? '',
+      state: lead.state ?? '',
+      postalCode: lead.postalCode ?? '',
+      productInterest: lead.productInterest ?? '',
       estimatedValue: lead.estimatedValue ?? '',
       priority: lead.priority,
     });
+    setPhones(lead.additionalPhones ?? []);
+    setEmails(lead.additionalEmails ?? []);
     update.reset();
   }, [open, lead]);
 
   if (!open) return null;
+
+  // Blank → null, which the API reads as "clear this".
+  const orNull = (value: string): string | null => (value.trim() === '' ? null : value);
 
   const submit = (event: FormEvent): void => {
     event.preventDefault();
@@ -248,13 +275,21 @@ export function EditLeadDialog({
     update.mutate(
       {
         firstName: form.firstName,
-        ...(form.lastName ? { lastName: form.lastName } : {}),
-        ...(form.mobile ? { mobile: form.mobile } : {}),
-        ...(form.email ? { email: form.email } : {}),
-        ...(form.companyName ? { companyName: form.companyName } : {}),
-        ...(form.city ? { city: form.city } : {}),
-        ...(form.source ? { source: form.source } : {}),
-        ...(form.productInterest ? { productInterest: form.productInterest } : {}),
+        lastName: orNull(form.lastName),
+        designation: orNull(form.designation),
+        // The primary mobile cannot be removed here — it is the lead's identity
+        // for duplicate detection — so a blank keeps what is stored.
+        ...(form.mobile.trim() ? { mobile: form.mobile } : {}),
+        email: orNull(form.email),
+        companyName: orNull(form.companyName),
+        addressLine1: orNull(form.addressLine1),
+        addressLine2: orNull(form.addressLine2),
+        city: orNull(form.city),
+        state: orNull(form.state),
+        postalCode: orNull(form.postalCode),
+        productInterest: orNull(form.productInterest),
+        additionalPhones: phones.filter((phone) => phone.trim() !== ''),
+        additionalEmails: emails.filter((email) => email.trim() !== ''),
         ...(form.estimatedValue ? { estimatedValue: Number(form.estimatedValue) } : {}),
         priority: form.priority,
       },
@@ -277,25 +312,64 @@ export function EditLeadDialog({
           </Field>
         </div>
 
+        <Field label="Designation" htmlFor="edit-designation" error={fieldErrorOf(update.error, 'designation')} hint="Their role, e.g. Purchase Manager, Proprietor.">
+          <input id="edit-designation" autoComplete="organization-title" maxLength={100} value={form.designation} onChange={(e) => set('designation')(e.target.value)} className={inputClass} />
+        </Field>
+
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Mobile" htmlFor="edit-mobile" error={fieldErrorOf(update.error, 'mobile')} hint="Stored as E.164.">
-            <input id="edit-mobile" value={form.mobile} onChange={(e) => set('mobile')(e.target.value)} className={inputClass} />
+          <Field label="Mobile" htmlFor="edit-mobile" error={fieldErrorOf(update.error, 'mobile')} hint="The main number. Stored as E.164.">
+            <input id="edit-mobile" type="tel" inputMode="tel" value={form.mobile} onChange={(e) => set('mobile')(e.target.value)} className={inputClass} />
           </Field>
-          <Field label="Email" htmlFor="edit-email" error={fieldErrorOf(update.error, 'email')}>
-            <input id="edit-email" type="email" value={form.email} onChange={(e) => set('email')(e.target.value)} className={inputClass} />
+          <Field label="Email" htmlFor="edit-email" error={fieldErrorOf(update.error, 'email')} hint="The main address — one address only.">
+            <input id="edit-email" type="email" inputMode="email" value={form.email} onChange={(e) => set('email')(e.target.value)} className={inputClass} />
           </Field>
         </div>
 
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Company" htmlFor="edit-company">
-            <input id="edit-company" value={form.companyName} onChange={(e) => set('companyName')(e.target.value)} className={inputClass} />
-          </Field>
-          <Field label="City" htmlFor="edit-city">
-            <input id="edit-city" value={form.city} onChange={(e) => set('city')(e.target.value)} className={inputClass} />
-          </Field>
+          <ContactListField
+            id="edit-more-phones"
+            label="Additional phones"
+            kind="phone"
+            values={phones}
+            onChange={setPhones}
+            error={fieldErrorOf(update.error, 'additionalPhones')}
+          />
+          <ContactListField
+            id="edit-more-emails"
+            label="Additional emails"
+            kind="email"
+            values={emails}
+            onChange={setEmails}
+            error={fieldErrorOf(update.error, 'additionalEmails')}
+          />
         </div>
 
-        <Field label="Product interest" htmlFor="edit-interest">
+        <Field label="Company" htmlFor="edit-company">
+          <input id="edit-company" value={form.companyName} onChange={(e) => set('companyName')(e.target.value)} className={inputClass} />
+        </Field>
+
+        <fieldset className="space-y-3">
+          <legend className="text-sm font-medium text-slate-700">Address</legend>
+          <Field label="Address line 1" htmlFor="edit-address1" error={fieldErrorOf(update.error, 'addressLine1')}>
+            <input id="edit-address1" autoComplete="address-line1" placeholder="Building, survey no., street" value={form.addressLine1} onChange={(e) => set('addressLine1')(e.target.value)} className={inputClass} />
+          </Field>
+          <Field label="Address line 2" htmlFor="edit-address2" error={fieldErrorOf(update.error, 'addressLine2')}>
+            <input id="edit-address2" autoComplete="address-line2" placeholder="Area, landmark" value={form.addressLine2} onChange={(e) => set('addressLine2')(e.target.value)} className={inputClass} />
+          </Field>
+          <div className="grid gap-4 sm:grid-cols-3">
+            <Field label="City" htmlFor="edit-city" error={fieldErrorOf(update.error, 'city')}>
+              <input id="edit-city" autoComplete="address-level2" value={form.city} onChange={(e) => set('city')(e.target.value)} className={inputClass} />
+            </Field>
+            <Field label="State" htmlFor="edit-state" error={fieldErrorOf(update.error, 'state')}>
+              <input id="edit-state" autoComplete="address-level1" value={form.state} onChange={(e) => set('state')(e.target.value)} className={inputClass} />
+            </Field>
+            <Field label="PIN code" htmlFor="edit-postal" error={fieldErrorOf(update.error, 'postalCode')}>
+              <input id="edit-postal" autoComplete="postal-code" inputMode="numeric" value={form.postalCode} onChange={(e) => set('postalCode')(e.target.value)} className={inputClass} />
+            </Field>
+          </div>
+        </fieldset>
+
+        <Field label="Product interest" htmlFor="edit-interest" error={fieldErrorOf(update.error, 'productInterest')}>
           <input id="edit-interest" value={form.productInterest} onChange={(e) => set('productInterest')(e.target.value)} className={inputClass} />
         </Field>
 
@@ -515,6 +589,7 @@ export function ScheduleFollowUpDialog({
   const [scheduledAt, setScheduledAt] = useState(defaultNextFollowUp());
   const [type, setType] = useState('CALL');
   const [title, setTitle] = useState('');
+  const [notes, setNotes] = useState('');
   const [idempotencyKey, setIdempotencyKey] = useState(newIdempotencyKey);
 
   useEffect(() => {
@@ -522,6 +597,7 @@ export function ScheduleFollowUpDialog({
     setScheduledAt(defaultNextFollowUp());
     setType('CALL');
     setTitle('');
+    setNotes('');
     setIdempotencyKey(newIdempotencyKey());
     create.reset();
   }, [open]);
@@ -534,7 +610,8 @@ export function ScheduleFollowUpDialog({
       {
         scheduledAt: zonedInputToIso(scheduledAt),
         type,
-        ...(title ? { title } : {}),
+        ...(title.trim() ? { title: title.trim() } : {}),
+        ...(notes.trim() ? { notes: notes.trim() } : {}),
         idempotencyKey,
       },
       {
@@ -561,8 +638,31 @@ export function ScheduleFollowUpDialog({
           </select>
         </Field>
 
-        <Field label="What for?" htmlFor="fu-title" hint="Optional, but future-you will thank you.">
-          <input id="fu-title" value={title} onChange={(e) => setTitle(e.target.value)} className={inputClass} />
+        {/*
+          * "What for?" is a SHORT label (the API holds 200 characters). It used
+          * to be the only text box, so people wrote their whole comment into
+          * it, went over the limit and got "Request validation failed" with no
+          * hint which field (production, 2026-10-30 — five failed attempts on
+          * one lead, then the comment saved as a separate note). The comment
+          * now has its own box, both show their limit as you type, and an
+          * error lands under the field it belongs to.
+          */}
+        <Field
+          label="What for?"
+          htmlFor="fu-title"
+          error={fieldErrorOf(create.error, 'title')}
+          hint={`Short label, e.g. "Send revised quotation". ${title.length}/${FOLLOW_UP_TITLE_MAX}`}
+        >
+          <input id="fu-title" value={title} maxLength={FOLLOW_UP_TITLE_MAX} onChange={(e) => setTitle(e.target.value)} className={inputClass} />
+        </Field>
+
+        <Field
+          label="Comment"
+          htmlFor="fu-notes"
+          error={fieldErrorOf(create.error, 'notes')}
+          hint={`Optional. Shown on the lead's timeline. ${notes.length}/${FOLLOW_UP_COMMENT_MAX}`}
+        >
+          <textarea id="fu-notes" rows={3} value={notes} maxLength={FOLLOW_UP_COMMENT_MAX} onChange={(e) => setNotes(e.target.value)} className={inputClass} />
         </Field>
 
         {create.isError && (
@@ -793,7 +893,7 @@ export function RescheduleFollowUpDialog({
         ...(followUp.leadId ? { leadId: followUp.leadId } : {}),
         idempotencyKey,
         scheduledAt: zonedInputToIso(scheduledAt),
-        ...(reason ? { reason } : {}),
+        ...(reason.trim() ? { reason: reason.trim() } : {}),
       },
       {
         onSuccess: (result) => {
@@ -833,8 +933,13 @@ export function RescheduleFollowUpDialog({
           ))}
         </div>
 
-        <Field label="Reason" htmlFor="re-reason" hint="The original stays on the timeline, so the missed attempt is visible.">
-          <input id="re-reason" value={reason} onChange={(e) => setReason(e.target.value)} className={inputClass} />
+        <Field
+          label="Reason / comment"
+          htmlFor="re-reason"
+          error={fieldErrorOf(reschedule.error, 'reason')}
+          hint={`Shown on the lead's timeline with the old and new time. ${reason.length}/${RESCHEDULE_REASON_MAX}`}
+        >
+          <textarea id="re-reason" rows={2} value={reason} maxLength={RESCHEDULE_REASON_MAX} onChange={(e) => setReason(e.target.value)} className={inputClass} />
         </Field>
 
         {reschedule.isError && (

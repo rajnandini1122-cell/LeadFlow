@@ -10,6 +10,7 @@ import {
 import { AppException } from '../../common/errors/app.exception';
 import { AuditRepository } from '../../common/audit/audit.repository';
 import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
+import { normaliseAdditionalPhones } from './additional-phones';
 import { LeadsRepository } from './leads.repository';
 import { ContactsRepository } from '../contacts/contacts.repository';
 import type { ListLeadsDto } from './dto/leads.dto';
@@ -154,6 +155,11 @@ export class LeadsService {
       state: string | null;
       postalCode: string | null;
       country: string | null;
+      /** Other ways to reach this customer (E.164 / lower-cased). Empty when none. */
+      additionalPhones: string[];
+      additionalEmails: string[];
+      /** The contact person's role, e.g. "Purchase Manager". */
+      designation: string | null;
       /** Why this record is not live work, and who decided. Null when it is. */
       deactivationReason: string | null;
       deactivatedBy: string | null;
@@ -222,6 +228,9 @@ export class LeadsService {
       state: lead.state,
       postalCode: lead.postalCode,
       country: lead.country,
+      additionalPhones: lead.additionalPhones ?? [],
+      designation: lead.designation ?? null,
+      additionalEmails: lead.additionalEmails ?? [],
       deactivationReason: lead.deactivationReason,
       deactivatedBy: lead.deactivatedBy,
       importBatchId: lead.importBatchId,
@@ -519,10 +528,21 @@ export class LeadsService {
       return await this.repository.createWithActivity({
         firstName: dto.firstName,
         lastName: dto.lastName,
+        designation: dto.designation,
         mobile,
         email: dto.email,
         companyName: dto.companyName,
         city: dto.city,
+        addressLine1: dto.addressLine1,
+        addressLine2: dto.addressLine2,
+        state: dto.state,
+        postalCode: dto.postalCode,
+        additionalPhones: normaliseAdditionalPhones(
+          dto.additionalPhones ?? [],
+          mobile,
+          await this.repository.organizationCountry(),
+        ),
+        additionalEmails: (dto.additionalEmails ?? []).filter((email) => email !== dto.email),
         source: dto.source,
         productId: dto.productId,
         accountId: dto.accountId,

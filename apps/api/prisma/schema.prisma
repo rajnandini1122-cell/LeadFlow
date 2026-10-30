@@ -225,17 +225,17 @@ model Organization {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  settings     OrganizationSettings?
-  memberships  OrganizationUser[]
-  roles        Role[]
-  sessions     Session[]
-  auditLogs    AuditLog[]
-  leads        Lead[]
-  contacts     Contact[]
+  settings        OrganizationSettings?
+  memberships     OrganizationUser[]
+  roles           Role[]
+  sessions        Session[]
+  auditLogs       AuditLog[]
+  leads           Lead[]
+  contacts        Contact[]
   leadAttachments LeadAttachment[]
-  activities   LeadActivity[]
-  followUps    FollowUp[]
-  subscription Subscription?
+  activities      LeadActivity[]
+  followUps       FollowUp[]
+  subscription    Subscription?
 
   channelIntegrations   ChannelIntegration[]
   accounts              Account[]
@@ -691,6 +691,9 @@ model Lead {
 
   firstName   String? @map("first_name") @db.VarChar(80)
   lastName    String? @map("last_name") @db.VarChar(80)
+  /// The person's role at the customer — "Purchase Manager", "Proprietor".
+  /// Free text: titles vary too much between companies for a fixed list.
+  designation String? @db.VarChar(100)
   /// E.164, e.g. +14155552671. Stored canonically so the same person entered
   /// in two formats is still detected as one duplicate.
   mobile      String? @db.VarChar(20)
@@ -713,27 +716,34 @@ model Lead {
   /// said. An export business needs two leads for one person to carry two
   /// different delivery addresses, which an address held only on the contact
   /// could not express.
-  addressLine1 String? @map("address_line1") @db.VarChar(200)
-  addressLine2 String? @map("address_line2") @db.VarChar(200)
+  addressLine1     String?  @map("address_line1") @db.VarChar(200)
+  addressLine2     String?  @map("address_line2") @db.VarChar(200)
   /// Sub-national region, as supplied. Free text, not an enum: every country
   /// divides itself differently and a closed list would be wrong somewhere.
-  state        String? @db.VarChar(80)
+  state            String?  @db.VarChar(80)
   /// VARCHAR, never numeric. Indian PIN codes have meaningful leading zeroes
   /// and UK and Canadian codes contain letters — a number column corrupts all
   /// three.
-  postalCode   String? @map("postal_code") @db.VarChar(20)
+  postalCode       String?  @map("postal_code") @db.VarChar(20)
   /// ISO 3166-1 alpha-2, like every other country column here. Two characters
   /// rather than free text so it cannot hold "India" in one row and "IN" in
   /// the next, which is how a country filter quietly stops working.
-  country      String? @db.VarChar(2)
-  source       String? @db.VarChar(60)
+  country          String?  @db.VarChar(2)
+  /// Other ways to reach the same customer: an office landline, a second
+  /// mobile, another address. E.164 / lower-cased, at most 5 each (enforced by
+  /// the API). NOT duplicate keys — only the primary mobile and email identify
+  /// a lead. Arrays rather than a child table: a short, ordered list that is
+  /// always read and written with its lead and never queried on its own.
+  additionalPhones String[] @default([]) @map("additional_phones") @db.VarChar(20)
+  additionalEmails String[] @default([]) @map("additional_emails") @db.VarChar(320)
+  source           String?  @db.VarChar(60)
   /// The standardised product this enquiry is FOR — the grouping key for every
   /// product KPI.
   ///
   /// Nullable, and permanently so: leads created before the catalogue existed
   /// have none, an enquiry can legitimately be for something not yet
   /// catalogued, and forcing a value would mean guessing one.
-  productId    String? @map("product_id") @db.Uuid
+  productId        String?  @map("product_id") @db.Uuid
 
   /// What the customer actually asked for, in their words.
   ///

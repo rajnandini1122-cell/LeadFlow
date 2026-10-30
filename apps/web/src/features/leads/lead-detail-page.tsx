@@ -745,12 +745,43 @@ function ContactDetails({ lead }: { lead: LeadDetail }): React.JSX.Element | nul
     lead.country,
   ].filter(Boolean);
 
-  if (!lead.mobile && !lead.email && address.length === 0) return null;
+  const phones = lead.additionalPhones ?? [];
+  const emails = lead.additionalEmails ?? [];
+
+  if (!lead.designation && !lead.mobile && !lead.email && address.length === 0 && phones.length === 0 && emails.length === 0) {
+    return null;
+  }
 
   return (
     <dl className="grid gap-x-6 gap-y-2 border-t border-slate-100 px-5 py-3 text-sm sm:grid-cols-3">
+      {lead.designation && <DetailField label="Designation" value={lead.designation} />}
       {lead.mobile && <DetailField label="Mobile" value={lead.mobile} />}
       {lead.email && <DetailField label="Email" value={lead.email} />}
+      {/* Tappable: on a phone, an extra number is one tap from the dialer. */}
+      {phones.length > 0 && (
+        <div>
+          <dt className="text-xs text-slate-500">Additional phones</dt>
+          <dd className="flex flex-col">
+            {phones.map((phone) => (
+              <a key={phone} href={`tel:${phone}`} className="inline-flex min-h-11 items-center text-slate-800 underline decoration-slate-300 underline-offset-2 hover:decoration-slate-800 sm:min-h-0">
+                {phone}
+              </a>
+            ))}
+          </dd>
+        </div>
+      )}
+      {emails.length > 0 && (
+        <div>
+          <dt className="text-xs text-slate-500">Additional emails</dt>
+          <dd className="flex flex-col">
+            {emails.map((email) => (
+              <a key={email} href={`mailto:${email}`} className="inline-flex min-h-11 items-center break-all text-slate-800 underline decoration-slate-300 underline-offset-2 hover:decoration-slate-800 sm:min-h-0">
+                {email}
+              </a>
+            ))}
+          </dd>
+        </div>
+      )}
       {address.length > 0 && (
         <div className="sm:col-span-3">
           <dt className="text-xs text-slate-500">Address</dt>

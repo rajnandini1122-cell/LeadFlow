@@ -5,6 +5,7 @@ import { marketWhere, type Market } from '../../common/utils/market';
 import type { ActivityType } from '../../generated/prisma/enums';
 import type { Prisma } from '../../generated/prisma/client';
 import { sideEffectsFor } from './lead-status';
+import { toE164 } from '../../common/utils/phone';
 import { PrismaService, type PrismaTransaction } from '../../common/prisma/prisma.service';
 import { initialFollowUpStatus } from '../follow-ups/follow-ups.repository';
 import { TenantContextService } from '../../common/tenancy/tenant-context.service';
@@ -133,7 +134,7 @@ export class LeadsRepository {
    * Extracted so the two cannot drift: a total computed from different filters
    * than the page is worse than no total at all.
    */
-  private listWhere(filters: LeadListFilters): Record<string, unknown> {
+  private listWhere(filters: LeadListFilters, searchPhone: string | null = null): Record<string, unknown> {
     const where: Record<string, unknown> = { deletedAt: null };
 
     /*
@@ -181,6 +182,11 @@ export class LeadsRepository {
         // wrote from found nothing — on exactly the leads that have no phone
         // number and are hardest to find any other way.
         { email: { contains: filters.search, mode: 'insensitive' } },
+        // Additional contacts match EXACTLY: Prisma cannot substring-match
+        // inside an array. The search text is canonicalised to E.164 first, so
+        // "98230 55636" finds "+919823055636" the way it would for `mobile`.
+        { additionalEmails: { has: filters.search.trim().toLowerCase() } },
+        ...(searchPhone ? [{ additionalPhones: { has: searchPhone } }] : []),
       ];
     }
 
@@ -188,11 +194,13 @@ export class LeadsRepository {
   }
 
   async countMatching(filters: LeadListFilters): Promise<number> {
-    return this.prisma.client.lead.count({ where: this.listWhere(filters) });
+    return this.prisma.client.lead.count({
+      where: this.listWhere(filters, await this.searchAsPhone(filters.search)),
+    });
   }
 
   async list(filters: LeadListFilters & { cursor?: string | undefined; limit: number }) {
-    const where = this.listWhere(filters);
+    const where = this.listWhere(filters, await this.searchAsPhone(filters.search));
 
     // Fetch one extra row to determine hasMore without a second count query.
     return this.prisma.client.lead.findMany({
@@ -485,6 +493,9 @@ export class LeadsRepository {
      * this the importer had nowhere to put it, so it was dropped.
      */
     addressLine1?: string | undefined;
+    additionalPhones?: string[] | undefined;
+    designation?: string | undefined;
+    additionalEmails?: string[] | undefined;
     addressLine2?: string | undefined;
     state?: string | undefined;
     postalCode?: string | undefined;
@@ -566,11 +577,14 @@ export class LeadsRepository {
           leadNumber,
           firstName: input.firstName,
           lastName: input.lastName ?? null,
+          designation: input.designation ?? null,
           mobile: input.mobile,
           email: input.email ?? null,
           companyName: input.companyName ?? null,
           city: input.city ?? null,
           addressLine1: input.addressLine1 ?? null,
+          additionalPhones: input.additionalPhones ?? [],
+          additionalEmails: input.additionalEmails ?? [],
           addressLine2: input.addressLine2 ?? null,
           state: input.state ?? null,
           postalCode: input.postalCode ?? null,
@@ -673,6 +687,16 @@ export class LeadsRepository {
    * Organization is tenant-scoped by the extension, so findFirst returns this
    * tenant and no other.
    */
+  /** The search text as an E.164 number in the tenant's country, or null if it is not one. */
+  private async searchAsPhone(search: string | undefined): Promise<string | null> {
+    if (!search || !/\d{6,}/.test(search.replace(/\D/g, ''))) return null;
+    try {
+      return toE164(search, await this.organizationCountry());
+    } catch {
+      return null;
+    }
+  }
+
   async organizationCountry(): Promise<string> {
     const organization = await this.prisma.client.organization.findFirst({
       select: { country: true },
