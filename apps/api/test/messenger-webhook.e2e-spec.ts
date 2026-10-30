@@ -136,7 +136,11 @@ describe('Instagram webhook', () => {
         });
 
       expect(response.status).toBe(200);
-      expect(response.text).toContain('99887766');
+      // EXACTLY the challenge, as plain text. Meta compares the whole body;
+      // the JSON envelope ({"success":true,"data":...}) made verification fail
+      // while `toContain` still passed.
+      expect(response.text).toBe('99887766');
+      expect(response.headers['content-type']).toMatch(/^text\/plain/);
     });
 
     it('refuses a wrong verify token without hinting at the real one', async () => {
@@ -717,7 +721,11 @@ describe('Instagram webhook', () => {
         });
 
       expect(response.status).toBe(200);
-      expect(response.text).toContain('55443322');
+      // EXACTLY the challenge, as plain text. Meta compares the whole body;
+      // the JSON envelope ({"success":true,"data":...}) made verification fail
+      // while `toContain` still passed.
+      expect(response.text).toBe('55443322');
+      expect(response.headers['content-type']).toMatch(/^text\/plain/);
     });
 
     it('does not accept the Instagram verify token', async () => {
@@ -987,7 +995,11 @@ describe('Instagram webhook', () => {
         });
 
       expect(response.status).toBe(200);
-      expect(response.text).toContain('424242');
+      // EXACTLY the challenge, as plain text. Meta compares the whole body;
+      // the JSON envelope ({"success":true,"data":...}) made verification fail
+      // while `toContain` still passed.
+      expect(response.text).toBe('424242');
+      expect(response.headers['content-type']).toMatch(/^text\/plain/);
     });
   });
 });

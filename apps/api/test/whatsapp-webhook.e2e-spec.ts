@@ -171,7 +171,11 @@ describe('WhatsApp webhook', () => {
         });
 
       expect(response.status).toBe(200);
-      expect(response.text).toContain('1158201444');
+      // EXACTLY the challenge, as plain text. Meta compares the whole body;
+      // the JSON envelope ({"success":true,"data":...}) made verification fail
+      // while `toContain` still passed.
+      expect(response.text).toBe('1158201444');
+      expect(response.headers['content-type']).toMatch(/^text\/plain/);
     });
 
     it('refuses a wrong verify token', async () => {
@@ -187,6 +191,20 @@ describe('WhatsApp webhook', () => {
       expect(response.status).toBe(403);
       // Nothing that would help someone work out the real token.
       expect(response.text).not.toContain(VERIFY_TOKEN);
+    });
+
+    it('refuses the right token when hub.mode is not "subscribe"', async () => {
+      const response = await ctx
+        .http()
+        .get('/api/v1/webhooks/whatsapp')
+        .query({
+          'hub.mode': 'unsubscribe',
+          'hub.verify_token': VERIFY_TOKEN,
+          'hub.challenge': '1158201444',
+        });
+
+      expect(response.status).toBe(403);
+      expect(response.text).not.toContain('1158201444');
     });
 
     it('refuses a request with no token at all', async () => {

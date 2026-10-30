@@ -3,6 +3,7 @@ import {
   Controller,
   ForbiddenException,
   Get,
+  Header,
   Headers,
   HttpCode,
   HttpStatus,
@@ -15,6 +16,7 @@ import { Throttle } from '@nestjs/throttler';
 import type { RawBodyRequest } from '@nestjs/common';
 import type { Request } from 'express';
 import { Public } from '../../../auth/decorators/public.decorator';
+import { raw, type RawResponse } from '../../../../common/interceptors/response-envelope.interceptor';
 import { MessengerWebhookService } from './messenger-webhook.service';
 import {
   FACEBOOK_CHANNEL,
@@ -58,15 +60,21 @@ abstract class MessengerWebhookController {
   @Get()
   @Public()
   @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  @Header('Content-Type', 'text/plain; charset=utf-8')
   verify(
     @Query('hub.mode') mode?: string,
     @Query('hub.verify_token') token?: string,
     @Query('hub.challenge') challenge?: string,
-  ): string {
+  ): RawResponse<string> {
     const result = this.webhooks.verifySubscription(this.channel, { mode, token, challenge });
     if (result === null) throw new ForbiddenException();
 
-    return result;
+    // Meta compares the WHOLE response body with the challenge. Returned as a
+    // plain value, the global envelope turned it into
+    // {"success":true,"data":"<challenge>",...} and Meta's "Verify and save"
+    // failed even with the right token (found 2026-10-30, before WhatsApp was
+    // ever configured in production). raw() bypasses the envelope.
+    return raw(result);
   }
 
   /**
