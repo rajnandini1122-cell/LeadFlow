@@ -5,6 +5,7 @@ import { marketWhere, type Market } from '../../common/utils/market';
 import type { ActivityType } from '../../generated/prisma/enums';
 import type { Prisma } from '../../generated/prisma/client';
 import { sideEffectsFor } from './lead-status';
+import { assertStatusAllowed } from './lead-qualification';
 import { toE164 } from '../../common/utils/phone';
 import { PrismaService, type PrismaTransaction } from '../../common/prisma/prisma.service';
 import { initialFollowUpStatus } from '../follow-ups/follow-ups.repository';
@@ -88,6 +89,8 @@ export interface LeadListFilters {
   lastOutcome?: string | undefined;
   /** Home market or abroad; needs `homeCountry` to be meaningful. */
   market?: Market | undefined;
+  /** Rough (being qualified) or Refined (in the sales workflow). */
+  qualification?: 'ROUGH' | 'REFINED' | undefined;
   /** The organization's country — what "domestic" means. */
   homeCountry?: string | undefined;
 }
@@ -176,6 +179,7 @@ export class LeadsRepository {
       });
     }
     if (filters.lastOutcome) and.push({ lastOutcome: filters.lastOutcome });
+    if (filters.qualification) and.push({ qualification: filters.qualification });
     if (filters.market && filters.homeCountry) and.push(marketWhere(filters.market, filters.homeCountry));
     if (and.length > 0) where['AND'] = and;
     if (filters.productId) where['productId'] = filters.productId;
@@ -558,6 +562,12 @@ export class LeadsRepository {
      */
     duplicateOfLeadNumber?: string | undefined;
     /**
+     * Normally left out: the organization's setting decides (Rough when
+     * qualification is on, Refined when off). Every creation path -- form,
+     * import, website, WhatsApp -- comes through here, so they all agree.
+     */
+    qualification?: 'ROUGH' | 'REFINED' | undefined;
+    /**
      * The import run that created this lead, when one did.
      *
      * Carried on the row so "every lead from that badly mapped file" is one
@@ -598,6 +608,7 @@ export class LeadsRepository {
        */
       await this.lockLeadNumbering(tx);
       const leadNumber = await this.nextLeadNumber(tx);
+      const qualification = input.qualification ?? ((await this.qualificationEnabled(tx)) ? 'ROUGH' : 'REFINED');
 
       const created = await tx.lead.create({
         data: {
@@ -628,6 +639,7 @@ export class LeadsRepository {
           assignedById: input.assignedToId ? input.actorId : null,
           nextFollowUpAt: input.nextFollowUpAt,
           contactId: input.contactId ?? null,
+          qualification,
           duplicateAcknowledgedAt: input.duplicateAcknowledged ? new Date() : null,
           importBatchId: input.importBatchId ?? null,
           lastActivityAt: new Date(),
@@ -693,7 +705,9 @@ export class LeadsRepository {
          * The intake pipeline already did this correctly and is unchanged;
          * these are the three paths that did not.
          */
-        if (input.nextFollowUpAt) {
+        // A ROUGH lead gets no sales follow-up: it is qualified first, and its
+        // next_follow_up_at is the qualify-by date. Refining it creates one.
+        if (input.nextFollowUpAt && qualification === 'REFINED') {
           await tx.followUp.create({
             data: {
               organizationId,
@@ -739,6 +753,14 @@ export class LeadsRepository {
     } catch {
       return null;
     }
+  }
+
+  /** Whether new leads start Rough (organization setting; on unless switched off). */
+  async qualificationEnabled(tx?: PrismaTransaction): Promise<boolean> {
+    const settings = await (tx ?? this.prisma.client).organizationSettings.findFirst({
+      select: { leadQualificationEnabled: true },
+    });
+    return settings?.leadQualificationEnabled ?? true;
   }
 
   async organizationCountry(): Promise<string> {
@@ -1054,10 +1076,11 @@ export class LeadsRepository {
 
       const lead = await tx.lead.findFirst({
         where: { id: input.leadId },
-        select: { status: true, deactivatedAt: true, nextFollowUpAt: true },
+        select: { status: true, deactivatedAt: true, nextFollowUpAt: true, qualification: true },
       });
       const live =
         lead !== null &&
+        lead.qualification === 'REFINED' &&
         lead.deactivatedAt === null &&
         lead.status !== 'WON' &&
         lead.status !== 'LOST';
@@ -1143,6 +1166,14 @@ export class LeadsRepository {
     actorId: string;
     tx?: PrismaTransaction | undefined;
   }): Promise<void> {
+    // Checked here, so every path that moves a stage (attachments, follow-up
+    // completion, outcomes) obeys the Rough rule without repeating it.
+    const current = await (input.tx ?? this.prisma.client).lead.findFirst({
+      where: { id: input.leadId },
+      select: { qualification: true },
+    });
+    if (current) assertStatusAllowed(current.qualification, input.status);
+
     const effects = sideEffectsFor(input.status, {
       lostReason: input.lostReason,
       wonValue: input.wonValue,

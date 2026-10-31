@@ -79,6 +79,8 @@ export interface LeadSummary {
   primaryContact: ContactRef | null;
   /** Active points of contact on the lead. */
   contactCount: number;
+  /** ROUGH (being qualified) or REFINED (in the sales workflow). */
+  qualification: 'ROUGH' | 'REFINED';
 }
 
 @Injectable()
@@ -114,6 +116,7 @@ export class LeadsService {
       // Absent means ACTIVE, which the repository applies. Stated here so the
       // default is visible at the call site rather than only in the WHERE.
       lifecycle: dto.lifecycle ?? 'ACTIVE',
+      qualification: dto.qualification,
     };
 
     // The total is counted with the SAME filters, so "showing 25 of 812"
@@ -688,6 +691,7 @@ type LeadRow = {
     contact: { id: string; firstName: string | null; lastName: string | null; designation: string | null; mobile: string | null };
   }[];
   _count?: { contactLinks?: number };
+  qualification: 'ROUGH' | 'REFINED';
 };
 
 function toSummary(lead: LeadRow, homeCountry: string): LeadSummary {
@@ -745,5 +749,6 @@ function toSummary(lead: LeadRow, homeCountry: string): LeadSummary {
         }
       : null,
     contactCount: lead._count?.contactLinks ?? 0,
+    qualification: lead.qualification,
   };
 }

@@ -7,6 +7,7 @@ import { useAuth } from '../auth/auth-context';
 import { RescheduleFollowUpDialog } from './lead-dialogs';
 import { LogOutcomeDialog, type LogOutcomeLead } from './log-outcome-dialog';
 import { MARKET_LABELS, type LeadSummary } from './use-leads';
+import { QualificationBadge } from './lead-qualification-card';
 
 /**
  * A lead list a salesperson can WORK from.
@@ -127,6 +128,7 @@ function ActionableLeadRow({
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-1.5">
             <p className="truncate text-sm font-medium text-slate-900 group-hover:underline">{lead.name}</p>
+            <QualificationBadge qualification={lead.qualification} />
             <StatusBadge status={lead.status} />
             <PriorityBadge priority={lead.priority} />
             <MarketBadge market={lead.market} country={lead.country} />

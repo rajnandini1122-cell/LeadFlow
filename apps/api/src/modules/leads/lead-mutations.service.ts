@@ -11,6 +11,7 @@ import { LeadsRepository } from './leads.repository';
 import { LeadContactsService } from './contacts/lead-contacts.service';
 import { visibilityFilter } from './lead-visibility';
 import { canTransition, isTerminal, sideEffectsFor } from './lead-status';
+import { assertStatusAllowed } from './lead-qualification';
 import type {
   AssignLeadDto,
   CreateNoteDto,
@@ -146,6 +147,7 @@ export class LeadMutationsService {
     const statusChanging = dto.status !== undefined && dto.status !== currentStatus;
 
     if (statusChanging) {
+      assertStatusAllowed(lead.qualification, targetStatus);
       const check = canTransition(currentStatus, targetStatus);
       if (!check.allowed) {
         throw AppException.conflict(

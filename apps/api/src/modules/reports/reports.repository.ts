@@ -34,7 +34,12 @@ export class ReportsRepository {
   }
 
   private followUpScope(restrictToUserId?: string): Record<string, unknown> {
-    return restrictToUserId ? { assignedUserId: restrictToUserId } : {};
+    // Follow-ups on a ROUGH lead are not sales work: not in the overdue or
+    // due figures, exactly as they are not in the queues (bucketWhere).
+    return {
+      NOT: { lead: { is: { qualification: 'ROUGH' } } },
+      ...(restrictToUserId ? { assignedUserId: restrictToUserId } : {}),
+    };
   }
 
   /** Activities are scoped through their lead, so visibility stays consistent. */

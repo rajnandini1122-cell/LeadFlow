@@ -52,6 +52,10 @@ export const ERROR_CODES = {
    * at this company. A WARNING: the client may resend with `allowDuplicate`.
    */
   DUPLICATE_CONTACT: 'DUPLICATE_CONTACT',
+  /** The lead is still ROUGH: refine it before sales follow-ups, outcomes or later stages. */
+  LEAD_NOT_REFINED: 'LEAD_NOT_REFINED',
+  /** Refining needs the company, a contact and a confirmed business fit. */
+  QUALIFICATION_INCOMPLETE: 'QUALIFICATION_INCOMPLETE',
   FOLLOW_UP_NOT_FOUND: 'FOLLOW_UP_NOT_FOUND',
   FOLLOW_UP_REQUIRED: 'FOLLOW_UP_REQUIRED',
   INVALID_STATUS_TRANSITION: 'INVALID_STATUS_TRANSITION',

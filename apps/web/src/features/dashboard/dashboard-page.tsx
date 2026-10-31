@@ -183,6 +183,14 @@ export function DashboardPage(): React.JSX.Element {
                 />
               )}
               <Metric label="Awaiting customer" value={work ? String(work.leads.awaiting) : '…'} to="/leads?awaiting=true" />
+              {work?.leads.rough !== undefined && (
+                <Metric
+                  label="To qualify (Rough)"
+                  value={String(work.leads.rough)}
+                  to="/leads?qualification=ROUGH"
+                  tone={work.leads.rough > 0 ? 'warning' : 'default'}
+                />
+              )}
               <Metric label="New leads this week" value={String(data.outcomes.newThisWeek)} />
               <Metric label="Won value" value={formatCurrencyCompact(data.outcomes.wonValue)} to="/leads?status=WON" />
               <Metric label="Contacts" value={String(data.contacts)} to="/contacts" />

@@ -18,7 +18,7 @@ import { BUCKET_COPY, FollowUpQueue } from '../followups/follow-up-queue';
  * device's.
  */
 
-type View = 'overdue' | 'today' | 'upcoming' | 'awaiting' | 'completed_today' | 'fresh' | 'unassigned';
+type View = 'overdue' | 'today' | 'upcoming' | 'awaiting' | 'completed_today' | 'fresh' | 'unassigned' | 'rough';
 
 const FOLLOW_UP_VIEWS: View[] = ['overdue', 'today', 'upcoming', 'awaiting', 'completed_today'];
 
@@ -89,7 +89,7 @@ export function WorkspacePage(): React.JSX.Element {
       {FOLLOW_UP_VIEWS.includes(view) ? (
         <FollowUpQueue bucket={view as FollowUpBucket} />
       ) : (
-        <LeadsView kind={view as 'fresh' | 'unassigned'} />
+        <LeadsView kind={view as 'fresh' | 'unassigned' | 'rough'} />
       )}
     </>
   );
@@ -111,11 +111,20 @@ const TILES: Tile[] = [
   { view: 'completed_today', label: 'Completed today', hint: 'Follow-ups done', accent: 'before:bg-emerald-400', count: (d) => d.followUps.completed_today },
   { view: 'fresh', label: 'New leads', hint: 'Not reached yet', accent: 'before:bg-indigo-400', count: (d) => d.leads.fresh },
   { view: 'unassigned', label: 'Unassigned', hint: 'Needs an owner', accent: 'before:bg-amber-400', count: (d) => d.leads.unassigned },
+  { view: 'rough', label: 'To qualify', hint: 'Rough leads', accent: 'before:bg-amber-300', count: (d) => d.leads.rough ?? null },
 ];
 
 /** Lead lists for the two tiles that are about leads, not scheduled work. */
-function LeadsView({ kind }: { kind: 'fresh' | 'unassigned' }): React.JSX.Element {
-  const leads = useLeadsPage(kind === 'fresh' ? { fresh: true, lifecycle: 'ACTIVE' } : { unassigned: true, lifecycle: 'ACTIVE' }, 50);
+function LeadsView({ kind }: { kind: 'fresh' | 'unassigned' | 'rough' }): React.JSX.Element {
+  // Sales tiles count Refined leads only; Rough ones have their own tile.
+  const leads = useLeadsPage(
+    kind === 'rough'
+      ? { qualification: 'ROUGH', lifecycle: 'ACTIVE' }
+      : kind === 'fresh'
+        ? { fresh: true, lifecycle: 'ACTIVE', qualification: 'REFINED' }
+        : { unassigned: true, lifecycle: 'ACTIVE', qualification: 'REFINED' },
+    50,
+  );
   const rows = (leads.data?.pages ?? []).flatMap((page) => page.items);
 
   return (
@@ -127,8 +136,14 @@ function LeadsView({ kind }: { kind: 'fresh' | 'unassigned' }): React.JSX.Elemen
       ) : rows.length === 0 ? (
         <EmptyState
           icon="✓"
-          title={kind === 'fresh' ? 'No untouched leads' : 'Every lead has an owner'}
-          description={kind === 'fresh' ? 'Every new lead has had a first call.' : 'Nothing is waiting to be assigned.'}
+          title={kind === 'rough' ? 'Nothing to qualify' : kind === 'fresh' ? 'No untouched leads' : 'Every lead has an owner'}
+          description={
+            kind === 'rough'
+              ? 'Every lead has been refined.'
+              : kind === 'fresh'
+                ? 'Every new lead has had a first call.'
+                : 'Nothing is waiting to be assigned.'
+          }
         />
       ) : (
         <>

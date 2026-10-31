@@ -1,3 +1,6 @@
+import { useQuery } from '@tanstack/react-query';
+import type { Paginated } from '@leadflow/api-types';
+import { apiGet } from '../../lib/api-client';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import {
@@ -70,6 +73,9 @@ export function LeadsPage(): React.JSX.Element {
   const unassignedOnly = params.get('unassigned') === 'true';
   const freshOnly = params.get('fresh') === 'true';
   const awaitingOnly = params.get('awaiting') === 'true';
+  const qualificationParam = params.get('qualification');
+  const qualification =
+    qualificationParam === 'ROUGH' || qualificationParam === 'REFINED' ? qualificationParam : undefined;
   const lastOutcome = params.get('lastOutcome') ?? '';
   const marketParam = params.get('market');
   const market = marketParam === 'DOMESTIC' || marketParam === 'INTERNATIONAL' || marketParam === 'UNKNOWN' ? marketParam : undefined;
@@ -101,6 +107,7 @@ export function LeadsPage(): React.JSX.Element {
       ...(canSeeTeam && unassignedOnly ? { unassigned: true } : {}),
       ...(freshOnly ? { fresh: true } : {}),
       ...(awaitingOnly ? { awaiting: true } : {}),
+      ...(qualification ? { qualification } : {}),
       ...(lastOutcome ? { lastOutcome } : {}),
       ...(market ? { market } : {}),
       /*
@@ -114,6 +121,19 @@ export function LeadsPage(): React.JSX.Element {
     },
     PAGE_SIZE,
   );
+
+  const roughCount = useQuery({
+    queryKey: ['leads', 'count', 'ROUGH'],
+    queryFn: () => apiGet<Paginated<unknown>>('/leads', { qualification: 'ROUGH', limit: 1 }),
+  });
+  const refinedCount = useQuery({
+    queryKey: ['leads', 'count', 'REFINED'],
+    queryFn: () => apiGet<Paginated<unknown>>('/leads', { qualification: 'REFINED', limit: 1 }),
+  });
+  const qualificationCounts: Partial<Record<'ROUGH' | 'REFINED', number>> = {
+    ...(roughCount.data?.total !== undefined ? { ROUGH: roughCount.data.total } : {}),
+    ...(refinedCount.data?.total !== undefined ? { REFINED: refinedCount.data.total } : {}),
+  };
 
   const rows = useMemo(
     () => (leads.data?.pages ?? []).flatMap((page) => page.items),
@@ -162,6 +182,10 @@ export function LeadsPage(): React.JSX.Element {
         value: (lead) => (lead.nextAction ? formatDateTime(lead.nextAction.scheduledAt) : ''),
       },
       { header: 'Created', value: (lead) => formatDate(lead.createdAt) },
+      {
+        header: 'Qualification',
+        value: (lead) => (lead.qualification === 'ROUGH' ? 'Rough' : lead.qualification === 'REFINED' ? 'Refined' : ''),
+      },
     ]);
 
     downloadCsv(exportFilename('leads', user?.organization.slug ?? 'export'), csv);
@@ -291,6 +315,15 @@ export function LeadsPage(): React.JSX.Element {
               active={awaitingOnly}
               onClick={() => setFilter('awaiting', awaitingOnly ? null : 'true')}
             />
+            <span className="mx-1 h-4 w-px bg-slate-200" aria-hidden />
+            {(['ROUGH', 'REFINED'] as const).map((key) => (
+              <FilterChip
+                key={key}
+                label={`${key === 'ROUGH' ? 'Rough' : 'Refined'}${qualificationCounts[key] !== undefined ? ` (${qualificationCounts[key]})` : ''}`}
+                active={qualification === key}
+                onClick={() => setFilter('qualification', qualification === key ? null : key)}
+              />
+            ))}
             <span className="mx-1 h-4 w-px bg-slate-200" aria-hidden />
             {/* India vs international importers — derived from country, else the mobile's dialling code. */}
             {(['DOMESTIC', 'INTERNATIONAL'] as const).map((key) => (

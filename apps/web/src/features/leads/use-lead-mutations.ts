@@ -65,7 +65,7 @@ export interface WorkspaceSummary {
   timezone: string;
   scope: 'OWN' | 'TEAM';
   followUps: FollowUpCounts;
-  leads: { fresh: number; awaiting: number; unassigned: number | null };
+  leads: { fresh: number; awaiting: number; unassigned: number | null; rough?: number; refined?: number };
 }
 
 /** What logging one call produced. */

@@ -225,7 +225,15 @@ async function seedOrganization(
   const organization = await prisma.organization.create({
     data: { name: spec.name, slug: spec.slug, status: 'ACTIVE' },
   });
-  await prisma.organizationSettings.create({ data: { organizationId: organization.id } });
+  /*
+   * Rough -> Refined qualification OFF for the shared fixtures, so the suites
+   * written for the sales workflow keep testing exactly that (new leads start
+   * Refined, as before). test/lead-qualification.e2e-spec.ts switches it on
+   * and tests the qualification rules themselves.
+   */
+  await prisma.organizationSettings.create({
+    data: { organizationId: organization.id, leadQualificationEnabled: false },
+  });
 
   const makeMember = async (email: string, role: RoleKey): Promise<string> => {
     const user = await prisma.user.create({

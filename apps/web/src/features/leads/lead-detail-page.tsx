@@ -30,6 +30,7 @@ import { OutcomeBadge } from '../../components/outcome-badge';
 import { LeadAttachmentsCard, latestQuotation } from './lead-attachments-card';
 import { LeadCustomerCard } from './lead-customer-card';
 import { LeadContactsCard } from './lead-contacts-card';
+import { LeadQualificationCard, QualificationBadge } from './lead-qualification-card';
 import { useLeadAttachments } from './use-lead-attachments';
 import {
   useAddNote,
@@ -61,6 +62,7 @@ export function LeadDetailPage(): React.JSX.Element {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { can } = useAuth();
+  const [qualifyingNote, setQualifyingNote] = useState(false);
 
   const [dialog, setDialog] = useState<
     'edit' | 'status' | 'assign' | 'schedule' | 'deactivate' | 'reactivate' | null
@@ -110,6 +112,7 @@ export function LeadDetailPage(): React.JSX.Element {
 
   const data = lead.data;
   const closed = data.status === 'WON' || data.status === 'LOST';
+  const rough = data.qualification === 'ROUGH';
   const openFollowUps = (followUps.data ?? []).filter((f) =>
     ['UPCOMING', 'DUE', 'OVERDUE'].includes(f.status),
   );
@@ -145,6 +148,7 @@ export function LeadDetailPage(): React.JSX.Element {
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
                   <h1 className="text-lg font-semibold text-slate-900">{data.name}</h1>
+                  <QualificationBadge qualification={data.qualification} />
                   <StatusBadge status={data.status} />
                   <PriorityBadge priority={data.priority} />
                 </div>
@@ -176,7 +180,10 @@ export function LeadDetailPage(): React.JSX.Element {
               lead={data}
               closed={closed}
               onLogged={setNotice}
-              onLogOutcome={() => setLogging(nextFollowUp ? { followUpId: nextFollowUp.id } : {})}
+              // A Rough lead is qualified, not worked: the call is logged as a qualification note.
+              onLogOutcome={() =>
+                rough ? setQualifyingNote(true) : setLogging(nextFollowUp ? { followUpId: nextFollowUp.id } : {})
+              }
             />
 
             <div className="flex flex-wrap gap-2 border-t border-slate-100 px-5 py-3">
@@ -189,7 +196,7 @@ export function LeadDetailPage(): React.JSX.Element {
               {can('lead.assign') && (
                 <ActionButton onClick={() => setDialog('assign')}>Reassign</ActionButton>
               )}
-              {can('followup.create') && !closed && (
+              {can('followup.create') && !closed && !rough && (
                 <ActionButton onClick={() => setDialog('schedule')} primary>
                   + Follow-up
                 </ActionButton>
@@ -324,6 +331,14 @@ export function LeadDetailPage(): React.JSX.Element {
             </div>
           </Card>
 
+          <LeadQualificationCard
+            leadId={data.id}
+            canUpdate={can('lead.update')}
+            canQualify={can('lead.qualify')}
+            noteOpen={qualifyingNote}
+            onNoteOpenChange={setQualifyingNote}
+          />
+
           <LeadContactsCard leadId={data.id} canEdit={can('lead.update')} />
 
           <Card>
@@ -399,7 +414,7 @@ export function LeadDetailPage(): React.JSX.Element {
 
                     {['UPCOMING', 'DUE', 'OVERDUE'].includes(followUp.status) && (
                       <div className="mt-2 flex gap-1.5">
-                        {can('lead.update') && (
+                        {can('lead.update') && !rough && (
                           <button
                             type="button"
                             onClick={() => setLogging({ followUpId: followUp.id })}
