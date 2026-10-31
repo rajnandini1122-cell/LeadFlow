@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query';
-import type { LeadPriority, LeadStatus, Paginated } from '@leadflow/api-types';
+import type { ContactRef, LeadPriority, LeadStatus, Paginated } from '@leadflow/api-types';
 import { api, apiGet, apiPatch, apiPost } from '../../lib/api-client';
 import { idempotencyHeaders } from '../../lib/idempotency';
 import type { LeadActivity, LeadSummary } from './use-leads';
@@ -15,6 +15,8 @@ import type { LeadActivity, LeadSummary } from './use-leads';
  */
 export interface FollowUp {
   id: string;
+  /** Who to speak to, when one of the lead's contacts was chosen. Absent from an older API. */
+  contact?: ContactRef | null;
   leadId: string | null;
   leadNumber: string | null;
   leadName: string | null;
@@ -80,6 +82,8 @@ export interface RecordOutcomeResult {
 export interface RecordOutcomeInput {
   outcome: string;
   followUpId?: string;
+  /** The point of contact spoken to (contacts.id). */
+  contactId?: string;
   note?: string;
   nextFollowUpAt?: string;
   nextType?: string;
@@ -338,6 +342,7 @@ export function useCreateFollowUp(leadId: string) {
       title?: string;
       notes?: string;
       assignedUserId?: string;
+      contactId?: string;
       idempotencyKey?: string;
     }) => apiPost<FollowUp>(`/leads/${leadId}/follow-ups`, input, idempotencyHeaders(idempotencyKey)),
     onSuccess: () => refresh(leadId),

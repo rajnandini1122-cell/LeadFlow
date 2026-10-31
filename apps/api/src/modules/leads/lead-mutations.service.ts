@@ -8,6 +8,7 @@ import type { TenantPrincipal } from '../../common/tenancy/tenant-context.servic
 import { PhoneParseError, toE164 } from '../../common/utils/phone';
 import { normaliseAdditionalPhones } from './additional-phones';
 import { LeadsRepository } from './leads.repository';
+import { LeadContactsService } from './contacts/lead-contacts.service';
 import { visibilityFilter } from './lead-visibility';
 import { canTransition, isTerminal, sideEffectsFor } from './lead-status';
 import type {
@@ -42,6 +43,7 @@ export class LeadMutationsService {
      */
     @Inject(forwardRef(() => FollowUpsService))
     private readonly followUps: FollowUpsService,
+    private readonly leadContacts: LeadContactsService,
   ) {}
 
   async update(
@@ -352,12 +354,16 @@ export class LeadMutationsService {
     principal: TenantPrincipal,
   ): Promise<void> {
     await this.requireVisible(id, principal);
+    const contact = await this.leadContacts.resolveContactRef(id, dto.contactId, { allowInactive: true });
 
     await this.repository.recordActivity({
       leadId: id,
       activityType: dto.activityType,
-      description: dto.description,
+      description: contact
+        ? `${dto.description ?? ''}${dto.description ? ' — ' : ''}with ${contact.name}`.slice(0, 1000)
+        : dto.description,
       performedById: principal.userId,
+      ...(contact ? { metadata: { contactId: contact.id, contactName: contact.name } } : {}),
     });
 
     /*

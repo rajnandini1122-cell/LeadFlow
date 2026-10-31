@@ -5,6 +5,7 @@ import {
   isTerminalLeadStatus,
   type LeadPriority,
   type LeadStatus,
+  type ContactRef,
   type Paginated,
 } from '@leadflow/api-types';
 import { AppException } from '../../common/errors/app.exception';
@@ -13,6 +14,7 @@ import type { TenantPrincipal } from '../../common/tenancy/tenant-context.servic
 import { normaliseAdditionalPhones } from './additional-phones';
 import { LeadsRepository } from './leads.repository';
 import { ContactsRepository } from '../contacts/contacts.repository';
+import { LeadContactsService } from './contacts/lead-contacts.service';
 import type { ListLeadsDto } from './dto/leads.dto';
 import type { CreateLeadDto } from './dto/create-lead.dto';
 import { visibilityFilter } from './lead-visibility';
@@ -73,6 +75,10 @@ export interface LeadSummary {
     assignedTo: { id: string; fullName: string };
     isOverdue: boolean;
   } | null;
+  /** Who to call: the lead's primary point of contact. Null for a lead with none. */
+  primaryContact: ContactRef | null;
+  /** Active points of contact on the lead. */
+  contactCount: number;
 }
 
 @Injectable()
@@ -83,6 +89,7 @@ export class LeadsService {
     private readonly repository: LeadsRepository,
     private readonly contacts: ContactsRepository,
     private readonly audit: AuditRepository,
+    private readonly leadContacts: LeadContactsService,
   ) {}
 
   async list(dto: ListLeadsDto, principal: TenantPrincipal): Promise<Paginated<LeadSummary>> {
@@ -296,6 +303,12 @@ export class LeadsService {
     // has no phone number, which a social conversation genuinely may not.
     const mobile = await this.normaliseMobile(dto.mobile);
 
+    // Extra points of contact are checked now, before anything is written.
+    const extraContacts = await this.leadContacts.prepareForCreate(
+      { mobile, email: dto.email ?? null },
+      dto.additionalContacts ?? [],
+    );
+
     /*
      * --- duplicate detection (spec §23) -------------------------------------
      *
@@ -375,6 +388,12 @@ export class LeadsService {
       mobile,
       contact.id,
     );
+    await this.leadContacts.addOnCreate(
+      { id: leadId, accountId: dto.accountId ?? null, companyName: dto.companyName ?? null },
+      extraContacts,
+      principal.userId,
+    );
+
     const lead = await this.repository.findById(leadId);
     if (!lead) throw AppException.leadNotFound();
 
@@ -665,11 +684,16 @@ type LeadRow = {
     assignedUser: { id: string; fullName: string };
   }[];
   activities?: { activityType: string; description: string | null; createdAt: Date }[];
+  contactLinks?: {
+    contact: { id: string; firstName: string | null; lastName: string | null; designation: string | null; mobile: string | null };
+  }[];
+  _count?: { contactLinks?: number };
 };
 
 function toSummary(lead: LeadRow, homeCountry: string): LeadSummary {
   const next = lead.followUps?.[0];
   const latest = lead.activities?.[0];
+  const primary = lead.contactLinks?.[0]?.contact;
 
   const name = [lead.firstName, lead.lastName].filter(Boolean).join(' ').trim();
 
@@ -712,5 +736,14 @@ function toSummary(lead: LeadRow, homeCountry: string): LeadSummary {
           isOverdue: next.scheduledAt.getTime() < Date.now(),
         }
       : null,
+    primaryContact: primary
+      ? {
+          id: primary.id,
+          name: [primary.firstName, primary.lastName].filter(Boolean).join(' ').trim() || '(no name)',
+          designation: primary.designation,
+          mobile: primary.mobile,
+        }
+      : null,
+    contactCount: lead._count?.contactLinks ?? 0,
   };
 }

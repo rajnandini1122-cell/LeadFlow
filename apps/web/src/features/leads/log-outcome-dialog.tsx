@@ -8,7 +8,8 @@ import { formatDateTime, humanise } from '../../lib/format';
 import { newIdempotencyKey } from '../../lib/idempotency';
 import { zonedDefault, zonedFromNow, zonedInputToIso } from '../../lib/zoned-input';
 import { useToast } from '../../components/toast';
-import { Dialog, Field, errorMessage, fieldErrorOf, inputClass } from './lead-dialogs';
+import { ContactPicker, Dialog, Field, errorMessage, fieldErrorOf, inputClass } from './lead-dialogs';
+import { useLeadContacts } from './use-lead-contacts';
 import { useRecordOutcome } from './use-lead-mutations';
 
 /**
@@ -138,6 +139,11 @@ export function LogOutcomeDialog({
   const [quantity, setQuantity] = useState('');
   const [expectedPurchaseDate, setExpectedPurchaseDate] = useState('');
   const [note, setNote] = useState('');
+  const [contactId, setContactId] = useState('');
+  const contacts = useLeadContacts(open ? lead.id : undefined);
+  useEffect(() => {
+    if (open) setContactId('');
+  }, [open, lead.id]);
   const [idempotencyKey, setIdempotencyKey] = useState(newIdempotencyKey);
   const [restored, setRestored] = useState(false);
   // A draft waiting to be applied once its outcome's defaults would run.
@@ -232,6 +238,7 @@ export function LogOutcomeDialog({
         idempotencyKey,
         outcome,
         ...(followUpId ? { followUpId } : {}),
+        ...(contactId ? { contactId } : {}),
         ...(note.trim() ? { note: note.trim() } : {}),
         ...(close
           ? { close: true, ...(lostReason.trim() ? { lostReason: lostReason.trim() } : {}) }
@@ -284,6 +291,14 @@ export function LogOutcomeDialog({
             Restored what you entered before. Check it and save.
           </p>
         )}
+        <ContactPicker
+          id="oc-contact"
+          label="Who did you call?"
+          contacts={contacts.data}
+          value={contactId}
+          onChange={setContactId}
+          error={fieldErrorOf(record.error, 'contactId')}
+        />
         <fieldset>
           <legend className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-emerald-700">
             Reached them

@@ -45,6 +45,13 @@ export const ERROR_CODES = {
   // --- CRM (Phase 2+) --------------------------------------------------------
   LEAD_NOT_FOUND: 'LEAD_NOT_FOUND',
   DUPLICATE_LEAD: 'DUPLICATE_LEAD',
+  /** The lead has no such point of contact (or it belongs to another lead). */
+  LEAD_CONTACT_NOT_FOUND: 'LEAD_CONTACT_NOT_FOUND',
+  /**
+   * A point of contact with the same phone or email is already on this lead or
+   * at this company. A WARNING: the client may resend with `allowDuplicate`.
+   */
+  DUPLICATE_CONTACT: 'DUPLICATE_CONTACT',
   FOLLOW_UP_NOT_FOUND: 'FOLLOW_UP_NOT_FOUND',
   FOLLOW_UP_REQUIRED: 'FOLLOW_UP_REQUIRED',
   INVALID_STATUS_TRANSITION: 'INVALID_STATUS_TRANSITION',

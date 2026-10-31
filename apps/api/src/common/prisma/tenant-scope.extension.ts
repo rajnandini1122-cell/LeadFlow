@@ -43,6 +43,7 @@ export const TENANT_SCOPED_MODELS: Record<string, string> = {
   Lead: 'organizationId',
   LeadActivity: 'organizationId',
   LeadAttachment: 'organizationId',
+  LeadContact: 'organizationId',
   /*
    * The customer relationship.
    *

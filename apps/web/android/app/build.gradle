@@ -10,8 +10,8 @@ android {
         // Raise versionCode for EVERY APK handed to users: Android installs an
         // update only when it is higher, and publish-apk.mjs refuses otherwise.
         // 1 / "1.0" was the 2026-08-22 build.
-        versionCode 2
-        versionName "1.1.0"
+        versionCode 3
+        versionName "1.2.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
