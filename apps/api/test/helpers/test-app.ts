@@ -81,6 +81,10 @@ export async function registerVerifiedOrganization(
 
   const data = registration.body.data as Record<string, unknown>;
 
+  // Same as the shared fixtures: these suites test the sales workflow, so new
+  // leads in the registered organization start Refined (qualification off).
+  await disableLeadQualification(app, String(payload['email']));
+
   // An identity provider already proved this mailbox, so the server issued a
   // session and there is nothing left to do.
   if (data['verified'] === true) {
@@ -123,6 +127,25 @@ export async function registerVerifiedOrganization(
  * the system scope is declared anyway so the reason appears in the audit trail
  * the same way every other privileged test write does.
  */
+/**
+ * Switches Rough -> Refined qualification off for every organization the
+ * user with this email belongs to. Through the running app's client, for the
+ * PGlite single-connection reason given on markMailboxProven below.
+ */
+export async function disableLeadQualification(app: INestApplication, email: string): Promise<void> {
+  const prisma = app.get(PrismaService).client;
+  await app.get(TenantContextService).runAsSystem('e2e: qualification off for a registered org', async () => {
+    const memberships = await prisma.organizationUser.findMany({
+      where: { user: { email: email.toLowerCase() } },
+      select: { organizationId: true },
+    });
+    await prisma.organizationSettings.updateMany({
+      where: { organizationId: { in: memberships.map((m) => m.organizationId) } },
+      data: { leadQualificationEnabled: false },
+    });
+  });
+}
+
 export async function markMailboxProven(app: INestApplication, email: string): Promise<void> {
   const prisma = app.get(PrismaService).client;
 
