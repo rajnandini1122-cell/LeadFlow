@@ -118,6 +118,16 @@ export const LEAD_SUMMARY_INCLUDE = {
     take: 1,
     select: { activityType: true, description: true, createdAt: true },
   },
+  // The primary point of contact, for "who to call" in the list. Same single
+  // extra query for the page as the two above.
+  contactLinks: {
+    where: { isPrimary: true },
+    take: 1,
+    select: {
+      contact: { select: { id: true, firstName: true, lastName: true, designation: true, mobile: true } },
+    },
+  },
+  _count: { select: { contactLinks: { where: { inactiveAt: null } } } },
 } satisfies Prisma.LeadInclude;
 
 @Injectable()
@@ -187,6 +197,24 @@ export class LeadsRepository {
         // "98230 55636" finds "+919823055636" the way it would for `mobile`.
         { additionalEmails: { has: filters.search.trim().toLowerCase() } },
         ...(searchPhone ? [{ additionalPhones: { has: searchPhone } }] : []),
+        // Any active point of contact: the accounts person's name or number
+        // finds the lead as readily as the enquirer's.
+        {
+          contactLinks: {
+            some: {
+              inactiveAt: null,
+              contact: {
+                OR: [
+                  { firstName: { contains: filters.search, mode: 'insensitive' } },
+                  { lastName: { contains: filters.search, mode: 'insensitive' } },
+                  { email: { contains: filters.search, mode: 'insensitive' } },
+                  { mobile: { contains: filters.search } },
+                  ...(searchPhone ? [{ mobile: searchPhone }, { whatsapp: searchPhone }] : []),
+                ],
+              },
+            },
+          },
+        },
       ];
     }
 
@@ -608,6 +636,22 @@ export class LeadsRepository {
         },
         select: { id: true },
       });
+
+      // The enquirer is the lead's first point of contact, and its primary.
+      // Here rather than in one caller, so every way a lead is born (form,
+      // import, website, WhatsApp) gets it in the same commit as the lead.
+      if (input.contactId) {
+        await tx.leadContact.create({
+          data: {
+            organizationId,
+            leadId: created.id,
+            contactId: input.contactId,
+            isPrimary: true,
+            createdBy: input.actorId,
+            updatedBy: input.actorId,
+          },
+        });
+      }
 
       await tx.leadActivity.create({
         data: {

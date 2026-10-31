@@ -9,6 +9,9 @@ import { LeadLifecycleService } from './lead-lifecycle.service';
 import { LeadAttachmentsController } from './attachments/lead-attachments.controller';
 import { LeadAttachmentsService } from './attachments/lead-attachments.service';
 import { LeadAttachmentsRepository } from './attachments/lead-attachments.repository';
+import { LeadContactsController } from './contacts/lead-contacts.controller';
+import { LeadContactsService } from './contacts/lead-contacts.service';
+import { LeadContactsRepository } from './contacts/lead-contacts.repository';
 import { forwardRef } from '@nestjs/common';
 import { FollowUpsModule } from '../follow-ups/follow-ups.module';
 import { ContactsModule } from '../contacts/contacts.module';
@@ -19,7 +22,7 @@ import { IntakeProcessingModule } from '../integrations/intake-processing/intake
   // website enquiry can show the customer's own words, read through the intake
   // relation rather than copied onto the lead.
   imports: [forwardRef(() => FollowUpsModule), ContactsModule, IntakeProcessingModule],
-  controllers: [LeadsController, LeadAttachmentsController],
+  controllers: [LeadsController, LeadAttachmentsController, LeadContactsController],
   providers: [
     LeadsService,
     LeadMutationsService,
@@ -29,7 +32,9 @@ import { IntakeProcessingModule } from '../integrations/intake-processing/intake
     LeadsRepository,
     LeadAttachmentsService,
     LeadAttachmentsRepository,
+    LeadContactsService,
+    LeadContactsRepository,
   ],
-  exports: [LeadsService, LeadMutationsService, LeadLifecycleService, LeadsRepository],
+  exports: [LeadsService, LeadMutationsService, LeadLifecycleService, LeadsRepository, LeadContactsService, LeadContactsRepository],
 })
 export class LeadsModule {}

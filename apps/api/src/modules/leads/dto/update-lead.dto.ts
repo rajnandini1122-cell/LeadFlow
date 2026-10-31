@@ -247,6 +247,11 @@ export class LogActivityDto {
   @IsOptional()
   @IsISO8601()
   nextFollowUpAt?: string;
+
+  /** The point of contact this is about (contacts.id), when the lead has several. */
+  @IsOptional()
+  @IsUUID()
+  contactId?: string;
 }
 
 export const LOGGABLE_ACTIVITY_TYPES = LOGGABLE;

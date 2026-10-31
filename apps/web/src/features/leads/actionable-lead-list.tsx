@@ -113,7 +113,9 @@ function ActionableLeadRow({
   onLogOutcome: () => void;
   onReschedule: () => void;
 }): React.JSX.Element {
-  const tel = telHref(lead.mobile);
+  // Call the primary contact; the enquiry number when the API predates POCs.
+  const primary = lead.primaryContact ?? null;
+  const tel = telHref(primary?.mobile ?? lead.mobile);
   const closed = lead.status === 'WON' || lead.status === 'LOST';
   const next = nextActionText(lead);
 
@@ -134,6 +136,14 @@ function ActionableLeadRow({
             {lead.mobile ? ` · ${lead.mobile}` : ''}
             {` · ${lead.assignedTo?.fullName ?? 'Unassigned'}`}
           </p>
+          {primary && (primary.name !== lead.name || (lead.contactCount ?? 0) > 1) && (
+            <p className="mt-0.5 truncate text-xs text-slate-600">
+              Primary: {primary.name}
+              {primary.designation ? `, ${primary.designation}` : ''}
+              {primary.mobile && primary.mobile !== lead.mobile ? ` · ${primary.mobile}` : ''}
+              {(lead.contactCount ?? 0) > 1 ? ` · ${lead.contactCount} contacts` : ''}
+            </p>
+          )}
         </div>
       </Link>
 

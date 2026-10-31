@@ -26,6 +26,7 @@ import { newIdempotencyKey } from '../../lib/idempotency';
 import { useToast } from '../../components/toast';
 import { useBusyLabel } from '../../components/offline-banner';
 import { ContactListField } from './contact-list-field';
+import { contactLabel, useLeadContacts, type LeadContact } from './use-lead-contacts';
 
 const FOLLOW_UP_TYPES = ['CALL', 'WHATSAPP', 'EMAIL', 'MEETING', 'OTHER'];
 
@@ -590,6 +591,8 @@ export function ScheduleFollowUpDialog({
   const [type, setType] = useState('CALL');
   const [title, setTitle] = useState('');
   const [notes, setNotes] = useState('');
+  const [contactId, setContactId] = useState('');
+  const contacts = useLeadContacts(open ? leadId : undefined);
   const [idempotencyKey, setIdempotencyKey] = useState(newIdempotencyKey);
 
   useEffect(() => {
@@ -598,6 +601,7 @@ export function ScheduleFollowUpDialog({
     setType('CALL');
     setTitle('');
     setNotes('');
+    setContactId('');
     setIdempotencyKey(newIdempotencyKey());
     create.reset();
   }, [open]);
@@ -612,6 +616,7 @@ export function ScheduleFollowUpDialog({
         type,
         ...(title.trim() ? { title: title.trim() } : {}),
         ...(notes.trim() ? { notes: notes.trim() } : {}),
+        ...(contactId ? { contactId } : {}),
         idempotencyKey,
       },
       {
@@ -637,6 +642,15 @@ export function ScheduleFollowUpDialog({
             ))}
           </select>
         </Field>
+
+        <ContactPicker
+          id="fu-contact"
+          label="With"
+          contacts={contacts.data}
+          value={contactId}
+          onChange={setContactId}
+          error={fieldErrorOf(create.error, 'contactId')}
+        />
 
         {/*
           * "What for?" is a SHORT label (the API holds 200 characters). It used
@@ -954,7 +968,7 @@ export function RescheduleFollowUpDialog({
   );
 }
 
-function DialogActions({
+export function DialogActions({
   onCancel,
   busy,
   label,
@@ -1370,5 +1384,42 @@ export function RecordAttemptDialog({
         />
       </form>
     </Dialog>
+  );
+}
+
+/**
+ * "Who is this with?" -- the lead's ACTIVE points of contact, primary first.
+ * Hidden when the lead has fewer than two: there is nobody to choose between,
+ * and an empty choice means the primary contact anyway.
+ */
+export function ContactPicker({
+  id,
+  label,
+  contacts,
+  value,
+  onChange,
+  error,
+}: {
+  id: string;
+  label: string;
+  contacts: LeadContact[] | undefined;
+  value: string;
+  onChange: (contactId: string) => void;
+  error?: string | undefined;
+}): React.JSX.Element | null {
+  const active = (contacts ?? []).filter((c) => c.active);
+  if (active.length < 2) return null;
+  return (
+    <Field label={label} htmlFor={id} hint="Who to speak to" error={error}>
+      <select id={id} value={value} onChange={(e) => onChange(e.target.value)} className={inputClass}>
+        <option value="">Primary contact</option>
+        {active.map((c) => (
+          <option key={c.id} value={c.contactId}>
+            {contactLabel(c)}
+            {c.isPrimary ? ' (primary)' : ''}
+          </option>
+        ))}
+      </select>
+    </Field>
   );
 }

@@ -29,6 +29,7 @@ import { LogOutcomeDialog } from './log-outcome-dialog';
 import { OutcomeBadge } from '../../components/outcome-badge';
 import { LeadAttachmentsCard, latestQuotation } from './lead-attachments-card';
 import { LeadCustomerCard } from './lead-customer-card';
+import { LeadContactsCard } from './lead-contacts-card';
 import { useLeadAttachments } from './use-lead-attachments';
 import {
   useAddNote,
@@ -323,6 +324,8 @@ export function LeadDetailPage(): React.JSX.Element {
             </div>
           </Card>
 
+          <LeadContactsCard leadId={data.id} canEdit={can('lead.update')} />
+
           <Card>
             <CardHeader
               title="Follow-ups"
@@ -384,6 +387,12 @@ export function LeadDetailPage(): React.JSX.Element {
                       {formatDateTime(followUp.scheduledAt)}
                       {followUp.title ? ` · ${followUp.title}` : ''}
                     </p>
+                    {followUp.contact && (
+                      <p className="mt-0.5 text-xs text-slate-600">
+                        With {followUp.contact.name}
+                        {followUp.contact.designation ? `, ${followUp.contact.designation}` : ''}
+                      </p>
+                    )}
                     {followUp.outcome && (
                       <p className="mt-0.5 text-xs text-slate-600">{followUp.outcome}</p>
                     )}

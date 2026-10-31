@@ -9,8 +9,7 @@ import type {
   LeadLifecycleFilter,
   LeadPriority,
   LeadStatus,
-  Paginated,
-} from '@leadflow/api-types';
+  Paginated, ContactRef } from '@leadflow/api-types';
 import { apiGet } from '../../lib/api-client';
 
 /** DOMESTIC = the organization's own country; INTERNATIONAL = importers abroad. */
@@ -55,6 +54,10 @@ export interface LeadSummary {
     assignedTo: { id: string; fullName: string };
     isOverdue: boolean;
   } | null;
+  /** Who to call: the primary point of contact. Absent from an older API. */
+  primaryContact?: ContactRef | null;
+  /** Active points of contact on the lead. */
+  contactCount?: number;
 }
 
 export interface LeadActivity {

@@ -286,6 +286,35 @@ export class ContactsRepository {
         data: { contactId: input.targetId, updatedBy: input.actorId },
       });
 
+      // Points of contact follow the person. Where both were already on the
+      // same lead, the target's link is kept, and it inherits primary if the
+      // source held it -- after the source link is gone, because the
+      // one-primary index refuses two at once.
+      const sourceLinks = await tx.leadContact.findMany({ where: { contactId: input.sourceId } });
+      for (const link of sourceLinks) {
+        const targetLink = await tx.leadContact.findFirst({
+          where: { leadId: link.leadId, contactId: input.targetId },
+        });
+        if (!targetLink) {
+          await tx.leadContact.updateMany({
+            where: { id: link.id },
+            data: { contactId: input.targetId, updatedBy: input.actorId },
+          });
+          continue;
+        }
+        await tx.leadContact.deleteMany({ where: { id: link.id } });
+        if (link.isPrimary && !targetLink.isPrimary) {
+          await tx.leadContact.updateMany({
+            where: { id: targetLink.id },
+            data: { isPrimary: true, inactiveAt: null, inactiveBy: null, updatedBy: input.actorId },
+          });
+        }
+      }
+      await tx.followUp.updateMany({
+        where: { contactId: input.sourceId },
+        data: { contactId: input.targetId },
+      });
+
       await tx.contact.update({
         where: { id: input.targetId },
         data: { ...input.winningFields, updatedBy: input.actorId },

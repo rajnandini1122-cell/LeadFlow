@@ -170,6 +170,7 @@ export class FollowUpsRepository {
     /// one is present.
     account: { select: { id: true, name: true, status: true } },
     assignedUser: { select: { id: true, fullName: true } },
+    contact: { select: { id: true, firstName: true, lastName: true, designation: true, mobile: true } },
   };
 
   async findById(id: string, restrictToUserId?: string, tx?: PrismaTransaction) {
@@ -309,6 +310,8 @@ export class FollowUpsRepository {
     type: FollowUpType;
     title?: string | undefined;
     notes?: string | undefined;
+    /** The point of contact to speak to; checked against the lead by the caller. */
+    contactId?: string | null | undefined;
     /**
      * Null for a SYSTEM write. `created_by` is nullable with no foreign key,
      * so the automated pipeline records that nobody scheduled this by hand.
@@ -336,6 +339,7 @@ export class FollowUpsRepository {
         type: input.type,
         title: input.title ?? null,
         notes: input.notes ?? null,
+        contactId: input.contactId ?? null,
         status: initialFollowUpStatus(input.scheduledAt),
         createdBy: input.actorId,
       },

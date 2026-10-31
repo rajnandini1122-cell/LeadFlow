@@ -41,6 +41,11 @@ export class CreateFollowUpDto {
   @IsOptional()
   @IsUUID('7')
   assignedUserId?: string;
+
+  /** The point of contact this is about (contacts.id), when the lead has several. */
+  @IsOptional()
+  @IsUUID()
+  contactId?: string;
 }
 
 export class CompleteFollowUpDto {
@@ -186,4 +191,9 @@ export class RecordAttemptDto {
   @IsOptional()
   @IsIn(FOLLOW_UP_TYPES, { message: `must be one of: ${FOLLOW_UP_TYPES.join(', ')}` })
   type?: string;
+
+  /** The point of contact this is about (contacts.id), when the lead has several. */
+  @IsOptional()
+  @IsUUID()
+  contactId?: string;
 }

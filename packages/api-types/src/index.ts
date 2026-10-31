@@ -7,3 +7,4 @@ export * from './subscriptions';
 export * from './lead-import';
 export * from './call-outcomes';
 export * from './contact-input';
+export * from './lead-contacts';

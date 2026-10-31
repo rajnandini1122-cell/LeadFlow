@@ -15,7 +15,10 @@ import {
   MaxLength,
   Min,
   MinLength,
+  ValidateNested,
 } from 'class-validator';
+import { MAX_CONTACTS_ON_CREATE } from '@leadflow/api-types';
+import { LeadContactInputDto } from '../contacts/lead-contacts.dto';
 import {
   LEAD_PRIORITIES,
   LEAD_STATUSES,
@@ -239,4 +242,17 @@ export class CreateLeadDto {
   @IsOptional()
   @IsBoolean()
   allowDuplicate?: boolean;
+
+
+  /**
+   * More people at the customer, besides the enquirer above (who is always the
+   * first point of contact). Mark at most one `isPrimary` to make them the
+   * primary instead of the enquirer.
+   */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(MAX_CONTACTS_ON_CREATE)
+  @ValidateNested({ each: true })
+  @Type(() => LeadContactInputDto)
+  additionalContacts?: LeadContactInputDto[];
 }

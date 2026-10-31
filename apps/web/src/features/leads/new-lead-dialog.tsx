@@ -16,6 +16,7 @@ import { currencySymbol, humanise } from '../../lib/format';
 import type { LeadSummary } from './use-leads';
 import { zonedDefault, zonedInputToIso } from '../../lib/zoned-input';
 import { ContactListField } from './contact-list-field';
+import { ExtraContactsField, toAdditionalContacts, type ExtraContactDraft } from './extra-contacts-field';
 
 /**
  * Neutral fallback, used only when an organization has configured none of its
@@ -111,6 +112,8 @@ export function NewLeadDialog({
   const [nextFollowUpAt, setNextFollowUpAt] = useState(defaultFollowUp());
 
   const [duplicate, setDuplicate] = useState<ExistingLead | null>(null);
+  const [extraContacts, setExtraContacts] = useState<ExtraContactDraft[]>([]);
+  const [primaryIndex, setPrimaryIndex] = useState(-1);
 
   const organization = useQuery({
     queryKey: ['organization'],
@@ -150,6 +153,8 @@ export function NewLeadDialog({
     setAssignedToId('');
     setNextFollowUpAt(defaultFollowUp());
     setDuplicate(null);
+    setExtraContacts([]);
+    setPrimaryIndex(-1);
   };
 
   /*
@@ -214,6 +219,9 @@ export function NewLeadDialog({
         // database CHECK constraint would too.
         ...(terminal ? {} : { nextFollowUpAt: zonedInputToIso(nextFollowUpAt) }),
         ...(allowDuplicate ? { allowDuplicate: true } : {}),
+        ...(toAdditionalContacts(extraContacts, primaryIndex).length > 0
+          ? { additionalContacts: toAdditionalContacts(extraContacts, primaryIndex) }
+          : {}),
       }),
     onSuccess: (lead) => {
       void queryClient.invalidateQueries({ queryKey: ['leads'] });
@@ -387,6 +395,14 @@ export function NewLeadDialog({
               className={inputClass}
             />
           </Field>
+
+          <ExtraContactsField
+            drafts={extraContacts}
+            onChange={setExtraContacts}
+            primaryIndex={primaryIndex}
+            onPrimaryChange={setPrimaryIndex}
+            errorAt={fieldError}
+          />
 
           <fieldset className="space-y-3">
             <legend className="text-sm font-medium text-slate-700">Address</legend>

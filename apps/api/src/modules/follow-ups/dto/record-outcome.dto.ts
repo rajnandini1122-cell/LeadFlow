@@ -97,4 +97,9 @@ export class RecordOutcomeDto {
   @IsOptional()
   @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'must be a date in YYYY-MM-DD form' })
   expectedPurchaseDate?: string;
+
+  /** The point of contact this is about (contacts.id), when the lead has several. */
+  @IsOptional()
+  @IsUUID()
+  contactId?: string;
 }

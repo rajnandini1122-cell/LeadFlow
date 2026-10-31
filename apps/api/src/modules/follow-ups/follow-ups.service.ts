@@ -1,4 +1,6 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable, forwardRef } from '@nestjs/common';
+import type { ContactRef } from '@leadflow/api-types';
+import { LeadContactsService, toContactRef } from '../leads/contacts/lead-contacts.service';
 import {
   CALL_OUTCOME_RULES,
   ERROR_CODES,
@@ -59,6 +61,8 @@ export interface RecordOutcomeResult {
 
 export interface FollowUpView {
   id: string;
+  /** Who to speak to, when one of the lead's contacts was chosen. */
+  contact: ContactRef | null;
   /**
    * The opportunity, when there is one.
    *
@@ -103,6 +107,8 @@ export class FollowUpsService {
   constructor(
     private readonly repository: FollowUpsRepository,
     private readonly leads: LeadsRepository,
+    @Inject(forwardRef(() => LeadContactsService))
+    private readonly leadContacts: LeadContactsService,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -254,6 +260,8 @@ export class FollowUpsService {
      * pool it is the shape of a pool deadlock. Found by the release audit.
      */
     if (dto.assignedUserId) await this.resolveAssignee(dto.assignedUserId, { assignedToId: null }, principal);
+    // A named person must be an active point of contact on THIS lead.
+    const contact = await this.leadContacts.resolveContactRef(leadId, dto.contactId, { allowInactive: false });
 
     /*
      * Never hand somebody work they cannot do (release audit). A follow-up sits
@@ -307,6 +315,7 @@ export class FollowUpsService {
         type: (dto.type ?? 'CALL') as FollowUpType,
         title: dto.title,
         notes: dto.notes,
+        contactId: contact?.id ?? null,
         actorId: principal.userId,
         tx,
       });
@@ -555,6 +564,8 @@ export class FollowUpsService {
   }> {
     await this.requireVisibleLead(leadId, principal);
     const retryAt = parseWhen(dto.retryAt);
+    // Before the transaction: a pooled read inside it would wait on itself.
+    const spokeWith = await this.leadContacts.resolveContactRef(leadId, dto.contactId, { allowInactive: true });
 
     /*
      * The attempt and its retry commit TOGETHER, under the lead's lock.
@@ -631,10 +642,10 @@ export class FollowUpsService {
       await this.repository.recordLeadActivity(tx, {
         leadId,
         activityType: dto.activityType,
-        description: attemptDescription(dto),
+        description: withContact(attemptDescription(dto), spokeWith),
         actorId: principal.userId,
         idempotencyKey,
-        result: { followUpId: result.followUpId },
+        result: { followUpId: result.followUpId, ...contactResult(spokeWith) },
       });
 
       const followUp = result.followUpId
@@ -676,6 +687,7 @@ export class FollowUpsService {
   ): Promise<RecordOutcomeResult> {
     await this.requireVisibleLead(leadId, principal);
     const rule = CALL_OUTCOME_RULES[dto.outcome];
+    const spokeWith = await this.leadContacts.resolveContactRef(leadId, dto.contactId, { allowInactive: true });
 
     // --- shape checks that depend on the outcome ------------------------------
     const requirementGiven =
@@ -827,10 +839,11 @@ export class FollowUpsService {
       await this.repository.recordLeadActivity(tx, {
         leadId,
         activityType: rule.activityType,
-        description: outcomeDescription(rule.label, dto),
+        description: withContact(outcomeDescription(rule.label, dto), spokeWith),
         actorId: principal.userId,
         idempotencyKey,
         result: {
+          ...contactResult(spokeWith),
           outcome: dto.outcome,
           completedFollowUpId,
           nextFollowUpId,
@@ -1103,6 +1116,13 @@ type FollowUpRow = {
   } | null;
   account: { id: string; name: string; status: string } | null;
   assignedUser: { id: string; fullName: string };
+  contact?: {
+    id: string;
+    firstName: string | null;
+    lastName: string | null;
+    designation: string | null;
+    mobile: string | null;
+  } | null;
 };
 
 /**
@@ -1144,6 +1164,9 @@ function toView(row: FollowUpRow): FollowUpView {
     completedAt: row.completedAt?.toISOString() ?? null,
     rescheduledToId: row.rescheduledToId,
     assignedTo: row.assignedUser,
+    contact: row.contact
+      ? toContactRef({ ...row.contact, department: null, whatsapp: null, email: null, accountId: null })
+      : null,
     // Derived rather than read from `status`, because the Phase 6 worker that
     // flips UPCOMING → DUE → OVERDUE does not exist yet. Computing it here
     // means the UI is correct today and stays correct once the worker lands.
@@ -1163,4 +1186,16 @@ export function scheduledDescription(when: string, title?: string, notes?: strin
   if (title?.trim()) text += ` — ${title.trim()}`;
   if (notes?.trim()) text += `: ${notes.trim()}`;
   return text.length > ACTIVITY_DESCRIPTION_MAX ? `${text.slice(0, ACTIVITY_DESCRIPTION_MAX - 1)}…` : text;
+}
+
+/** "Call completed — with Ravi Kumar, Purchase Manager", capped for the timeline. */
+function withContact(description: string, contact: ContactRef | null): string {
+  if (!contact) return description;
+  const who = contact.designation ? `${contact.name}, ${contact.designation}` : contact.name;
+  return `${description} — with ${who}`.slice(0, ACTIVITY_DESCRIPTION_MAX);
+}
+
+/** The person spoken to, in the activity metadata, so the timeline can show it. */
+function contactResult(contact: ContactRef | null): Record<string, string | null> {
+  return contact ? { contactId: contact.id, contactName: contact.name } : {};
 }
