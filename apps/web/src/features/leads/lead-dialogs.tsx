@@ -27,6 +27,7 @@ import { useToast } from '../../components/toast';
 import { useBusyLabel } from '../../components/offline-banner';
 import { ContactListField } from './contact-list-field';
 import { contactLabel, useLeadContacts, type LeadContact } from './use-lead-contacts';
+import { LeadContactsCard } from './lead-contacts-card';
 
 const FOLLOW_UP_TYPES = ['CALL', 'WHATSAPP', 'EMAIL', 'MEETING', 'OTHER'];
 
@@ -303,7 +304,19 @@ export function EditLeadDialog({
 
   return (
     <Dialog open={open} title="Edit lead" onClose={onClose}>
+      {/*
+        * Everyone at the customer -- add people, choose the primary contact.
+        * Outside the <form> below: each contact saves on its own, and a form
+        * cannot contain another form.
+        */}
+      <div className="border-b border-slate-100 p-5">
+        <LeadContactsCard leadId={lead.id} canEdit />
+      </div>
       <form onSubmit={submit} className="space-y-4 p-5" noValidate>
+        <p className="text-xs text-slate-500">
+          Enquiry details: the person and number this lead first came in with. Add other people, and choose who is
+          primary, under Contacts above.
+        </p>
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="First name" htmlFor="edit-first" required error={fieldErrorOf(update.error, 'firstName')}>
             <input id="edit-first" value={form.firstName} required onChange={(e) => set('firstName')(e.target.value)} className={inputClass} />
