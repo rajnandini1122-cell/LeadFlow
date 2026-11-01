@@ -69,6 +69,8 @@ export class FollowUpSweepRepository {
       where: {
         status: { in: ['UPCOMING', 'DUE', 'OVERDUE'] },
         scheduledAt: { lte: before },
+        // No reminders or overdue alerts for a ROUGH lead: not sales work yet.
+        NOT: { lead: { is: { qualification: 'ROUGH' } } },
       },
       select: {
         id: true,
@@ -97,6 +99,8 @@ export class FollowUpSweepRepository {
         status: 'UPCOMING',
         reminderSentAt: null,
         scheduledAt: { gt: from, lte: to },
+        // No reminders or overdue alerts for a ROUGH lead: not sales work yet.
+        NOT: { lead: { is: { qualification: 'ROUGH' } } },
       },
       select: {
         id: true,

@@ -175,6 +175,10 @@ export function bucketWhere(
     };
   }
   if (window.lead) where['lead'] = window.lead;
+  // Follow-ups on a ROUGH lead (one sent back from Refined) are kept but are
+  // not routine sales work: out of every queue, count and overdue figure.
+  // `is` leaves account-level follow-ups, which have no lead, untouched.
+  where['NOT'] = { lead: { is: { qualification: 'ROUGH' } } };
 
   return where;
 }

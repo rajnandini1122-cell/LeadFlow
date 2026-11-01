@@ -58,6 +58,8 @@ export interface LeadSummary {
   primaryContact?: ContactRef | null;
   /** Active points of contact on the lead. */
   contactCount?: number;
+  /** Rough (being qualified) or Refined. Absent from an older API. */
+  qualification?: 'ROUGH' | 'REFINED';
 }
 
 export interface LeadActivity {
@@ -128,6 +130,8 @@ export interface LeadFilters {
   importBatchId?: string | undefined;
   /** Omitted means ACTIVE, which is what keeps deactivated leads out. */
   lifecycle?: LeadLifecycleFilter | undefined;
+  /** Rough (being qualified) or Refined (in the sales workflow). Omitted: both. */
+  qualification?: 'ROUGH' | 'REFINED' | undefined;
 }
 
 /**
@@ -154,6 +158,7 @@ export function useLeadsPage(
   if (filters.market) params['market'] = filters.market;
   if (filters.importBatchId) params['importBatchId'] = filters.importBatchId;
   if (filters.lifecycle) params['lifecycle'] = filters.lifecycle;
+  if (filters.qualification) params['qualification'] = filters.qualification;
 
   return useInfiniteQuery({
     queryKey: ['leads', 'page', params],

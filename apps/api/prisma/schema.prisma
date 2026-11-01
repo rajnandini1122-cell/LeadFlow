@@ -103,6 +103,16 @@ enum DevicePlatform {
 
 /// Fixed pipeline (spec §8). A custom pipeline builder is explicitly excluded
 /// from the MVP (§31), so this enum is the pipeline.
+/// Two-level qualification, BESIDE the sales stage (see LeadStatus): a lead is
+/// Rough or Refined AND New / Contacted / ... Rough leads stay out of routine
+/// follow-up queues and later sales stages until someone refines them.
+enum LeadQualification {
+  ROUGH
+  REFINED
+
+  @@map("lead_qualification")
+}
+
 enum LeadStatus {
   NEW
   CONTACTED
@@ -342,6 +352,11 @@ model OrganizationSettings {
   /// account on a review list a person acts on, because silently reclassifying
   /// a customer that a rep spoke to off-system would be wrong and invisible.
   accountDormantAfterDays Int @default(180) @map("account_dormant_after_days")
+
+  /// Rough -> Refined qualification. On: new and imported leads start Rough
+  /// and stay out of the sales queues until refined. Off: they start Refined,
+  /// exactly as before -- the switch to turn the workflow off without a deploy.
+  leadQualificationEnabled Boolean @default(true) @map("lead_qualification_enabled")
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -859,6 +874,20 @@ model Lead {
   /// removing a user cannot erase the record of what they did.
   deactivatedBy      String?   @map("deactivated_by") @db.Uuid
 
+  // --- qualification: Rough until someone verifies it ------------------------
+  //
+  // New and imported leads start ROUGH (the column default) when the
+  // organization has qualification switched on. The refined_* columns describe
+  // the CURRENT refinement; a revert clears them, and the full history of
+  // refinements and reverts is on the timeline and in the audit log.
+  qualification     LeadQualification @default(ROUGH)
+  refinedAt         DateTime?         @map("refined_at") @db.Timestamptz(6)
+  /// No foreign key, like deactivated_by: history must survive a user's removal.
+  refinedBy         String?           @map("refined_by") @db.Uuid
+  /// A REFINEMENT_OUTCOMES code, or EXISTING_LEAD for leads that predate this.
+  refinementOutcome String?           @map("refinement_outcome") @db.VarChar(40)
+  refinementNote    String?           @map("refinement_note") @db.VarChar(1000)
+
   /// The import this lead came from, or null if a person created it.
   ///
   /// What makes a mis-mapped import correctable: "every lead from that batch"
@@ -925,6 +954,7 @@ model Lead {
   /// The inactive list, most recently deactivated first. Partial in SQL — see
   /// the migration; Prisma cannot express the predicate.
   @@index([organizationId, deactivatedAt])
+  @@index([organizationId, qualification, status])
   /// Every lead from one import batch: the correction workflow's only query.
   @@index([organizationId, importBatchId])
   /// Customer 360 lists an account's opportunities by status.

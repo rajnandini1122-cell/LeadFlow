@@ -306,6 +306,10 @@ export function NewLeadDialog({
         )}
 
         <form onSubmit={submit} className="space-y-4 p-5">
+          <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900">
+            New leads start as <strong>Rough</strong>. Qualify them first; a manager marks them Refined to start sales
+            follow-ups.
+          </p>
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="First name" required error={fieldError('firstName')}>
               <input

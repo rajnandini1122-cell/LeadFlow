@@ -14,6 +14,7 @@ import type { FollowUpType } from '../../generated/prisma/enums';
 import { LeadsRepository } from '../leads/leads.repository';
 import { visibilityFilter } from '../leads/lead-visibility';
 import { isTerminal } from '../leads/lead-status';
+import { assertRefined } from '../leads/lead-qualification';
 import { FollowUpsRepository, findReplay, lockFollowUpRow } from './follow-ups.repository';
 import { AUDIT_ACTIONS } from '../../common/audit/audit.repository';
 import { formatZonedDateTime } from '../../common/utils/zoned-time';
@@ -41,6 +42,10 @@ export interface WorkspaceSummary {
     awaiting: number;
     /** Nobody owns them. Null when the caller cannot see the whole team. */
     unassigned: number | null;
+    /** Rough leads waiting to be qualified (not counted in any figure above). */
+    rough: number;
+    /** Refined leads, in the sales workflow. */
+    refined: number;
   };
 }
 
@@ -150,18 +155,22 @@ export class FollowUpsService {
     const owner = leadScope ?? options.assignedUserId;
     const seesTeam = leadScope === undefined;
 
-    const [followUps, fresh, awaiting, unassigned] = await Promise.all([
+    const mine = owner ? { restrictToUserId: owner } : {};
+    // Sales figures count Refined leads only; Rough ones are counted apart.
+    const [followUps, fresh, awaiting, unassigned, rough, refined] = await Promise.all([
       this.bucketCounts(principal, options),
-      this.leads.countMatching({ fresh: true, lifecycle: 'ACTIVE', ...(owner ? { restrictToUserId: owner } : {}) }),
-      this.leads.countMatching({ awaiting: true, lifecycle: 'ACTIVE', ...(owner ? { restrictToUserId: owner } : {}) }),
-      seesTeam ? this.leads.countMatching({ unassigned: true, lifecycle: 'ACTIVE' }) : Promise.resolve(null),
+      this.leads.countMatching({ fresh: true, lifecycle: 'ACTIVE', qualification: 'REFINED', ...mine }),
+      this.leads.countMatching({ awaiting: true, lifecycle: 'ACTIVE', qualification: 'REFINED', ...mine }),
+      seesTeam ? this.leads.countMatching({ unassigned: true, lifecycle: 'ACTIVE', qualification: 'REFINED' }) : Promise.resolve(null),
+      this.leads.countMatching({ lifecycle: 'ACTIVE', qualification: 'ROUGH', ...mine }),
+      this.leads.countMatching({ lifecycle: 'ACTIVE', qualification: 'REFINED', ...mine }),
     ]);
 
     return {
       timezone,
       scope: seesTeam && !options.assignedUserId ? 'TEAM' : 'OWN',
       followUps,
-      leads: { fresh, awaiting, unassigned },
+      leads: { fresh, awaiting, unassigned, rough, refined },
     };
   }
 
@@ -247,7 +256,8 @@ export class FollowUpsService {
     principal: TenantPrincipal,
     idempotencyKey: string | null = null,
   ): Promise<FollowUpView> {
-    await this.requireVisibleLead(leadId, principal);
+    const visible = await this.requireVisibleLead(leadId, principal);
+    assertRefined(visible.qualification, 'schedule sales follow-ups');
     const scheduledAt = parseWhen(dto.scheduledAt);
 
     /*
@@ -562,7 +572,8 @@ export class FollowUpsService {
     nextFollowUpAt: string | null;
     leadStatus: LeadStatus;
   }> {
-    await this.requireVisibleLead(leadId, principal);
+    const visible = await this.requireVisibleLead(leadId, principal);
+    assertRefined(visible.qualification, 'log sales call attempts — use a qualification note');
     const retryAt = parseWhen(dto.retryAt);
     // Before the transaction: a pooled read inside it would wait on itself.
     const spokeWith = await this.leadContacts.resolveContactRef(leadId, dto.contactId, { allowInactive: true });
@@ -685,7 +696,8 @@ export class FollowUpsService {
     principal: TenantPrincipal,
     idempotencyKey: string | null = null,
   ): Promise<RecordOutcomeResult> {
-    await this.requireVisibleLead(leadId, principal);
+    const visible = await this.requireVisibleLead(leadId, principal);
+    assertRefined(visible.qualification, 'log sales call outcomes — use a qualification note');
     const rule = CALL_OUTCOME_RULES[dto.outcome];
     const spokeWith = await this.leadContacts.resolveContactRef(leadId, dto.contactId, { allowInactive: true });
 

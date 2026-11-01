@@ -27,6 +27,12 @@ export const PERMISSIONS = {
    */
   LEAD_DEACTIVATE: 'lead.deactivate',
   LEAD_ASSIGN: 'lead.assign',
+  /**
+   * Mark a lead Refined after verifying it, or send it back to Rough. Rough
+   * leads stay out of the sales queues, so this is the gate into them.
+   * Managers and above: a rep researches and qualifies, a manager signs off.
+   */
+  LEAD_QUALIFY: 'lead.qualify',
 
   ACCOUNT_VIEW: 'account.view',
   ACCOUNT_CREATE: 'account.create',
@@ -202,6 +208,7 @@ const MANAGER_PERMISSIONS: Permission[] = [
   ...SALES_REP_PERMISSIONS,
   PERMISSIONS.LEAD_VIEW_TEAM,
   PERMISSIONS.LEAD_ASSIGN,
+  PERMISSIONS.LEAD_QUALIFY,
   PERMISSIONS.CONTACT_UPDATE,
   PERMISSIONS.ACCOUNT_UPDATE,
   PERMISSIONS.ACCOUNT_STATUS_CHANGE,

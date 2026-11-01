@@ -10,7 +10,7 @@ import {
   MaxLength,
   Min,
 } from 'class-validator';
-import { CALL_OUTCOMES, LEAD_LIFECYCLE_FILTERS, LEAD_STATUSES } from '@leadflow/api-types';
+import { CALL_OUTCOMES, LEAD_LIFECYCLE_FILTERS, LEAD_QUALIFICATIONS, LEAD_STATUSES } from '@leadflow/api-types';
 import type { CallOutcome } from '@leadflow/api-types';
 import { MARKETS, type Market } from '../../../common/utils/market';
 import type { LeadLifecycleFilter, LeadStatus } from '@leadflow/api-types';
@@ -101,6 +101,11 @@ export class ListLeadsDto {
     message: `must be one of: ${LEAD_LIFECYCLE_FILTERS.join(', ')}`,
   })
   lifecycle?: LeadLifecycleFilter;
+
+  /** Rough (being qualified) or Refined (in the sales workflow). Absent: both. */
+  @IsOptional()
+  @IsIn(LEAD_QUALIFICATIONS)
+  qualification?: 'ROUGH' | 'REFINED';
 
   @IsOptional()
   @IsUUID('7')

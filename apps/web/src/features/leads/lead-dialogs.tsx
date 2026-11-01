@@ -6,6 +6,7 @@ import {
   isTerminalLeadStatus,
   type LeadPriority,
   type LeadStatus,
+  ROUGH_ALLOWED_STATUSES,
 } from '@leadflow/api-types';
 import { ApiError, apiGet } from '../../lib/api-client';
 import { formatDateTime, humanise } from '../../lib/format';
@@ -471,7 +472,9 @@ export function ChangeStatusDialog({
             onChange={(event) => setStatus(event.target.value as LeadStatus)}
             className={inputClass}
           >
-            {LEAD_STATUSES.map((key) => (
+            {LEAD_STATUSES.filter(
+              (key) => lead.qualification !== 'ROUGH' || key === lead.status || (ROUGH_ALLOWED_STATUSES as readonly string[]).includes(key),
+            ).map((key) => (
               <option key={key} value={key}>{humanise(key)}</option>
             ))}
           </select>
