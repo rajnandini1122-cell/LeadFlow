@@ -6,6 +6,9 @@
  * file with the TypeScript compiler -- per file, like ts-jest does for the
  * suite itself -- using the compiler options from tsconfig.base.json.
  */
+/* eslint-disable @typescript-eslint/no-require-imports, no-undef --
+   a CommonJS require hook: it is loaded with `node -r`, before any TypeScript
+   support exists, so it can only be plain CommonJS. */
 const { readFileSync } = require('node:fs');
 const ts = require('typescript');
 

@@ -264,9 +264,18 @@ describe('Platform analytics', () => {
       await ctx.http().get('/api/v1/leads').expect(401);
       await flush();
 
+      // Read the stored rows, not the top-15 list: in a full run other suites
+      // share this database and busier routes push this one out of the top.
+      const prisma = ctx.app.get(PrismaService).client;
+      const stored = await ctx
+        .app.get(TenantContextService)
+        .runAsSystem('e2e', () => prisma.apiMetricHour.findMany({ where: { route: { contains: '/leads/' } } }));
+      expect(stored).toContainEqual(
+        expect.objectContaining({ route: '/api/v1/leads/:id', status: 404, errorCode: 'LEAD_NOT_FOUND' }),
+      );
+      expect(stored.some((r) => r.route.includes(missing) || r.route.includes('?'))).toBe(false);
+
       const api = (await signed('/api', '?range=24h').expect(200)).body.data;
-      const routes = api.topEndpoints.map((e: { route: string }) => e.route);
-      expect(routes).toContain('/api/v1/leads/:id');
       expect(JSON.stringify(api)).not.toContain(missing);
       expect(JSON.stringify(api)).not.toContain('secret=abc');
       expect(api.errorsByCode.map((e: { key: string }) => e.key)).toContain('404 LEAD_NOT_FOUND');
