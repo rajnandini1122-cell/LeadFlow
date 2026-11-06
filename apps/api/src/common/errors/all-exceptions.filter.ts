@@ -73,6 +73,9 @@ export class AllExceptionsFilter implements ExceptionFilter {
       meta: { timestamp: new Date().toISOString(), requestId },
     };
 
+    // For API metrics ("which endpoints fail, and why"): the error CODE only,
+    // never the message or details.
+    if (response.locals) response.locals['errorCode'] = normalised.code;
     response.status(normalised.status).json(body);
   }
 

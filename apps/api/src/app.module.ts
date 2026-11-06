@@ -36,6 +36,7 @@ import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { ReportsModule } from './modules/reports/reports.module';
 import { SubscriptionsModule } from './modules/subscriptions/subscriptions.module';
 import { PlatformModule } from './modules/platform/platform.module';
+import { PlatformAnalyticsModule } from './modules/platform-analytics/platform-analytics.module';
 import { ContactModule } from './modules/contact/contact.module';
 import { FollowUpsModule } from './modules/follow-ups/follow-ups.module';
 import { InvitationsModule } from './modules/invitations/invitations.module';
@@ -145,6 +146,7 @@ import { AssignmentRulesModule } from './modules/assignment-rules/assignment-rul
     ReportsModule,
     SubscriptionsModule,
     PlatformModule,
+    PlatformAnalyticsModule,
     ContactModule,
     IntegrationsModule,
     TeamsModule,

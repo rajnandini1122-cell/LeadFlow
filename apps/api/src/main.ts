@@ -112,7 +112,7 @@ async function bootstrap(): Promise<void> {
    * Mounts only when a build is actually present, so a development run where
    * Vite serves the app on its own port is unaffected.
    */
-  const servingWeb = serveWebApp(app, webDistPath(__dirname));
+  const servingWeb = serveWebApp(app, webDistPath(__dirname), config.get('API_BASE_URL'));
 
   // Let in-flight requests finish before the process exits during a deploy.
   app.enableShutdownHooks();
