@@ -7,16 +7,16 @@
  */
 export const ANALYTICS_TIMEZONE = 'Asia/Kolkata';
 
-const dayFormat = new Intl.DateTimeFormat('en-CA', {
-  timeZone: ANALYTICS_TIMEZONE,
-  year: 'numeric',
-  month: '2-digit',
-  day: '2-digit',
-});
+/**
+ * Asia/Kolkata is UTC+05:30 all year (no daylight saving since 1945), so the
+ * day is plain arithmetic -- this runs on every authenticated request, where
+ * an Intl formatter cost ~10 microseconds. The spec checks it against Intl.
+ */
+const IST_OFFSET_MS = 5.5 * 3_600_000;
 
 /** The calendar day (in ANALYTICS_TIMEZONE) as a DATE value: midnight UTC of that date. */
 export function analyticsDay(at: Date): Date {
-  return new Date(`${dayFormat.format(at)}T00:00:00.000Z`);
+  return new Date(Math.floor((at.getTime() + IST_OFFSET_MS) / 86_400_000) * 86_400_000);
 }
 
 /** The start of the UTC hour containing `at`. */

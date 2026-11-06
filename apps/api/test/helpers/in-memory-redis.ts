@@ -26,7 +26,14 @@ export class InMemoryRedis {
   readonly client = {
     get: async (key: string): Promise<string | null> => this.read(key),
 
-    set: async (key: string, value: string, _mode: string, ttl: number): Promise<'OK'> => {
+    set: async (
+      key: string,
+      value: string,
+      _mode: string,
+      ttl: number,
+      condition?: 'NX',
+    ): Promise<'OK' | null> => {
+      if (condition === 'NX' && this.read(key) !== null) return null;
       this.store.set(key, { value, expiresAt: Date.now() + ttl * 1000 });
       return 'OK';
     },
@@ -123,6 +130,15 @@ export class InMemoryRedis {
       value: JSON.stringify(value),
       expiresAt: Date.now() + ttlSeconds * 1000,
     });
+  }
+
+  /** Same contract as RedisService.claimOnce, through the client, so a failing client reads as null. */
+  async claimOnce(key: string, ttlSeconds: number): Promise<boolean | null> {
+    try {
+      return (await this.client.set(key, '1', 'EX', ttlSeconds, 'NX')) === 'OK';
+    } catch {
+      return null;
+    }
   }
 
   async del(...keys: string[]): Promise<void> {

@@ -15,6 +15,18 @@ import type { PlatformAnalyticsRepository } from './platform-analytics.repositor
 const BASE = 'https://leadflow.cravionventures.com';
 
 describe('analytics time', () => {
+  it('computes the Asia/Kolkata day exactly as Intl does, across midnights and years', () => {
+    const intl = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' });
+    const start = Date.UTC(2024, 0, 1);
+    // Every 7 minutes for two years, plus the instants either side of IST midnight.
+    for (let t = start; t < start + 2 * 365 * 86_400_000; t += 7 * 60_000) {
+      const at = new Date(t);
+      expect(analyticsDay(at).toISOString().slice(0, 10)).toBe(intl.format(at));
+    }
+    expect(analyticsDay(new Date('2026-11-05T18:29:59.999Z')).toISOString()).toBe('2026-11-05T00:00:00.000Z');
+    expect(analyticsDay(new Date('2026-11-05T18:30:00.000Z')).toISOString()).toBe('2026-11-06T00:00:00.000Z');
+  });
+
   it('counts days in Asia/Kolkata', () => {
     // 20:00 UTC on 1 Nov is 01:30 on 2 Nov in India.
     expect(analyticsDay(new Date('2026-11-01T20:00:00Z')).toISOString()).toBe(
@@ -95,9 +107,12 @@ describe('ActivityTrackerService', () => {
 
 describe('ApiMetricsCollector', () => {
   const makeRepo = () => ({
-    flushApiBuckets: jest.fn(() => Promise.resolve()),
+    flushApiBuckets: jest.fn((_rows: unknown[], _orgRows: unknown[]) => Promise.resolve()),
+    recordMetricInstance: jest.fn((_input: unknown) => Promise.resolve()),
     applyRetention: jest.fn(() => Promise.resolve(0)),
+    beforeDisconnect: jest.fn(),
   });
+  const obs = (status = 200) => ({ method: 'GET', route: '/api/v1/x', status, errorCode: '', durationMs: 1 });
 
   it('aggregates by hour, method, route template, status and error code', async () => {
     const repo = makeRepo();
@@ -140,7 +155,8 @@ describe('ApiMetricsCollector', () => {
     });
     await c.flush(at);
 
-    const [rows, orgRows] = repo.flushApiBuckets.mock.calls[0] as unknown as [
+    // API buckets and organization buckets are written as separate chunks.
+    const rows = repo.flushApiBuckets.mock.calls[0]![0] as unknown as
       {
         route: string;
         status: number;
@@ -149,9 +165,9 @@ describe('ApiMetricsCollector', () => {
         maxMs: number;
         histogram: number[];
         hour: Date;
-      }[],
-      { organizationId: string; count: number; errorCount: number }[],
-    ];
+      }[];
+    const orgRows = repo.flushApiBuckets.mock.calls[1]![1] as unknown as
+      { organizationId: string; count: number; errorCount: number }[];
     const ok = rows.find((r) => r.route === '/api/v1/leads/:id' && r.status === 200)!;
     expect(ok).toMatchObject({ count: 2, maxMs: 300, errorCode: '' });
     expect(ok.hour.toISOString()).toBe('2026-11-06T06:00:00.000Z');
@@ -164,15 +180,86 @@ describe('ApiMetricsCollector', () => {
     ]);
   });
 
-  it('a failed flush is recorded and does not throw', async () => {
-    const repo = {
-      flushApiBuckets: jest.fn(() => Promise.reject(new Error('db down'))),
-      applyRetention: jest.fn(),
-    };
+  it('a failed flush keeps the counts and retries them once, never twice', async () => {
+    const repo = makeRepo();
+    repo.flushApiBuckets.mockImplementationOnce(() => Promise.reject(new Error('db down')));
     const c = new ApiMetricsCollector(repo as unknown as PlatformAnalyticsRepository);
-    c.record({ method: 'GET', route: '/api/v1/x', status: 200, errorCode: '', durationMs: 1 });
+    c.record(obs());
+    c.record(obs());
     await expect(c.flush()).resolves.toBeUndefined();
     expect(c.lastFlushError).toContain('db down');
+    c.record(obs());
+    await c.flush();
+    expect(c.lastFlushError).toBeNull();
+    const written = repo.flushApiBuckets.mock.calls
+      .slice(1)
+      .flatMap(([rows]) => rows as { count: number }[]);
+    expect(written.reduce((n, r) => n + r.count, 0)).toBe(3);
+    await c.flush();
+    expect(repo.flushApiBuckets).toHaveBeenCalledTimes(2);
+  });
+
+  it('writes in chunks, so one failed chunk does not lose or repeat the others', async () => {
+    const repo = makeRepo();
+    const c = new ApiMetricsCollector(repo as unknown as PlatformAnalyticsRepository);
+    for (let i = 0; i < ApiMetricsCollector.CHUNK + 5; i++)
+      c.record({ ...obs(), route: '/api/v1/r' + i });
+    repo.flushApiBuckets.mockImplementationOnce(() => Promise.resolve());
+    repo.flushApiBuckets.mockImplementationOnce(() => Promise.reject(new Error('timeout')));
+    await c.flush();
+    await c.flush();
+    const sizes = repo.flushApiBuckets.mock.calls.map(([rows]) => (rows as unknown[]).length);
+    expect(sizes).toEqual([ApiMetricsCollector.CHUNK, 5, 5]);
+  });
+
+  it('counts requests dropped at the bucket ceiling and reports them exactly once', async () => {
+    const repo = makeRepo();
+    const c = new ApiMetricsCollector(repo as unknown as PlatformAnalyticsRepository);
+    for (let i = 0; i < 5_003; i++) c.record({ ...obs(), route: '/api/v1/r' + i });
+    c.record({ ...obs(), route: '/api/v1/r5001' });
+    expect(c.droppedRequests).toBe(4);
+    await c.flush();
+    await c.flush();
+    const reported = repo.recordMetricInstance.mock.calls.map(
+      ([input]) => (input as { droppedRequests: number }).droppedRequests,
+    );
+    expect(reported).toEqual([4, 0]);
+  });
+
+  it('keeps dropped counts when the heartbeat write fails, and reports them later', async () => {
+    const repo = makeRepo();
+    const c = new ApiMetricsCollector(repo as unknown as PlatformAnalyticsRepository);
+    for (let i = 0; i < 5_001; i++) c.record({ ...obs(), route: '/api/v1/r' + i });
+    repo.recordMetricInstance.mockImplementationOnce(() => Promise.reject(new Error('down')));
+    await c.flush();
+    await c.flush();
+    const last = repo.recordMetricInstance.mock.calls.at(-1)![0] as { droppedRequests: number };
+    expect(last.droppedRequests).toBe(1);
+  });
+
+  it('the shutdown flush runs before the database disconnects and marks a clean stop', async () => {
+    const repo = makeRepo();
+    const c = new ApiMetricsCollector(repo as unknown as PlatformAnalyticsRepository);
+    c.onModuleInit();
+    const drain = repo.beforeDisconnect.mock.calls[0]![0] as () => Promise<void>;
+    c.record(obs());
+    await drain();
+    const last = repo.recordMetricInstance.mock.calls.at(-1)![0] as {
+      stopped: boolean;
+      id: string;
+    };
+    expect(last).toMatchObject({ stopped: true, id: c.instanceId });
+    const written = repo.flushApiBuckets.mock.calls.flatMap(([rows]) => rows as { count: number }[]);
+    expect(written.reduce((n, r) => n + r.count, 0)).toBe(1);
+  });
+
+  it('a failed final flush is NOT marked as a clean stop', async () => {
+    const repo = makeRepo();
+    const c = new ApiMetricsCollector(repo as unknown as PlatformAnalyticsRepository);
+    c.record(obs());
+    repo.flushApiBuckets.mockImplementationOnce(() => Promise.reject(new Error('closed')));
+    await c.stop();
+    expect(repo.recordMetricInstance.mock.calls.at(-1)![0]).toMatchObject({ stopped: false });
   });
 
   it('applies retention at most once a day', async () => {

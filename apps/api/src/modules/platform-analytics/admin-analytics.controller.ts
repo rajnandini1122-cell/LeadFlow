@@ -1,4 +1,13 @@
-import { Controller, Get, Headers, Logger, Query, Req, type RawBodyRequest } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Headers,
+  Logger,
+  Query,
+  Req,
+  ServiceUnavailableException,
+  type RawBodyRequest,
+} from '@nestjs/common';
 import { ApiExcludeController } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { Type } from 'class-transformer';
@@ -19,7 +28,11 @@ import { AuditRepository } from '../../common/audit/audit.repository';
 import { AppConfig } from '../../common/config/config.module';
 import { AppException } from '../../common/errors/app.exception';
 import { Public } from '../auth/decorators/public.decorator';
-import { verifyAdminSignature } from '../integrations/admin-control/admin-control-signature';
+import {
+  REPLAY_WINDOW_SECONDS,
+  verifyAdminSignature,
+} from '../integrations/admin-control/admin-control-signature';
+import { RedisService } from '../../common/redis/redis.service';
 import { AdminAnalyticsService } from './admin-analytics.service';
 import { seoStatus } from '../../common/web/seo';
 
@@ -123,6 +136,7 @@ export class AdminAnalyticsController {
     private readonly analytics: AdminAnalyticsService,
     private readonly config: AppConfig,
     private readonly audit: AuditRepository,
+    private readonly redis: RedisService,
   ) {}
 
   @Get('overview')
@@ -226,7 +240,9 @@ export class AdminAnalyticsController {
     const actorRef = header(headers, 'x-cravion-admin-actor');
     const result = verifyAdminSignature({
       method: request.method,
-      path: request.path,
+      // The path WITH its query string, exactly as received: the filters are
+      // part of what the CRAVION backend signed and cannot be changed in transit.
+      path: request.originalUrl,
       rawBody: request.rawBody,
       signatureHeader: header(headers, 'x-cravion-admin-signature'),
       timestampHeader: header(headers, 'x-cravion-admin-timestamp'),
@@ -237,6 +253,21 @@ export class AdminAnalyticsController {
     if (!result.valid) {
       this.logger.warn({ reason: result.reason }, 'Rejected admin analytics request');
       throw AppException.unauthorized('This request could not be authenticated.');
+    }
+    // Replay: the signature binds the request id, and each id is accepted
+    // ONCE for longer than the timestamp window in either direction. If Redis
+    // cannot be asked, reads fail closed -- except Health, which falls back to
+    // the timestamp window alone so an outage stays visible.
+    const claimed = await this.redis.claimOnce(
+      `leadflow:admin-analytics:request:${header(headers, 'x-cravion-admin-request-id')}`,
+      2 * REPLAY_WINDOW_SECONDS + 60,
+    );
+    if (claimed === false) {
+      this.logger.warn({ view }, 'Rejected a replayed admin analytics request');
+      throw AppException.unauthorized('This request could not be authenticated.');
+    }
+    if (claimed === null && view !== 'health') {
+      throw new ServiceUnavailableException('Replay protection is unavailable; try again shortly.');
     }
     await this.audit.record({
       action: `platform.analytics.${view}`,

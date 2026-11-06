@@ -323,6 +323,7 @@ export class AdminAnalyticsService {
       maxMs: e.maxMs,
     }));
     const hours = Math.max(1, (range.to.getTime() - range.from.getTime()) / 3_600_000);
+    const completeness = await this.completeness(range.from, range.to, now);
 
     return {
       range: { from: range.from.toISOString(), to: range.to.toISOString(), label: range.label },
@@ -339,6 +340,7 @@ export class AdminAnalyticsService {
         p95Ms: histogramPercentile(hist, 95),
         authFailures,
         rateLimited,
+        completeness,
       },
       topEndpoints: [...endpointList].sort((a, b) => b.requests - a.requests).slice(0, 15),
       slowEndpoints: endpointList
@@ -366,6 +368,36 @@ export class AdminAnalyticsService {
       byOrganization: (await this.reads.orgApiRows(range.from, range.to)).sort(
         (a, b) => b.requests - a.requests,
       ),
+    };
+  }
+
+  /**
+   * Whether the API counts for [from, to] are complete. They are NOT when a
+   * process running in that window stopped without its final flush (up to
+   * FLUSH_EVERY_MS of its traffic was never written) or hit the bucket
+   * ceiling. Either way the figures are lower bounds, and say so.
+   */
+  private async completeness(from: Date, to: Date, now: Date) {
+    const flushMs = ApiMetricsCollector.FLUSH_EVERY_MS;
+    // A process whose last flush was up to one interval before `from` may
+    // have lost traffic from inside the window.
+    const instances = await this.reads.metricInstances(new Date(from.getTime() - flushMs), to);
+    const staleBefore = now.getTime() - 3 * flushMs;
+    const unclean = instances.filter(
+      (i) =>
+        i.stoppedAt === null &&
+        i.lastFlushAt.getTime() < staleBefore &&
+        i.id !== this.collector.instanceId,
+    );
+    const droppedRequests = instances.reduce((n, i) => n + i.droppedRequests, 0);
+    return {
+      exact: unclean.length === 0 && droppedRequests === 0,
+      uncleanStops: unclean.map((i) => ({
+        lastFlushAt: i.lastFlushAt.toISOString(),
+        maxUncountedSeconds: flushMs / 1000,
+      })),
+      droppedRequests,
+      countedThrough: iso(this.collector.lastFlushAt),
     };
   }
 
@@ -467,12 +499,13 @@ export class AdminAnalyticsService {
         serverErrors5xx: api1h.totals.serverErrors5xx,
         serverErrorRate: api1h.totals.serverErrorRate,
         p95Ms: api1h.totals.p95Ms,
+        completeness: api1h.totals.completeness,
       },
       metrics: {
         collectorStartedAt: this.collector.startedAt.toISOString(),
         lastFlushAt: iso(this.collector.lastFlushAt),
         lastFlushError: this.collector.lastFlushError,
-        droppedBucketsSinceStart: this.collector.dropped,
+        droppedRequestsSinceStart: this.collector.droppedRequests,
         retention: RETENTION,
       },
     };
@@ -515,6 +548,8 @@ export const DEFINITIONS = {
   firstLogin:
     'First successful sign-in recorded after tracking began. Earlier first logins were never recorded.',
   apiRequests: 'Requests to /api/* (health probes excluded), aggregated hourly by route template.',
+  apiCompleteness:
+    'API counts are buffered for up to a minute. Exact unless an API process stopped without its final write (crash or kill: up to a minute of its traffic is missing) or hit the bucket ceiling; then the figures are marked as lower bounds. The current minute is not yet included.',
   errorRate: 'Share of requests answered 4xx or 5xx.',
   p95: 'Estimated from a latency histogram: the upper bound of the bucket the 95th percentile falls in.',
   uniqueVisitors:

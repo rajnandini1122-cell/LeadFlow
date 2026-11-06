@@ -84,6 +84,20 @@ export class RedisService implements OnModuleDestroy {
     }
   }
 
+  /**
+   * Sets `key` only if it is absent (SET NX EX). True: this caller claimed it.
+   * False: it was already claimed. Null: Redis could not be asked -- callers
+   * decide whether that fails open or closed.
+   */
+  async claimOnce(key: string, ttlSeconds: number): Promise<boolean | null> {
+    try {
+      return (await this.client.set(key, '1', 'EX', ttlSeconds, 'NX')) === 'OK';
+    } catch (error) {
+      this.logger.warn(`Could not claim ${key}: ${(error as Error).message}`);
+      return null;
+    }
+  }
+
   async del(...keys: string[]): Promise<void> {
     if (keys.length === 0) return;
     try {

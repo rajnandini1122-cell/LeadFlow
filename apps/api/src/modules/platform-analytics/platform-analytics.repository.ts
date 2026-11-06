@@ -61,47 +61,88 @@ export class PlatformAnalyticsRepository {
     });
   }
 
+  /** Runs `hook` during shutdown while the database is still connected. */
+  beforeDisconnect(hook: () => Promise<void>): void {
+    this.prisma.beforeDisconnect(hook);
+  }
+
+  /**
+   * Adds one chunk of buckets to the hourly totals -- ALL OR NOTHING, so a
+   * failed chunk can be retried without counting any of it twice.
+   */
   async flushApiBuckets(rows: ApiBucketRow[], orgRows: OrgBucketRow[]): Promise<void> {
-    await this.system('flush API metrics', async () => {
-      for (const row of rows) {
-        const key = {
-          hour: row.hour,
-          method: row.method,
-          route: row.route,
-          status: row.status,
-          errorCode: row.errorCode,
-        };
-        const hist = Object.fromEntries(HIST_KEYS.map((k, i) => [k, row.histogram[i] ?? 0]));
-        await this.db.apiMetricHour.upsert({
-          where: { hour_method_route_status_errorCode: key },
-          create: {
-            ...key,
-            count: row.count,
-            totalMs: BigInt(row.totalMs),
-            maxMs: row.maxMs,
-            ...hist,
-          },
-          update: {
-            count: { increment: row.count },
-            totalMs: { increment: BigInt(row.totalMs) },
-            ...Object.fromEntries(
-              HIST_KEYS.map((k, i) => [k, { increment: row.histogram[i] ?? 0 }]),
-            ),
-          },
-        });
-        // Max is not additive: raise it only when this flush saw a slower request.
-        await this.db.apiMetricHour.updateMany({
-          where: { ...key, maxMs: { lt: row.maxMs } },
-          data: { maxMs: row.maxMs },
-        });
-      }
-      for (const row of orgRows) {
-        await this.db.apiOrganizationHour.upsert({
-          where: { hour_organizationId: { hour: row.hour, organizationId: row.organizationId } },
-          create: row,
-          update: { count: { increment: row.count }, errorCount: { increment: row.errorCount } },
-        });
-      }
+    await this.system('flush API metrics', () =>
+      this.db.$transaction(async (tx) => {
+        for (const row of rows) {
+          const key = {
+            hour: row.hour,
+            method: row.method,
+            route: row.route,
+            status: row.status,
+            errorCode: row.errorCode,
+          };
+          const hist = Object.fromEntries(HIST_KEYS.map((k, i) => [k, row.histogram[i] ?? 0]));
+          await tx.apiMetricHour.upsert({
+            where: { hour_method_route_status_errorCode: key },
+            create: {
+              ...key,
+              count: row.count,
+              totalMs: BigInt(row.totalMs),
+              maxMs: row.maxMs,
+              ...hist,
+            },
+            update: {
+              count: { increment: row.count },
+              totalMs: { increment: BigInt(row.totalMs) },
+              ...Object.fromEntries(
+                HIST_KEYS.map((k, i) => [k, { increment: row.histogram[i] ?? 0 }]),
+              ),
+            },
+          });
+          // Max is not additive: raise it only when this flush saw a slower request.
+          await tx.apiMetricHour.updateMany({
+            where: { ...key, maxMs: { lt: row.maxMs } },
+            data: { maxMs: row.maxMs },
+          });
+        }
+        for (const row of orgRows) {
+          await tx.apiOrganizationHour.upsert({
+            where: { hour_organizationId: { hour: row.hour, organizationId: row.organizationId } },
+            create: row,
+            update: { count: { increment: row.count }, errorCount: { increment: row.errorCount } },
+          });
+        }
+      }),
+    );
+  }
+
+  /**
+   * The heartbeat of one API process: when it started, when it last flushed,
+   * whether it stopped cleanly, and how many requests it could not record.
+   */
+  async recordMetricInstance(input: {
+    id: string;
+    startedAt: Date;
+    at: Date;
+    stopped: boolean;
+    droppedRequests: number;
+  }): Promise<void> {
+    await this.system('record API metrics heartbeat', async () => {
+      await this.db.apiMetricInstance.upsert({
+        where: { id: input.id },
+        create: {
+          id: input.id,
+          startedAt: input.startedAt,
+          lastFlushAt: input.at,
+          stoppedAt: input.stopped ? input.at : null,
+          droppedRequests: input.droppedRequests,
+        },
+        update: {
+          lastFlushAt: input.at,
+          ...(input.stopped ? { stoppedAt: input.at } : {}),
+          droppedRequests: { increment: input.droppedRequests },
+        },
+      });
     });
   }
 
@@ -184,6 +225,7 @@ export class PlatformAnalyticsRepository {
       const results = await Promise.all([
         this.db.apiMetricHour.deleteMany({ where: { hour: { lt: cutoffs.hourly } } }),
         this.db.apiOrganizationHour.deleteMany({ where: { hour: { lt: cutoffs.hourly } } }),
+        this.db.apiMetricInstance.deleteMany({ where: { lastFlushAt: { lt: cutoffs.hourly } } }),
         this.db.userActivityDay.deleteMany({ where: { day: { lt: cutoffs.daily } } }),
         this.db.webSession.deleteMany({ where: { day: { lt: cutoffs.daily } } }),
         this.db.webPageDay.deleteMany({ where: { day: { lt: cutoffs.daily } } }),

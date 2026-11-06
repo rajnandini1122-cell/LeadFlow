@@ -24,16 +24,24 @@ describe('Platform analytics', () => {
   const signed = (
     path: string,
     query = '',
-    options: { secret?: string; actor?: string; timestamp?: number; signedPath?: string } = {},
+    options: {
+      secret?: string;
+      actor?: string;
+      timestamp?: number;
+      signedPath?: string;
+      requestId?: string;
+      /** Sent instead of the actor that was signed. */
+      sentActor?: string;
+    } = {},
   ) => {
     const timestamp = String(options.timestamp ?? Math.floor(Date.now() / 1000));
-    const requestId = `req-${randomUUID()}`;
+    const requestId = options.requestId ?? `req-${randomUUID()}`;
     const actorRef = options.actor ?? 'firebase:uid:owner-1';
     const signature = createHmac('sha256', options.secret ?? ANALYTICS_SECRET)
       .update(
         adminSigningBase({
           method: 'GET',
-          path: options.signedPath ?? `${BASE}${path}`,
+          path: options.signedPath ?? `${BASE}${path}${query}`,
           timestamp,
           requestId,
           actorRef,
@@ -46,7 +54,7 @@ describe('Platform analytics', () => {
       .get(`${BASE}${path}${query}`)
       .set('x-cravion-admin-timestamp', timestamp)
       .set('x-cravion-admin-request-id', requestId)
-      .set('x-cravion-admin-actor', actorRef)
+      .set('x-cravion-admin-actor', options.sentActor ?? actorRef)
       .set('x-cravion-admin-signature', `sha256=${signature}`);
   };
 
@@ -83,6 +91,38 @@ describe('Platform analytics', () => {
         401,
       );
       await signed('/users', '', { signedPath: `${BASE}/overview` }).expect(401);
+    });
+
+    it('binds the filters: a query string changed after signing is refused', async () => {
+      const signedFor = `?org=${ctx.orgA.id}`;
+      await signed('/users', signedFor).expect(200);
+      await signed('/users', `?org=${ctx.orgB.id}`, { signedPath: `${BASE}/users${signedFor}` }).expect(401);
+      await signed('/users', `${signedFor}&pageSize=100`, { signedPath: `${BASE}/users${signedFor}` }).expect(401);
+    });
+
+    it('binds the actor: a different actor header than the one signed is refused', async () => {
+      await signed('/overview', '', { sentActor: 'firebase:uid:someone-else' }).expect(401);
+    });
+
+    it('accepts each request id once: an exact replay inside the time window is refused', async () => {
+      const replay = { requestId: `req-${randomUUID()}`, timestamp: Math.floor(Date.now() / 1000) };
+      await signed('/overview', '', replay).expect(200);
+      await signed('/overview', '', replay).expect(401);
+      // A fresh id with the same everything else is a new request.
+      await signed('/overview', '', { ...replay, requestId: `req-${randomUUID()}` }).expect(200);
+    });
+
+    it('fails closed when replay protection is unavailable, except Health', async () => {
+      const client = ctx.redis.client as { set: (...args: unknown[]) => Promise<unknown> };
+      const original = client.set;
+      client.set = () => Promise.reject(new Error('redis down'));
+      try {
+        await signed('/overview').expect(503);
+        await signed('/users').expect(503);
+        await signed('/health').expect(200);
+      } finally {
+        client.set = original;
+      }
     });
 
     it('is read-only: no write method exists', async () => {
@@ -167,6 +207,22 @@ describe('Platform analytics', () => {
       expect(sessions.onlineUsers.map((u: { id: string }) => u.id)).toContain(ctx.orgB.rep.id);
     });
 
+    it('attributes activity only to the organization the request was made in', async () => {
+      const prisma = ctx.app.get(PrismaService).client;
+      const system = ctx.app.get(TenantContextService);
+      await ctx.http().get('/api/v1/leads').set(auth(ctx.orgA.owner.accessToken)).expect(200);
+      await flush();
+      const rows = await system.runAsSystem('e2e', () =>
+        prisma.userActivityDay.findMany({ where: { userId: ctx.orgA.owner.id } }),
+      );
+      expect(rows.length).toBeGreaterThan(0);
+      expect(new Set(rows.map((r) => r.organizationId))).toEqual(new Set([ctx.orgA.id]));
+      // And an organization filter returns only that organization's people.
+      const list = (await signed('/users', `?org=${ctx.orgB.id}&pageSize=100`).expect(200)).body.data;
+      const ids = list.items.map((u: { id: string }) => u.id);
+      expect(ids).not.toContain(ctx.orgA.owner.id);
+    });
+
     it('paginates, sorts, filters by organization and exports CSV', async () => {
       const page = (
         await signed(
@@ -234,6 +290,78 @@ describe('Platform analytics', () => {
         await ctx.http().get('/api/v1/leads').set(auth(ctx.orgA.owner.accessToken)).expect(200);
       } finally {
         repo.flushApiBuckets = original;
+      }
+    });
+
+    it('a failed write is retried, so its requests are counted exactly once', async () => {
+      const repo = ctx.app.get(PlatformAnalyticsRepository);
+      const collector = ctx.app.get(ApiMetricsCollector);
+      const prisma = ctx.app.get(PrismaService).client;
+      const system = ctx.app.get(TenantContextService);
+      const route = '/api/v1/analytics/collect';
+      await flush();
+      const count = async () =>
+        (
+          await system.runAsSystem('e2e', () =>
+            prisma.apiMetricHour.findMany({ where: { route, method: 'POST' } }),
+          )
+        ).reduce((n, h) => n + h.count, 0);
+      const before = await count();
+
+      const original = repo.flushApiBuckets.bind(repo);
+      repo.flushApiBuckets = () => Promise.reject(new Error('metrics store down'));
+      try {
+        await collect({ event: 'page_view', path: '/', visitorId: 'v'.repeat(32), sessionId: 's'.repeat(32) });
+        await collect({ event: 'page_view', path: '/', visitorId: 'v'.repeat(32), sessionId: 's'.repeat(32) });
+        await collector.flush();
+      } finally {
+        repo.flushApiBuckets = original;
+      }
+      expect(await count()).toBe(before);
+      await collector.flush();
+      expect(await count()).toBe(before + 2);
+      await collector.flush();
+      expect(await count()).toBe(before + 2);
+    });
+
+    it('calls API counts exact only when no process stopped without its final write', async () => {
+      await flush();
+      const clean = (await signed('/api', '?range=24h').expect(200)).body.data.totals;
+      expect(clean.completeness).toMatchObject({ exact: true, uncleanStops: [], droppedRequests: 0 });
+
+      // A process that crashed ten minutes ago: it never wrote a clean stop.
+      const prisma = ctx.app.get(PrismaService).client;
+      const system = ctx.app.get(TenantContextService);
+      const crashed = randomUUID();
+      await system.runAsSystem('e2e', () =>
+        prisma.apiMetricInstance.create({
+          data: {
+            id: crashed,
+            startedAt: new Date(Date.now() - 30 * 60_000),
+            lastFlushAt: new Date(Date.now() - 10 * 60_000),
+          },
+        }),
+      );
+      try {
+        const after = (await signed('/api', '?range=24h').expect(200)).body.data.totals;
+        expect(after.completeness.exact).toBe(false);
+        expect(after.completeness.uncleanStops).toEqual([
+          expect.objectContaining({ maxUncountedSeconds: 60 }),
+        ]);
+        const overview = (await signed('/overview').expect(200)).body.data;
+        expect(overview.api24h.completeness.exact).toBe(false);
+        // A window that ended before the crash is still exact.
+        const earlier = (
+          await signed(
+            '/api',
+            `?range=custom&from=${new Date(Date.now() - 2 * 86_400_000).toISOString()}&to=${new Date(Date.now() - 86_400_000).toISOString()}`,
+          ).expect(200)
+        ).body.data.totals;
+        expect(earlier.completeness.exact).toBe(true);
+      } finally {
+        await system.runAsSystem('e2e', () =>
+          prisma.apiMetricInstance.delete({ where: { id: crashed } }),
+        );
       }
     });
 
@@ -317,6 +445,12 @@ describe('Platform analytics', () => {
       expect(web.sources).toEqual([{ key: 'organic', count: 1 }]);
       expect(web.topLandingPages[0]).toEqual({ key: '/', count: 1 });
       expect(JSON.stringify(web)).not.toContain(visitor);
+    });
+
+    it('cannot be used to write tenant data: unknown fields are refused', async () => {
+      const visitorId = 'x'.repeat(32);
+      await collect({ event: 'page_view', path: '/', visitorId, sessionId: 'y'.repeat(32), organizationId: ctx.orgA.id }).expect(400);
+      await collect({ event: 'lead_created', path: '/', visitorId, sessionId: 'y'.repeat(32) }).expect(400);
     });
 
     it('stores no raw visitor id, IP address or full referrer URL', async () => {

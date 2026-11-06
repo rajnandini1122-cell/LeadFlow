@@ -6,7 +6,7 @@
 -- these through the signed, read-only analytics API (integrations/admin-
 -- analytics). Platform-level tables: no tenant user can query them.
 --
--- ADDITIVE ONLY. Two nullable columns on users, seven new tables. Nothing is
+-- ADDITIVE ONLY. Two nullable columns on users, eight new tables. Nothing is
 -- dropped or rewritten.
 --
 -- NO BACKFILL. users.first_login_at and users.last_active_at start NULL for
@@ -22,10 +22,11 @@
 -- that occurred -- tens to low hundreds a day at current traffic.
 -- api_organization_hours: one per active organization per hour. Web tables:
 -- one row per visitor, per visit, per (day, path) and per (day, event,
--- source). Retention is enforced by the API (see analytics-retention.ts):
+-- source). api_metric_instances: one row per API process start. Retention is
+-- enforced by the API (RETENTION in api-metrics.collector.ts):
 -- 400 days for daily/visitor tables, 90 days for hourly API metrics.
 --
--- ROLLBACK: DROP the seven tables and the two columns. The previous API reads
+-- ROLLBACK: DROP the eight tables and the two columns. The previous API reads
 -- none of them, so rolling back the API alone does not require this.
 -- =============================================================================
 
@@ -78,6 +79,20 @@ CREATE TABLE "api_organization_hours" (
     CONSTRAINT "api_organization_hours_pkey" PRIMARY KEY ("hour", "organization_id")
 );
 CREATE INDEX "api_organization_hours_organization_id_hour_idx" ON "api_organization_hours" ("organization_id", "hour");
+
+-- One row per API process. API counts are buffered for up to a minute, so a
+-- process that stops without its final flush (crash, OOM, kill) loses up to a
+-- minute of counts. This table is how the dashboard KNOWS that happened and
+-- labels the affected figures as lower bounds instead of exact.
+CREATE TABLE "api_metric_instances" (
+    "id"               UUID           NOT NULL,
+    "started_at"       TIMESTAMPTZ(6) NOT NULL,
+    "last_flush_at"    TIMESTAMPTZ(6) NOT NULL,
+    "stopped_at"       TIMESTAMPTZ(6),
+    "dropped_requests" INTEGER        NOT NULL DEFAULT 0,
+    CONSTRAINT "api_metric_instances_pkey" PRIMARY KEY ("id")
+);
+CREATE INDEX "api_metric_instances_last_flush_at_idx" ON "api_metric_instances" ("last_flush_at");
 
 CREATE TABLE "web_visitors" (
     "visitor_hash"  CHAR(64)       NOT NULL,

@@ -3121,6 +3121,21 @@ model ApiOrganizationHour {
   @@map("api_organization_hours")
 }
 
+/// One row per API process. Counts are buffered for up to a minute; a process
+/// with no stoppedAt that has stopped flushing ended without its final flush,
+/// so up to a minute of its counts are missing. The dashboard reports that.
+model ApiMetricInstance {
+  id              String    @id @db.Uuid
+  startedAt       DateTime  @map("started_at") @db.Timestamptz(6)
+  lastFlushAt     DateTime  @map("last_flush_at") @db.Timestamptz(6)
+  stoppedAt       DateTime? @map("stopped_at") @db.Timestamptz(6)
+  /// Requests seen but never written (bucket ceiling reached). Exact count.
+  droppedRequests Int       @default(0) @map("dropped_requests")
+
+  @@index([lastFlushAt])
+  @@map("api_metric_instances")
+}
+
 /// A public-website visitor, by a SALTED HASH of a random id the browser keeps
 /// in localStorage. No IP address, no cookie, no personal data.
 model WebVisitor {

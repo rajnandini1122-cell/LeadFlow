@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, type OnModuleInit } from '@nestjs/common';
 import { analyticsDay } from './analytics-time';
 import { PlatformAnalyticsRepository } from './platform-analytics.repository';
 
@@ -15,7 +15,7 @@ import { PlatformAnalyticsRepository } from './platform-analytics.repository';
  * would write at most once a minute -- still bounded.
  */
 @Injectable()
-export class ActivityTrackerService {
+export class ActivityTrackerService implements OnModuleInit {
   static readonly WRITE_EVERY_MS = 60_000;
   private static readonly MAX_ENTRIES = 10_000;
 
@@ -24,6 +24,11 @@ export class ActivityTrackerService {
   private readonly inFlight = new Set<Promise<void>>();
 
   constructor(private readonly repository: PlatformAnalyticsRepository) {}
+
+  onModuleInit(): void {
+    // Writes already started finish before the database disconnects.
+    this.repository.beforeDisconnect(() => this.settle());
+  }
 
   touch(userId: string, organizationId: string, now: Date = new Date()): void {
     const key = `${userId}:${organizationId}`;

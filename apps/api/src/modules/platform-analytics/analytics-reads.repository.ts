@@ -58,6 +58,16 @@ export class AnalyticsReadsRepository {
     return this.run('collection start dates', () => this.db.analyticsCollection.findMany());
   }
 
+  /** API processes that were running at any point in [from, to]. */
+  async metricInstances(from: Date, to: Date) {
+    return this.run('API metrics heartbeats', () =>
+      this.db.apiMetricInstance.findMany({
+        where: { lastFlushAt: { gte: from }, startedAt: { lte: to } },
+        orderBy: { startedAt: 'asc' },
+      }),
+    );
+  }
+
   // --- users -----------------------------------------------------------------
 
   async userCounts(now: Date, onlineSince: Date) {
