@@ -6,7 +6,7 @@
 -- these through the signed, read-only analytics API (integrations/admin-
 -- analytics). Platform-level tables: no tenant user can query them.
 --
--- ADDITIVE ONLY. Two nullable columns on users, eight new tables. Nothing is
+-- ADDITIVE ONLY. Two nullable columns on users, nine new tables. Nothing is
 -- dropped or rewritten.
 --
 -- NO BACKFILL. users.first_login_at and users.last_active_at start NULL for
@@ -26,7 +26,7 @@
 -- enforced by the API (RETENTION in api-metrics.collector.ts):
 -- 400 days for daily/visitor tables, 90 days for hourly API metrics.
 --
--- ROLLBACK: DROP the eight tables and the two columns. The previous API reads
+-- ROLLBACK: DROP the nine tables and the two columns. The previous API reads
 -- none of them, so rolling back the API alone does not require this.
 -- =============================================================================
 
