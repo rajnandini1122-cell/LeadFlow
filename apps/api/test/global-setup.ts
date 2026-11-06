@@ -58,6 +58,13 @@ export default async function globalSetup(): Promise<void> {
 
     db = await PGlite.create();
     await db.waitReady;
+    // Production and CI run UTC sessions; PGlite otherwise derives its zone
+    // from the host clock (Etc/GMT-5 on an India machine). Timestamps are
+    // written without an offset, so a non-UTC session would store every
+    // instant shifted -- see session-timezone.ts. PGlite has one backend
+    // session, shared by every socket client, so SET applies to all of them;
+    // ALTER DATABASE covers a backend restart.
+    await db.exec(`ALTER DATABASE postgres SET timezone TO 'UTC'; SET timezone TO 'UTC';`);
 
     server = new PGLiteSocketServer({ db, port, host: '127.0.0.1' });
     await server.start();
