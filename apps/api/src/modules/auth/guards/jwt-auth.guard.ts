@@ -9,6 +9,7 @@ import {
 import { TokenService, type AccessTokenClaims } from '../token.service';
 import { MembershipCacheService } from '../membership-cache.service';
 import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
+import { ActivityTrackerService } from '../../platform-analytics/activity-tracker.service';
 
 export interface AuthenticatedRequest extends Request {
   claims?: AccessTokenClaims;
@@ -37,6 +38,7 @@ export class JwtAuthGuard implements CanActivate {
     private readonly tokens: TokenService,
     private readonly membershipCache: MembershipCacheService,
     private readonly tenantContext: TenantContextService,
+    private readonly activity: ActivityTrackerService,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -86,6 +88,10 @@ export class JwtAuthGuard implements CanActivate {
     this.tenantContext.setPrincipal(principal);
     request.principal = principal;
     request.claims = claims;
+
+    // "Last active" and daily activity for platform analytics. Throttled to one
+    // write a minute per user, fire-and-forget: never slows or fails a request.
+    this.activity.touch(principal.userId, principal.organizationId);
 
     return true;
   }

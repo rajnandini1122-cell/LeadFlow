@@ -84,7 +84,26 @@ export class PrismaService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  private readonly drainHooks: (() => Promise<void>)[] = [];
+
+  /**
+   * Work that must reach the database before shutdown -- buffered metrics, for
+   * one. Nest runs onModuleDestroy (and so the disconnect below) BEFORE any
+   * onApplicationShutdown hook, so a writer that flushed there would find the
+   * pool already closed. Hooks run in order; a failure is logged, never thrown.
+   */
+  beforeDisconnect(hook: () => Promise<void>): void {
+    this.drainHooks.push(hook);
+  }
+
   async onModuleDestroy(): Promise<void> {
+    for (const hook of this.drainHooks) {
+      try {
+        await hook();
+      } catch (error) {
+        this.logger.warn(`A shutdown write failed: ${(error as Error).message}`);
+      }
+    }
     await this.base.$disconnect();
   }
 

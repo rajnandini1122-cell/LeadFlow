@@ -6,6 +6,7 @@ import { COMPANY_LEGAL_NAME, COMPANY_SALES_EMAIL, COMPANY_WEBSITE } from '../../
 import { AndroidDownload } from './android-download';
 import { useHeroBackground } from './use-hero-background';
 import { DemoVideo } from './demo-video';
+import { publicPage } from '@leadflow/api-types';
 
 /**
  * The homepage.
@@ -16,10 +17,8 @@ import { DemoVideo } from './demo-video';
  * ones discovered after they have signed up.
  */
 export function HomePage(): React.JSX.Element {
-  usePageMeta(
-    'LeadFlow — Sales CRM for small teams',
-    'Capture leads, assign ownership and schedule follow-ups so nothing is forgotten. Built for small sales teams.',
-  );
+  const meta = publicPage('/');
+  usePageMeta(meta?.title ?? 'LeadFlow', meta?.description);
 
   return (
     <>

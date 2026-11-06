@@ -1,7 +1,8 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { NextFunction, Request, Response } from 'express';
 import type { NestExpressApplication } from '@nestjs/platform-express';
+import { renderIndexHtml, robotsTxt, sitemapXml } from './seo';
 
 /**
  * Serving the React app from the API process.
@@ -81,8 +82,27 @@ export function isSpaRequest(method: string, path: string): boolean {
  * `/api` here; this is a no-op then, which is what keeps local behaviour
  * unchanged.
  */
-export function serveWebApp(app: NestExpressApplication, root: string): boolean {
+export function serveWebApp(
+  app: NestExpressApplication,
+  root: string,
+  /** The public origin (API_BASE_URL): what canonical URLs, robots.txt and the sitemap name. */
+  baseUrl: string = process.env['API_BASE_URL'] ?? 'http://localhost:3000',
+): boolean {
   if (!existsSync(join(root, 'index.html'))) return false;
+
+  // Generated, not files: built from the same public-page list the HTML uses.
+  app.use((request: Request, response: Response, next: NextFunction) => {
+    if (request.method !== 'GET' && request.method !== 'HEAD') return next();
+    if (request.path === '/robots.txt') {
+      response.type('text/plain').setHeader('Cache-Control', 'public, max-age=3600');
+      return response.send(robotsTxt(baseUrl));
+    }
+    if (request.path === '/sitemap.xml') {
+      response.type('application/xml').setHeader('Cache-Control', 'public, max-age=3600');
+      return response.send(sitemapXml(baseUrl));
+    }
+    return next();
+  });
 
   /*
    * Real files first, and ONLY real files.
@@ -112,12 +132,26 @@ export function serveWebApp(app: NestExpressApplication, root: string): boolean 
      */
     response.setHeader('Cache-Control', 'no-cache');
 
-    return response.sendFile(indexHtml, (error: unknown) => {
-      // Falls through to Nest rather than crashing the request: a missing
-      // index.html after the existsSync check above means the bundle was
-      // removed underneath a running process, which is a 404, not a 500.
-      if (error) next();
-    });
+    /*
+     * Each public page gets its own title, description, canonical, social tags
+     * and structured data in this first response; every other route gets
+     * noindex. Read per request (it is small, and a rebuilt bundle is picked up
+     * without a restart); a read failure falls back to the plain file.
+     */
+    let template: string;
+    try {
+      template = readFileSync(indexHtml, 'utf8');
+    } catch {
+      return response.sendFile(indexHtml, (error: unknown) => {
+        // Falls through to Nest rather than crashing the request: a missing
+        // index.html after the existsSync check above means the bundle was
+        // removed underneath a running process, which is a 404, not a 500.
+        if (error) next();
+      });
+    }
+    const page = renderIndexHtml(template, request.path, baseUrl);
+    if (!page.indexable) response.setHeader('X-Robots-Tag', 'noindex, nofollow');
+    return response.type('html').send(page.html);
   });
 
   return true;

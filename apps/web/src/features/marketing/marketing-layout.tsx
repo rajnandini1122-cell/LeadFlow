@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
 import { COMPANY_SALES_EMAIL, Copyright, Logo, OperatedBy } from '../../components/brand';
 import { useApkManifest } from '../../lib/use-apk-manifest';
+import { useTrackPageView } from '../../lib/web-analytics';
 
 const NAV = [
   { to: '/features', label: 'Features' },
@@ -19,6 +20,8 @@ const NAV = [
  * checked against the other.
  */
 export function MarketingLayout(): React.JSX.Element {
+  // First-party, anonymous page views of the public site (see lib/web-analytics).
+  useTrackPageView();
   return (
     <div className="flex min-h-screen flex-col bg-white">
       <MarketingHeader />

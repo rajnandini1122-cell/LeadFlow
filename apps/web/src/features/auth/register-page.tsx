@@ -1,10 +1,11 @@
-import { useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Link, Navigate } from 'react-router-dom';
 import { ApiError } from '../../lib/api-client';
 import { DEFAULT_COUNTRY, countryOptions } from '../../lib/countries';
 import { useAuth } from './auth-context';
 import { AuthField, AuthLayout, AuthSelect, SubmitButton } from './auth-shell';
 import { GoogleSignInButton } from './google-sign-in';
+import { trackWebEvent } from '../../lib/web-analytics';
 
 /**
  * Self-service organization registration.
@@ -15,6 +16,7 @@ import { GoogleSignInButton } from './google-sign-in';
  * produce errors.
  */
 export function RegisterPage(): React.JSX.Element {
+  useEffect(() => trackWebEvent('page_view', '/register'), []);
   const { register, loginWithGoogle, registerWithGoogle, status } = useAuth();
 
   const [organizationName, setOrganizationName] = useState('');
@@ -103,6 +105,7 @@ export function RegisterPage(): React.JSX.Element {
 
   const submit = async (event: FormEvent): Promise<void> => {
     event.preventDefault();
+    trackWebEvent('registration_start', '/register');
     setError(null);
     setFieldErrors({});
     setSubmitting(true);
@@ -117,6 +120,7 @@ export function RegisterPage(): React.JSX.Element {
         country,
       });
 
+      trackWebEvent('registration_complete', '/register');
       // A local registration never signs in. Google registration does, and
       // the redirect above catches it once `status` flips.
       if (!result.verified) {
@@ -160,7 +164,9 @@ export function RegisterPage(): React.JSX.Element {
         return;
       }
 
+      trackWebEvent('registration_start', '/register');
       await registerWithGoogle(idToken, organizationName, country);
+      trackWebEvent('registration_complete', '/register');
     } catch (caught) {
       setError(
         caught instanceof ApiError ? caught.message : 'Google sign-in failed. Please try again.',

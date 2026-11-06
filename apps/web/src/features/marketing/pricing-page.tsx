@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom';
 import { usePageMeta } from '../../lib/use-page-meta';
 import { SectionHeading } from './marketing-layout';
 import { PricingTable } from './pricing-table';
+import { publicPage } from '@leadflow/api-types';
 
 const FAQ = [
   {
@@ -31,10 +32,8 @@ const FAQ = [
 ];
 
 export function PricingPage(): React.JSX.Element {
-  usePageMeta(
-    'Pricing — LeadFlow',
-    'Simple per-organization pricing. Start free while LeadFlow is in early access.',
-  );
+  const meta = publicPage('/pricing');
+  usePageMeta(meta?.title ?? 'LeadFlow', meta?.description);
 
   return (
     <>

@@ -453,6 +453,33 @@ export const envSchema = z
       .optional(),
 
     /**
+     * Platform analytics for the CRAVION Admin "LeadFlow Analytics" module.
+     *
+     * A SEPARATE trust domain from the admin control plane above: it reads
+     * across EVERY tenant (counts, users, organizations, API metrics), so it
+     * has its own switch and its own key. It is read-only -- nothing reachable
+     * with this key can change data. Default OFF: no route until turned on.
+     */
+    ADMIN_ANALYTICS_ENABLED: z
+      .string()
+      .default('false')
+      .transform((value) => value === 'true'),
+    /** The key the CRAVION Admin backend signs analytics reads with. 32+ characters. */
+    ADMIN_ANALYTICS_SIGNING_SECRET: z
+      .string()
+      .min(32, 'must be at least 32 characters')
+      .optional(),
+    /**
+     * First-party public-website analytics (page views, visits, conversions).
+     * On by default: it stores no IP address, no cookie and no personal data,
+     * and the browser skips it under Do Not Track / Global Privacy Control.
+     */
+    WEB_ANALYTICS_ENABLED: z
+      .string()
+      .default('true')
+      .transform((value) => value === 'true'),
+
+    /**
      * How many reverse proxies sit in front of this process.
      *
      * Express derives `req.ip` — which is what every rate limit and audit row
@@ -591,6 +618,28 @@ export const envSchema = z
      * compromise of the second, and would make either impossible to rotate
      * alone. Caught at boot rather than in a review.
      */
+    if (env.ADMIN_ANALYTICS_ENABLED && !env.ADMIN_ANALYTICS_SIGNING_SECRET) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['ADMIN_ANALYTICS_SIGNING_SECRET'],
+        message: 'is required when ADMIN_ANALYTICS_ENABLED=true',
+      });
+    }
+    // Cross-tenant reads must not share a key with anything else.
+    if (
+      env.ADMIN_ANALYTICS_SIGNING_SECRET &&
+      (env.ADMIN_ANALYTICS_SIGNING_SECRET === env.ADMIN_CONTROL_SIGNING_SECRET ||
+        env.ADMIN_ANALYTICS_SIGNING_SECRET === env.WEBSITE_INTAKE_SIGNING_SECRET)
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['ADMIN_ANALYTICS_SIGNING_SECRET'],
+        message:
+          'must differ from ADMIN_CONTROL_SIGNING_SECRET and WEBSITE_INTAKE_SIGNING_SECRET ' +
+          '— each integration is its own trust domain',
+      });
+    }
+
     if (
       env.ADMIN_CONTROL_SIGNING_SECRET &&
       env.ADMIN_CONTROL_SIGNING_SECRET === env.WEBSITE_INTAKE_SIGNING_SECRET

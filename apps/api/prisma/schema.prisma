@@ -416,6 +416,12 @@ model User {
   emailVerifiedAt DateTime? @map("email_verified_at") @db.Timestamptz(6)
 
   lastLoginAt DateTime? @map("last_login_at") @db.Timestamptz(6)
+  /// First successful sign-in RECORDED. Null for users who last signed in
+  /// before tracking began (2026-11) -- never back-filled with a guess.
+  firstLoginAt DateTime? @map("first_login_at") @db.Timestamptz(6)
+  /// Last authenticated request, written at most once a minute per user.
+  /// "Online" = active within the last 5 minutes.
+  lastActiveAt DateTime? @map("last_active_at") @db.Timestamptz(6)
   createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -3040,4 +3046,146 @@ model LeadImportMappingTemplate {
   /// organization. Per tenant, never global.
   @@unique([organizationId, name])
   @@map("lead_import_mapping_templates")
+}
+
+// =============================================================================
+// Platform analytics -- read ONLY by the signed CRAVION Admin analytics API.
+//
+// Platform-level, not tenant data: these tables are deliberately NOT in
+// TENANT_SCOPED_MODELS (see tenant-scope.extension.ts). Nothing a tenant user
+// can call reads them. They hold counts and identifiers, never request bodies,
+// tokens, query strings or form contents.
+// =============================================================================
+
+/// When each kind of collection began, so the dashboard can say "not recorded
+/// before ..." instead of showing a misleading zero.
+model AnalyticsCollection {
+  key       String   @id @db.VarChar(40)
+  startedAt DateTime @default(now()) @map("started_at") @db.Timestamptz(6)
+
+  @@map("analytics_collections")
+}
+
+/// One row per user per organization per day they made an authenticated
+/// request: the source of DAU / WAU / MAU and "active over time".
+model UserActivityDay {
+  userId         String   @map("user_id") @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  day            DateTime @db.Date
+  firstSeenAt    DateTime @default(now()) @map("first_seen_at") @db.Timestamptz(6)
+
+  @@id([userId, organizationId, day])
+  @@index([day])
+  @@index([organizationId, day])
+  @@map("user_activity_days")
+}
+
+/// API traffic aggregated per hour x method x ROUTE TEMPLATE x status x error
+/// code. Bounded cardinality: route templates, never raw URLs. Latency is a
+/// fixed histogram (h0..h8) so p95 can be estimated without storing requests.
+/// Bucket upper bounds in ms: 25, 50, 100, 250, 500, 1000, 2500, 5000, +inf.
+model ApiMetricHour {
+  hour      DateTime @db.Timestamptz(6)
+  method    String   @db.VarChar(8)
+  route     String   @db.VarChar(200)
+  status    Int      @db.SmallInt
+  /// The API's error code for a 4xx/5xx (e.g. VALIDATION_ERROR), '' otherwise.
+  errorCode String   @default("") @map("error_code") @db.VarChar(60)
+  count     Int      @default(0)
+  totalMs   BigInt   @default(0) @map("total_ms")
+  maxMs     Int      @default(0) @map("max_ms")
+  h0        Int      @default(0)
+  h1        Int      @default(0)
+  h2        Int      @default(0)
+  h3        Int      @default(0)
+  h4        Int      @default(0)
+  h5        Int      @default(0)
+  h6        Int      @default(0)
+  h7        Int      @default(0)
+  h8        Int      @default(0)
+
+  @@id([hour, method, route, status, errorCode])
+  @@index([hour])
+  @@map("api_metric_hours")
+}
+
+/// Authenticated API requests per organization per hour ("usage by organization").
+model ApiOrganizationHour {
+  hour           DateTime @db.Timestamptz(6)
+  organizationId String   @map("organization_id") @db.Uuid
+  count          Int      @default(0)
+  errorCount     Int      @default(0) @map("error_count")
+
+  @@id([hour, organizationId])
+  @@index([organizationId, hour])
+  @@map("api_organization_hours")
+}
+
+/// One row per API process. Counts are buffered for up to a minute; a process
+/// with no stoppedAt that has stopped flushing ended without its final flush,
+/// so up to a minute of its counts are missing. The dashboard reports that.
+model ApiMetricInstance {
+  id              String    @id @db.Uuid
+  startedAt       DateTime  @map("started_at") @db.Timestamptz(6)
+  lastFlushAt     DateTime  @map("last_flush_at") @db.Timestamptz(6)
+  stoppedAt       DateTime? @map("stopped_at") @db.Timestamptz(6)
+  /// Requests seen but never written (bucket ceiling reached). Exact count.
+  droppedRequests Int       @default(0) @map("dropped_requests")
+
+  @@index([lastFlushAt])
+  @@map("api_metric_instances")
+}
+
+/// A public-website visitor, by a SALTED HASH of a random id the browser keeps
+/// in localStorage. No IP address, no cookie, no personal data.
+model WebVisitor {
+  visitorHash  String   @id @map("visitor_hash") @db.Char(64)
+  firstSeenAt  DateTime @default(now()) @map("first_seen_at") @db.Timestamptz(6)
+  lastSeenAt   DateTime @default(now()) @map("last_seen_at") @db.Timestamptz(6)
+  firstSource  String   @map("first_source") @db.VarChar(20)
+  firstLanding String   @map("first_landing") @db.VarChar(120)
+
+  @@index([firstSeenAt])
+  @@map("web_visitors")
+}
+
+/// A visit (30 minutes of inactivity ends it, decided in the browser).
+model WebSession {
+  sessionHash    String   @id @map("session_hash") @db.Char(64)
+  visitorHash    String   @map("visitor_hash") @db.Char(64)
+  day            DateTime @db.Date
+  startedAt      DateTime @default(now()) @map("started_at") @db.Timestamptz(6)
+  landingPath    String   @map("landing_path") @db.VarChar(120)
+  /// direct | organic | social | referral | campaign
+  source         String   @db.VarChar(20)
+  /// The referring site's host only (e.g. www.google.com), never the full URL.
+  referrerDomain String?  @map("referrer_domain") @db.VarChar(120)
+  pageViews      Int      @default(0) @map("page_views")
+  returning      Boolean  @default(false)
+
+  @@index([day])
+  @@index([visitorHash])
+  @@map("web_sessions")
+}
+
+/// Page views per public path per day.
+model WebPageDay {
+  day   DateTime @db.Date
+  path  String   @db.VarChar(120)
+  views Int      @default(0)
+
+  @@id([day, path])
+  @@map("web_page_days")
+}
+
+/// Conversion events per day and source: registration_start,
+/// registration_complete, contact_submit.
+model WebEventDay {
+  day    DateTime @db.Date
+  event  String   @db.VarChar(40)
+  source String   @db.VarChar(20)
+  count  Int      @default(0)
+
+  @@id([day, event, source])
+  @@map("web_event_days")
 }

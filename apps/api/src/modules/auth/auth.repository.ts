@@ -312,9 +312,15 @@ export class AuthRepository {
   }
 
   async touchLastLogin(userId: string): Promise<void> {
+    const now = new Date();
     await this.prisma.client.user.update({
       where: { id: userId },
-      data: { lastLoginAt: new Date() },
+      data: { lastLoginAt: now, lastActiveAt: now },
+    });
+    // The first successful sign-in RECORDED -- set once, never overwritten.
+    await this.prisma.client.user.updateMany({
+      where: { id: userId, firstLoginAt: null },
+      data: { firstLoginAt: now },
     });
   }
 }

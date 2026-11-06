@@ -3,6 +3,8 @@ import { useMutation } from '@tanstack/react-query';
 import { ApiError, apiPost } from '../../lib/api-client';
 import { usePageMeta } from '../../lib/use-page-meta';
 import { SectionHeading } from './marketing-layout';
+import { trackWebEvent } from '../../lib/web-analytics';
+import { publicPage } from '@leadflow/api-types';
 
 /** Kept in one place so the address on the page and in the mailto agree. */
 const SALES_EMAIL = 'sales@cravionventures.com';
@@ -22,10 +24,8 @@ interface EnquiryReceipt {
  * relay.
  */
 export function ContactPage(): React.JSX.Element {
-  usePageMeta(
-    'Contact — LeadFlow',
-    `Questions about LeadFlow? Send us a message or email ${SALES_EMAIL}.`,
-  );
+  const meta = publicPage('/contact');
+  usePageMeta(meta?.title ?? 'LeadFlow', meta?.description);
 
   return (
     <>
@@ -68,6 +68,8 @@ function EnquiryForm(): React.JSX.Element {
 
   const submit = useMutation({
     mutationFn: (body: Record<string, unknown>) => apiPost<EnquiryReceipt>('/contact', body),
+    // Only THAT an enquiry was sent -- never what it said.
+    onSuccess: () => trackWebEvent('contact_submit', '/contact'),
   });
 
   const set =
