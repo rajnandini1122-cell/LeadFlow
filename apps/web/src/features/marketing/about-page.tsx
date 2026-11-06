@@ -7,6 +7,7 @@ import {
 } from '../../components/brand';
 import { usePageMeta } from '../../lib/use-page-meta';
 import { SectionHeading } from './marketing-layout';
+import { publicPage } from '@leadflow/api-types';
 
 /**
  * About.
@@ -29,10 +30,8 @@ import { SectionHeading } from './marketing-layout';
  * footer and the application.
  */
 export function AboutPage(): React.JSX.Element {
-  usePageMeta(
-    'About — LeadFlow',
-    `LeadFlow is a customer lead management and sales operations platform developed and operated by ${COMPANY_LEGAL_NAME}.`,
-  );
+  const meta = publicPage('/about');
+  usePageMeta(meta?.title ?? 'LeadFlow', meta?.description);
 
   return (
     <>

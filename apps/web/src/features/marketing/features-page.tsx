@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import { usePageMeta } from '../../lib/use-page-meta';
 import { SectionHeading } from './marketing-layout';
+import { publicPage } from '@leadflow/api-types';
 
 interface FeatureGroup {
   id: string;
@@ -119,10 +120,8 @@ const UPCOMING = [
 ];
 
 export function FeaturesPage(): React.JSX.Element {
-  usePageMeta(
-    'Features — LeadFlow',
-    'Lead management, contacts, follow-ups, activity timeline, team roles, reporting and CSV import.',
-  );
+  const meta = publicPage('/features');
+  usePageMeta(meta?.title ?? 'LeadFlow', meta?.description);
 
   return (
     <>
