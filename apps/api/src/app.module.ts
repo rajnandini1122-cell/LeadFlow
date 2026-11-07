@@ -35,6 +35,8 @@ import { OmnichannelModule } from './modules/omnichannel/omnichannel.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { ReportsModule } from './modules/reports/reports.module';
 import { SubscriptionsModule } from './modules/subscriptions/subscriptions.module';
+import { BillingModule } from './modules/billing/billing.module';
+import { SubscriptionGuard } from './modules/billing/subscription.guard';
 import { PlatformModule } from './modules/platform/platform.module';
 import { PlatformAnalyticsModule } from './modules/platform-analytics/platform-analytics.module';
 import { ContactModule } from './modules/contact/contact.module';
@@ -145,6 +147,7 @@ import { AssignmentRulesModule } from './modules/assignment-rules/assignment-rul
     DashboardModule,
     ReportsModule,
     SubscriptionsModule,
+    BillingModule,
     PlatformModule,
     PlatformAnalyticsModule,
     ContactModule,
@@ -164,6 +167,8 @@ import { AssignmentRulesModule } from './modules/assignment-rules/assignment-rul
     PermissionSyncRepository,
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: PermissionsGuard },
+    //   4. subscription  — needs the principal; off unless SUBSCRIPTION_ENFORCEMENT_ENABLED
+    { provide: APP_GUARD, useExisting: SubscriptionGuard },
 
     // Interceptors run outermost-first on the way in: tenant fields are
     // stripped before any handler or pipe can observe them.

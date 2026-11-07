@@ -248,6 +248,16 @@ model Organization {
   followUps       FollowUp[]
   subscription    Subscription?
 
+  /// Protected deletion workflow: requested, then reviewable until
+  /// deletion_scheduled_for. Never set for nonpayment, never automatic.
+  deletionRequestedAt  DateTime? @map("deletion_requested_at") @db.Timestamptz(6)
+  deletionScheduledFor DateTime? @map("deletion_scheduled_for") @db.Timestamptz(6)
+  deletionReason       String?   @map("deletion_reason") @db.VarChar(500)
+  deletionRequestedBy  String?   @map("deletion_requested_by") @db.VarChar(200)
+
+  billingPayments     BillingPayment[]
+  subscriptionChanges SubscriptionChange[]
+
   channelIntegrations   ChannelIntegration[]
   accounts              Account[]
   notifications         Notification[]
@@ -415,15 +425,15 @@ model User {
   /// from before that migration as evidence about the mailbox.
   emailVerifiedAt DateTime? @map("email_verified_at") @db.Timestamptz(6)
 
-  lastLoginAt DateTime? @map("last_login_at") @db.Timestamptz(6)
+  lastLoginAt  DateTime? @map("last_login_at") @db.Timestamptz(6)
   /// First successful sign-in RECORDED. Null for users who last signed in
   /// before tracking began (2026-11) -- never back-filled with a guess.
   firstLoginAt DateTime? @map("first_login_at") @db.Timestamptz(6)
   /// Last authenticated request, written at most once a minute per user.
   /// "Online" = active within the last 5 minutes.
   lastActiveAt DateTime? @map("last_active_at") @db.Timestamptz(6)
-  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   avatar             UserAvatar?
   memberships        OrganizationUser[]       @relation("MembershipUser")
@@ -1097,11 +1107,11 @@ model Contact {
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   /// SetNull, never Cascade: deleting an account must not delete the people.
-  account      Account?     @relation(fields: [accountId], references: [id], onDelete: SetNull)
-  mergedInto   Contact?     @relation("ContactMerge", fields: [mergedIntoId], references: [id], onDelete: SetNull)
-  mergedFrom   Contact[]    @relation("ContactMerge")
+  account      Account?      @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  mergedInto   Contact?      @relation("ContactMerge", fields: [mergedIntoId], references: [id], onDelete: SetNull)
+  mergedFrom   Contact[]     @relation("ContactMerge")
   leads        Lead[]
   leadLinks    LeadContact[]
   followUps    FollowUp[]
@@ -1254,6 +1264,8 @@ model FollowUp {
 enum BillingInterval {
   MONTHLY
   YEARLY
+  /// One payment; no renewal. See LIFETIME_SCOPE in plan-catalogue.ts.
+  LIFETIME
 
   @@map("billing_interval")
 }
@@ -1322,6 +1334,7 @@ model Plan {
   features String[] @default([])
 
   subscriptions Subscription[]
+  prices        PlanPrice[]
 
   @@index([active, sortOrder])
   @@map("plans")
@@ -1362,6 +1375,27 @@ model Subscription {
   /// Restrict, not Cascade: deleting a plan someone is paying for should fail
   /// loudly rather than silently removing their subscription.
   plan         Plan         @relation(fields: [planId], references: [id], onDelete: Restrict)
+
+  /// When the free trial began: the organization's activation timestamp.
+  trialStartsAt       DateTime? @map("trial_starts_at") @db.Timestamptz(6)
+  /// NEW_TRIAL, TRIAL_ALREADY_USED, PENDING_REVIEW, GRANDFATHERED, COMPLIMENTARY,
+  /// PAID, EXEMPT. Every change is in subscription_changes.
+  entitlementDecision String?   @map("entitlement_decision") @db.VarChar(40)
+  decisionReason      String?   @map("decision_reason") @db.VarChar(500)
+  decisionAt          DateTime? @map("decision_at") @db.Timestamptz(6)
+  decisionBy          String?   @map("decision_by") @db.VarChar(200)
+  /// Paid once for the Lifetime plan; currentPeriodEnd is then not a deadline.
+  lifetime            Boolean   @default(false)
+  /// Complimentary Premium granted by a platform administrator, until this instant.
+  complimentaryUntil  DateTime? @map("complimentary_until") @db.Timestamptz(6)
+  /// Explicitly exempt from payment by a platform administrator (audited).
+  /// The INTERNAL organization needs no row: organization_type is its authority.
+  exempt              Boolean   @default(false)
+  /// SUSPENDED or DEACTIVATED: a reversible administrative hold (the
+  /// organization's status is SUSPENDED while it lasts).
+  accessHold          String?   @map("access_hold") @db.VarChar(20)
+  /// The price version last paid.
+  planPriceId         String?   @map("plan_price_id") @db.Uuid
 
   /// Serves the future renewal sweep, which scans across tenants for periods
   /// that have ended — hence status-first rather than organization-first.
@@ -2114,6 +2148,12 @@ enum NotificationType {
   FOLLOW_UP_ESCALATED
   /// A customer who bought before may be ready to buy again.
   REPEAT_BUSINESS_CANDIDATE
+  /// Trial or paid access ending soon (7, 3, 1 days).
+  BILLING_REMINDER
+  /// Trial or paid access has ended.
+  BILLING_EXPIRED
+  /// A payment succeeded or failed.
+  BILLING_PAYMENT
 
   @@map("notification_type")
 }
@@ -3188,4 +3228,116 @@ model WebEventDay {
 
   @@id([day, event, source])
   @@map("web_event_days")
+}
+
+/// A versioned, server-controlled price for one plan and interval. Payments
+/// reference the exact version they were charged at, so a later price change
+/// never rewrites history. Amounts are integer paise.
+model PlanPrice {
+  id               String          @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  planId           String          @map("plan_id") @db.Uuid
+  interval         BillingInterval
+  version          Int
+  currency         String          @db.VarChar(3)
+  baseAmountPaise  Int             @map("base_amount_paise")
+  /// Basis points: 1800 = 18%.
+  taxRateBp        Int             @default(0) @map("tax_rate_bp")
+  /// false: tax is added to the base amount (GST exclusive).
+  taxInclusive     Boolean         @default(false) @map("tax_inclusive")
+  taxAmountPaise   Int             @map("tax_amount_paise")
+  totalAmountPaise Int             @map("total_amount_paise")
+  /// MANUAL (renewed by paying again) or NONE (lifetime).
+  renewal          String          @db.VarChar(20)
+  active           Boolean         @default(true)
+  effectiveFrom    DateTime        @map("effective_from") @db.Timestamptz(6)
+  effectiveUntil   DateTime?       @map("effective_until") @db.Timestamptz(6)
+  createdAt        DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  plan     Plan             @relation(fields: [planId], references: [id], onDelete: Restrict)
+  payments BillingPayment[]
+
+  @@unique([planId, interval, version])
+  @@index([active, planId])
+  @@map("plan_prices")
+}
+
+/// One Razorpay order LeadFlow created, and what became of it. Platform-level
+/// (system scope); every tenant read filters by organization explicitly.
+model BillingPayment {
+  id                String          @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId    String          @map("organization_id") @db.Uuid
+  planPriceId       String          @map("plan_price_id") @db.Uuid
+  interval          BillingInterval
+  /// CREATED, PAID, FAILED, EXPIRED, REFUNDED, PARTIALLY_REFUNDED.
+  status            String          @db.VarChar(30)
+  currency          String          @db.VarChar(3)
+  baseAmountPaise   Int             @map("base_amount_paise")
+  taxAmountPaise    Int             @map("tax_amount_paise")
+  totalAmountPaise  Int             @map("total_amount_paise")
+  refundedPaise     Int             @default(0) @map("refunded_paise")
+  /// LF-prefixed: never collides with CRAVION store receipts.
+  receipt           String          @unique @db.VarChar(40)
+  provider          String          @default("razorpay") @db.VarChar(20)
+  providerOrderId   String          @unique @map("provider_order_id") @db.VarChar(60)
+  providerPaymentId String?         @unique @map("provider_payment_id") @db.VarChar(60)
+  failureReason     String?         @map("failure_reason") @db.VarChar(300)
+  createdByUserId   String?         @map("created_by_user_id") @db.Uuid
+  periodStart       DateTime?       @map("period_start") @db.Timestamptz(6)
+  periodEnd         DateTime?       @map("period_end") @db.Timestamptz(6)
+  paidAt            DateTime?       @map("paid_at") @db.Timestamptz(6)
+  lastCheckedAt     DateTime?       @map("last_checked_at") @db.Timestamptz(6)
+  createdAt         DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime        @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  planPrice    PlanPrice    @relation(fields: [planPriceId], references: [id], onDelete: Restrict)
+
+  @@index([organizationId, createdAt])
+  @@index([status, createdAt])
+  @@map("billing_payments")
+}
+
+/// Every verified provider event, recorded once (provider + event id), so a
+/// redelivered webhook is recognised and changes nothing.
+model BillingEvent {
+  id         String   @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  provider   String   @db.VarChar(20)
+  eventId    String   @map("event_id") @db.VarChar(80)
+  eventType  String   @map("event_type") @db.VarChar(60)
+  paymentId  String?  @map("payment_id") @db.Uuid
+  outcome    String   @db.VarChar(60)
+  receivedAt DateTime @default(now()) @map("received_at") @db.Timestamptz(6)
+
+  @@unique([provider, eventId])
+  @@map("billing_events")
+}
+
+/// The immutable entitlement audit trail: who changed what, why, from what, to
+/// what. A database trigger refuses UPDATE and DELETE.
+model SubscriptionChange {
+  id             String   @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  action         String   @db.VarChar(60)
+  /// system, admin, user, payment.
+  actorType      String   @map("actor_type") @db.VarChar(20)
+  actorRef       String   @map("actor_ref") @db.VarChar(200)
+  reason         String   @db.VarChar(500)
+  before         Json
+  after          Json
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+
+  @@index([organizationId, createdAt])
+  @@map("subscription_changes")
+}
+
+/// One free trial per person: a salted hash of the registering owner's
+/// normalized email. No email is stored.
+model TrialClaim {
+  fingerprint    String   @id @db.Char(64)
+  organizationId String   @map("organization_id") @db.Uuid
+  claimedAt      DateTime @default(now()) @map("claimed_at") @db.Timestamptz(6)
+
+  @@map("trial_claims")
 }

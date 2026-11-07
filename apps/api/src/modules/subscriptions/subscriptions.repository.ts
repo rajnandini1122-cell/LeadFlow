@@ -88,9 +88,17 @@ export class SubscriptionsRepository {
     currentPeriodStart: Date;
     currentPeriodEnd: Date;
     trialEndsAt: Date | null;
+    trialStartsAt?: Date | null;
+    entitlementDecision?: string;
+    decisionReason?: string;
   }) {
     return this.prisma.client.subscription.create({
       data: {
+        trialStartsAt: input.trialStartsAt ?? null,
+        entitlementDecision: input.entitlementDecision ?? null,
+        decisionReason: input.decisionReason ?? null,
+        decisionAt: input.entitlementDecision ? new Date() : null,
+        decisionBy: input.entitlementDecision ? 'system:registration' : null,
         organizationId: input.organizationId,
         planId: input.planId,
         status: input.status,
@@ -111,6 +119,35 @@ export class SubscriptionsRepository {
    * id. Returns the number of rows affected so the service can tell "not
    * found" from "changed nothing".
    */
+  /** When the organization was created: the authoritative activation timestamp. */
+  async organizationCreatedAt(organizationId: string): Promise<Date | null> {
+    const org = await this.prisma.client.organization.findUnique({
+      where: { id: organizationId },
+      select: { createdAt: true },
+    });
+    return org?.createdAt ?? null;
+  }
+
+  /** True if this person had not claimed a free trial before (one per fingerprint). */
+  async claimTrial(fingerprint: string, organizationId: string): Promise<boolean> {
+    const result = await this.prisma.client.trialClaim.createMany({
+      data: [{ fingerprint, organizationId }],
+      skipDuplicates: true,
+    });
+    return result.count === 1;
+  }
+
+  async recordChange(data: {
+    organizationId: string;
+    action: string;
+    reason: string;
+    after: Record<string, unknown>;
+  }): Promise<void> {
+    await this.prisma.client.subscriptionChange.create({
+      data: { ...data, actorType: 'system', actorRef: 'registration', before: {}, after: data.after as object },
+    });
+  }
+
   async updateCurrent(data: Record<string, unknown>): Promise<number> {
     const result = await this.prisma.client.subscription.updateMany({ where: {}, data });
     return result.count;

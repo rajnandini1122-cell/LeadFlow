@@ -1,4 +1,6 @@
+import { createHmac } from 'node:crypto';
 import { Injectable, Logger } from '@nestjs/common';
+import { AppConfig } from '../../common/config/config.module';
 import {
   ERROR_CODES,
   canTransition,
@@ -39,7 +41,26 @@ export class SubscriptionsService {
     private readonly repository: SubscriptionsRepository,
     private readonly audit: AuditRepository,
     private readonly tenantContext: TenantContextService,
+    private readonly config: AppConfig,
   ) {}
+
+  /**
+   * One free trial per person: a keyed hash of the owner's normalized email
+   * (case, surrounding space, "+tag", and dots in Gmail addresses folded), so
+   * registering again with a variant of the same address does not start a
+   * second trial. A different person — a genuinely new business — is
+   * unaffected. No email is stored in trial_claims.
+   */
+  trialFingerprint(email: string): string {
+    let [local = '', domain = ''] = email.trim().toLowerCase().split('@');
+    local = local.split('+')[0] ?? local;
+    if (domain === 'gmail.com' || domain === 'googlemail.com') {
+      local = local.replace(/\./g, '');
+      domain = 'gmail.com';
+    }
+    const key = createHmac('sha256', this.config.get('JWT_ACCESS_SECRET')).update('leadflow-trial-claims-v1').digest();
+    return createHmac('sha256', key).update(`${local}@${domain}`).digest('hex');
+  }
 
   // ---------------------------------------------------------------------------
   // Public catalogue
@@ -76,18 +97,18 @@ export class SubscriptionsService {
    * would-be customer unable to sign up at all. The failure is logged loudly
    * instead.
    */
-  async startTrial(organizationId: string, now = new Date()): Promise<void> {
+  async startTrial(organizationId: string, ownerEmail?: string, now = new Date()): Promise<void> {
     // Runs under an explicit system scope. Registration creates the
     // organization BEFORE anyone is authenticated, so there is no request
     // tenant context — and the Prisma scoper fails closed rather than guessing,
     // which is exactly what it should do. The organizationId is passed
     // explicitly instead, so the row is still written to the right tenant.
     await this.tenantContext.runAsSystem('registration: start trial subscription', async () => {
-      await this.createTrial(organizationId, now);
+      await this.createTrial(organizationId, ownerEmail, now);
     });
   }
 
-  private async createTrial(organizationId: string, now: Date): Promise<void> {
+  private async createTrial(organizationId: string, ownerEmail: string | undefined, now: Date): Promise<void> {
     try {
       const plan = await this.repository.findActivePlanByCode(DEFAULT_PLAN_CODE);
       if (!plan) {
@@ -98,16 +119,42 @@ export class SubscriptionsService {
         return;
       }
 
-      const trialEnd = new Date(now.getTime() + TRIAL_DAYS * 86_400_000);
+      // TRIAL_DAYS calendar days (x 24h, UTC) from the organization's recorded
+      // creation — the activation timestamp — not from whenever this line
+      // runs. Adding people, changing the owner or renaming the organization
+      // later changes neither date.
+      const start = (await this.repository.organizationCreatedAt(organizationId)) ?? now;
+      const fresh = ownerEmail
+        ? await this.repository.claimTrial(this.trialFingerprint(ownerEmail), organizationId)
+        : true;
+      const trialEnd = fresh ? new Date(start.getTime() + TRIAL_DAYS * 86_400_000) : start;
+      const decision = fresh ? 'NEW_TRIAL' : 'TRIAL_ALREADY_USED';
+      const reason = fresh
+        ? `${TRIAL_DAYS}-day free trial from activation`
+        : 'This owner already used a free trial with another organization; Premium is needed from the start (a platform administrator can grant a trial).';
 
       await this.repository.create({
         organizationId,
         planId: plan.id,
-        status: 'TRIAL',
+        status: fresh ? 'TRIAL' : 'EXPIRED',
         billingInterval: 'MONTHLY',
-        currentPeriodStart: now,
+        currentPeriodStart: start,
         currentPeriodEnd: trialEnd,
         trialEndsAt: trialEnd,
+        trialStartsAt: start,
+        entitlementDecision: decision,
+        decisionReason: reason,
+      });
+      await this.repository.recordChange({
+        organizationId,
+        action: fresh ? 'trial.started' : 'trial.already_used',
+        reason,
+        after: {
+          status: fresh ? 'TRIAL' : 'EXPIRED',
+          trialStartsAt: start.toISOString(),
+          trialEndsAt: trialEnd.toISOString(),
+          entitlementDecision: decision,
+        },
       });
     } catch (error) {
       this.logger.error({ organizationId, err: error }, 'Could not start trial subscription');

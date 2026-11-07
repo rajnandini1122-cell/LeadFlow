@@ -2,6 +2,7 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { AppConfig } from '../config/config.module';
 import { EMAIL_PROVIDER, type EmailDeliveryResult, type EmailProvider } from './email.types';
 import {
+  billingNoticeEmail,
   contactEnquiryEmail,
   emailVerificationEmail,
   invitationEmail,
@@ -76,6 +77,27 @@ export class EmailService {
         name: input.name,
         link,
         expiresInHours: input.expiresInHours,
+        to: input.to,
+      }),
+    );
+  }
+
+  /** A subscription notice (trial or paid access ending, ended, payment outcome). Never throws. */
+  async sendBillingNotice(input: {
+    to: string;
+    organizationName: string;
+    subject: string;
+    lines: string[];
+    cta: string;
+  }): Promise<EmailDeliveryResult> {
+    return this.deliver(
+      billingNoticeEmail({
+        productName: this.config.get('PRODUCT_NAME'),
+        organizationName: input.organizationName,
+        subject: input.subject,
+        lines: input.lines,
+        link: this.url('/settings/billing'),
+        cta: input.cta,
         to: input.to,
       }),
     );

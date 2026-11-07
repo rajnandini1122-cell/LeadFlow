@@ -248,3 +248,32 @@ export function contactEnquiryEmail(input: {
     tag: 'contact-enquiry',
   };
 }
+
+/**
+ * A subscription notice: a trial or paid period ending, ended, or a payment
+ * outcome. Plain and factual; the billing page is the one call to action.
+ */
+export function billingNoticeEmail(input: {
+  productName: string;
+  organizationName: string;
+  subject: string;
+  lines: string[];
+  link: string;
+  cta: string;
+  to: string;
+}): EmailMessage {
+  const { productName, organizationName, subject, lines, link, cta, to } = input;
+  return {
+    to: { email: to },
+    subject,
+    tag: 'billing',
+    text: [...lines, '', `${cta}: ${link}`, '', `${organizationName} on ${productName}`].join('\n'),
+    html: layout({
+      productName,
+      heading: subject,
+      body: lines.map((l) => `<p style="margin:0 0 12px;">${escapeHtml(l)}</p>`).join(''),
+      link,
+      cta,
+    }),
+  };
+}

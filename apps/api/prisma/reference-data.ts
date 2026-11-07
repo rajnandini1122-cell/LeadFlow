@@ -7,8 +7,10 @@ import {
 import type { PrismaClient } from '../src/generated/prisma/client';
 import {
   PLAN_CATALOGUE,
+  PRICE_CATALOGUE,
   WITHDRAWN_PLAN_CODES,
 } from '../src/modules/subscriptions/plan-catalogue';
+import { taxPaise } from '@leadflow/api-types';
 
 /**
  * The reference data a LeadFlow database cannot function without.
@@ -204,12 +206,62 @@ async function syncPlans(
     data: { active: false },
   });
 
+  await syncPlanPrices(prisma, ids, log);
+
   log(
     `  ${ids.size} plans in the catalogue` +
       (retired.count > 0 ? `, ${retired.count} withdrawn` : ''),
   );
 
   return { ids, created: ids.size, withdrawn: retired.count };
+}
+
+/**
+ * Versioned prices. A (plan, interval, version) row is created once and never
+ * edited afterwards: a payment references the exact version it was charged, so
+ * a price change is a NEW version, and the older version of that interval is
+ * then deactivated. Amounts and tax are computed here, in integer paise.
+ */
+async function syncPlanPrices(
+  prisma: ReferenceDataClient,
+  planIds: Map<string, string>,
+  log: ReferenceLogger,
+): Promise<void> {
+  let created = 0;
+  for (const price of PRICE_CATALOGUE) {
+    const planId = planIds.get(price.planCode);
+    if (!planId) throw new Error(`Price for unknown plan ${price.planCode}`);
+    const tax = price.taxInclusive ? 0 : taxPaise(price.basePaise, price.taxRateBp);
+    const existing = await prisma.planPrice.findUnique({
+      where: { planId_interval_version: { planId, interval: price.interval, version: price.version } },
+      select: { id: true },
+    });
+    if (!existing) {
+      await prisma.planPrice.create({
+        data: {
+          planId,
+          interval: price.interval,
+          version: price.version,
+          currency: price.currency,
+          baseAmountPaise: price.basePaise,
+          taxRateBp: price.taxRateBp,
+          taxInclusive: price.taxInclusive,
+          taxAmountPaise: tax,
+          totalAmountPaise: price.basePaise + tax,
+          renewal: price.renewal,
+          active: true,
+          effectiveFrom: new Date(price.effectiveFrom),
+        },
+      });
+      created += 1;
+    }
+    // Only the newest catalogue version of each interval is on sale.
+    await prisma.planPrice.updateMany({
+      where: { planId, interval: price.interval, version: { lt: price.version }, active: true },
+      data: { active: false, effectiveUntil: new Date(price.effectiveFrom) },
+    });
+  }
+  log(`  ${PRICE_CATALOGUE.length} plan prices in the catalogue${created ? `, ${created} created` : ''}`);
 }
 
 /** Plans, by code, for a caller that needs to attach a subscription. */
