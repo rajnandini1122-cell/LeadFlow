@@ -7,6 +7,7 @@ import { BillingController, RazorpayWebhookController } from './billing.controll
 import { BillingNotifier } from './billing-notifier.service';
 import { BillingRepository } from './billing.repository';
 import { BillingService } from './billing.service';
+import { PricingService } from './pricing.service';
 import { RazorpayClient } from './razorpay.client';
 import { SubscriptionGuard } from './subscription.guard';
 import { SubscriptionSweeper } from './subscription-sweeper.service';
@@ -26,6 +27,7 @@ import { SubscriptionSweeper } from './subscription-sweeper.service';
     BillingNotifier,
     RazorpayClient,
     AdminSubscriptionsService,
+    PricingService,
     SubscriptionSweeper,
     SubscriptionGuard,
   ],
