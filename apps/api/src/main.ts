@@ -36,7 +36,22 @@ async function bootstrap(): Promise<void> {
   app.useLogger(app.get(Logger));
   const config = app.get(AppConfig);
 
-  app.use(helmet());
+  // Helmet's default CSP, plus exactly what Razorpay Checkout needs: its
+  // script, its payment iframe, and the endpoints that iframe talks to.
+  const csp = helmet.contentSecurityPolicy.getDefaultDirectives();
+  app.use(
+    helmet({
+      contentSecurityPolicy: {
+        directives: {
+          ...csp,
+          'script-src': ["'self'", 'https://checkout.razorpay.com'],
+          'frame-src': ["'self'", 'https://api.razorpay.com', 'https://checkout.razorpay.com'],
+          'connect-src': ["'self'", 'https://api.razorpay.com', 'https://lumberjack.razorpay.com'],
+          'img-src': [...(csp['img-src'] as string[]), 'https://*.razorpay.com'],
+        },
+      },
+    }),
+  );
   app.use(cookieParser());
 
   // Express defaults to 100kb, which a few hundred imported leads exceed.

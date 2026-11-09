@@ -90,6 +90,12 @@ export const ERROR_CODES = {
   PLAN_NOT_FOUND: 'PLAN_NOT_FOUND',
   /// The requested status change is not legal from the current one.
   INVALID_SUBSCRIPTION_TRANSITION: 'INVALID_SUBSCRIPTION_TRANSITION',
+  /** Paid CRM features are unavailable: the trial or paid access has ended (HTTP 402). */
+  SUBSCRIPTION_REQUIRED: 'SUBSCRIPTION_REQUIRED',
+  /** Online payment is not switched on yet. */
+  BILLING_CHECKOUT_DISABLED: 'BILLING_CHECKOUT_DISABLED',
+  /** A payment could not be verified with the payment provider. */
+  PAYMENT_VERIFICATION_FAILED: 'PAYMENT_VERIFICATION_FAILED',
 
   // --- platform --------------------------------------------------------------
   VALIDATION_ERROR: 'VALIDATION_ERROR',

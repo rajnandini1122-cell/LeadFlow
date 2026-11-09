@@ -10,6 +10,7 @@ import { Copyright, LogoMark } from './brand';
 import { OrganizationSwitcher } from './organization-switcher';
 import { NotificationsMenu, type AttentionItem } from './notifications-menu';
 import { OfflineBanner } from './offline-banner';
+import { SubscriptionBanner } from './subscription-banner';
 import { useNotifications } from '../features/notifications/use-notifications';
 import { formatApkSize, useApkManifest } from '../lib/use-apk-manifest';
 
@@ -414,6 +415,7 @@ export function AppShell(): React.JSX.Element {
         </header>
 
         <OfflineBanner />
+        <SubscriptionBanner canViewBilling={can(PERMISSIONS.SUBSCRIPTION_VIEW)} />
 
         <main className="px-4 py-6 lg:px-8">
           <Outlet />

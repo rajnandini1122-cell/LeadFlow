@@ -187,7 +187,8 @@ describe('Subscriptions', () => {
         .expect(200);
 
       expect(response.body.data.status).toBe('TRIAL');
-      expect(response.body.data.plan.code).toBe('STARTER');
+      // A 30-day trial of the one plan offered (owner-approved catalogue, 2026-11-07).
+      expect(response.body.data.plan.code).toBe('PREMIUM');
       expect(response.body.data.trialEndsAt).not.toBeNull();
       expect(response.body.data.grantsAccess).toBe(true);
     });
@@ -205,7 +206,7 @@ describe('Subscriptions', () => {
       // the worst moment. The flag travels with the data so no client can
       // imply a cap the server does not apply.
       expect(response.body.data.limitsEnforced).toBe(false);
-      expect(response.body.data.plan.maxUsers).toBe(3);
+      expect(response.body.data.plan.maxUsers).toBe(25);
     });
 
     it('refuses an unauthenticated caller', async () => {
@@ -290,17 +291,25 @@ describe('Subscriptions', () => {
   // ---------------------------------------------------------------------------
 
   describe('PATCH /subscriptions/current', () => {
-    it('changes the plan', async () => {
+    it('changes to a plan on offer, and refuses a withdrawn one', async () => {
       const org = await freshOrg();
+
+      // BASIC was a placeholder plan, withdrawn when real pricing was set.
+      await ctx
+        .http()
+        .patch('/api/v1/subscriptions/current')
+        .set(auth(org.token))
+        .send({ planCode: 'BASIC' })
+        .expect(400);
 
       const response = await ctx
         .http()
         .patch('/api/v1/subscriptions/current')
         .set(auth(org.token))
-        .send({ planCode: 'BASIC' })
+        .send({ planCode: 'PREMIUM' })
         .expect(200);
 
-      expect(response.body.data.plan.code).toBe('BASIC');
+      expect(response.body.data.plan.code).toBe('PREMIUM');
     });
 
     it('changes the billing interval', async () => {

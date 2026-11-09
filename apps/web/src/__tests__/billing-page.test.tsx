@@ -1,102 +1,73 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { EntitlementView, PlanView, SubscriptionView } from '@leadflow/api-types';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  LIFETIME_SCOPE,
+  TRIAL_EXPIRED_MESSAGE,
+  type BillingSummaryView,
+  type PlanPriceView,
+} from '@leadflow/api-types';
 
 import { BillingPage } from '../features/settings/billing-page';
 import * as apiClient from '../lib/api-client';
-import * as authContext from '../features/auth/auth-context';
 
 /**
- * Plan and billing.
- *
- * The assertions that matter are the honest ones. No payment provider is
- * integrated and plan limits are not enforced, so the screen has to say both —
- * an owner who believes a card is on file, or that a stated limit will hold,
- * has been misled by the software rather than by anyone in particular.
+ * Plan and billing. Everything shown comes from the server — the trial
+ * countdown, the GST breakdown, the payment history — and nothing on this page
+ * can grant access: payment is verified by the API.
  */
 
-const PLANS: PlanView[] = [
-  {
-    id: '1',
-    code: 'STARTER',
-    name: 'Starter',
-    tagline: 'For a founder',
-    description: null,
-    featured: false,
-    currency: 'USD',
-    monthlyPrice: '0',
-    yearlyPrice: '0',
-    maxUsers: 3,
-    maxActiveLeads: 500,
-    features: ['Up to 3 team members'],
-  },
-  {
-    id: '2',
-    code: 'BASIC',
-    name: 'Basic',
-    tagline: 'For a sales team',
-    description: null,
-    featured: true,
-    currency: 'USD',
-    monthlyPrice: '29',
-    yearlyPrice: '290',
-    maxUsers: 15,
-    maxActiveLeads: 10_000,
-    features: ['Up to 15 team members', 'Team performance reporting'],
-  },
-];
+const price = (interval: PlanPriceView['interval'], base: string, tax: string, total: string): PlanPriceView => ({
+  id: interval,
+  planCode: 'PREMIUM',
+  planName: 'LeadFlow Premium',
+  interval,
+  version: 1,
+  currency: 'INR',
+  baseAmount: base,
+  taxRatePercent: '18',
+  taxAmount: tax,
+  totalAmount: total,
+  taxInclusive: false,
+  renewal: interval === 'LIFETIME' ? 'NONE' : 'MANUAL',
+});
 
-function subscription(overrides: Partial<SubscriptionView> = {}): SubscriptionView {
+function summary(overrides: Partial<BillingSummaryView> = {}): BillingSummaryView {
   return {
-    id: 'sub-1',
-    status: 'TRIAL',
-    billingInterval: 'MONTHLY',
-    currentPeriodStart: '2026-08-01T00:00:00.000Z',
-    currentPeriodEnd: new Date(Date.now() + 5 * 86_400_000).toISOString(),
-    trialEndsAt: new Date(Date.now() + 5 * 86_400_000).toISOString(),
-    cancelledAt: null,
-    plan: PLANS[0] as PlanView,
-    grantsAccess: true,
-    limitsEnforced: false,
-    ...overrides,
-  };
-}
-
-/**
- * A customer's entitlement.
- *
- * The page reads this BEFORE the subscription, to decide whether the screen is
- * about money at all. Every existing assertion below depends on `billable`
- * being true — without it the page correctly renders CRAVION's internal card
- * instead, which is the behaviour the new tests at the bottom cover.
- */
-function entitlement(overrides: Partial<EntitlementView> = {}): EntitlementView {
-  return {
-    source: 'CUSTOMER_SUBSCRIPTION',
+    state: 'TRIALING',
     grantsAccess: true,
     billable: true,
-    maxUsers: 5,
-    maxActiveLeads: 500,
-    limitsEnforced: false,
-    subscription: subscription(),
+    accessEndsAt: '2026-12-07T10:00:00.000Z',
+    daysRemaining: 30,
+    trialStartsAt: '2026-11-07T10:00:00.000Z',
+    trialEndsAt: '2026-12-07T10:00:00.000Z',
+    planName: 'LeadFlow Premium',
+    interval: null,
+    lifetime: false,
+    message: null,
+    enforcementEnabled: true,
+    checkoutEnabled: true,
+    canPay: true,
+    prices: [
+      price('MONTHLY', '200.00', '36.00', '236.00'),
+      price('YEARLY', '1780.00', '320.40', '2100.40'),
+      price('LIFETIME', '5000.00', '900.00', '5900.00'),
+    ],
+    payments: [],
+    lifetimeScope: LIFETIME_SCOPE,
+    supportEmail: 'support@cravionventures.com',
     ...overrides,
   };
 }
 
-function mockAuth(permissions: string[]): void {
-  vi.spyOn(authContext, 'useAuth').mockReturnValue({
-    can: (permission: string) => permissions.includes(permission),
-  } as never);
-}
-
-function renderBilling(): void {
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
+function renderBilling(data: BillingSummaryView): void {
+  vi.spyOn(apiClient, 'apiGet').mockImplementation(async (url: string) => {
+    if (url === '/billing/summary') return data as never;
+    throw new Error(`unexpected ${url}`);
   });
-
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
       <MemoryRouter>
@@ -106,210 +77,76 @@ function renderBilling(): void {
   );
 }
 
+afterEach(() => vi.restoreAllMocks());
+
 describe('Plan and billing', () => {
-  beforeEach(() => {
-    mockAuth(['subscription.view', 'subscription.manage']);
-    vi.spyOn(apiClient, 'apiGet').mockImplementation((url: string) => {
-      if (url === '/plans') return Promise.resolve(PLANS as never);
-      if (url === '/subscriptions/entitlement') return Promise.resolve(entitlement() as never);
-      return Promise.resolve(subscription() as never);
+  it('shows the trial countdown and the three plans with GST, from the server', async () => {
+    renderBilling(summary());
+    expect(await screen.findByText('30 days remaining')).toBeInTheDocument();
+    expect(screen.getAllByText('Free trial').length).toBeGreaterThan(0);
+    expect(screen.getByText('₹236')).toBeInTheDocument();
+    expect(screen.getByText('₹2,100.40')).toBeInTheDocument();
+    expect(screen.getByText('₹5,900')).toBeInTheDocument();
+    expect(screen.getAllByText(/GST \(18%\)/)).toHaveLength(3);
+    expect(screen.getByText(/Nothing is charged automatically/)).toBeInTheDocument();
+  });
+
+  it('shows the exact expiry message, keeps data reassurance and support, and offers Upgrade', async () => {
+    renderBilling(summary({ state: 'EXPIRED', grantsAccess: false, daysRemaining: null, accessEndsAt: null, message: TRIAL_EXPIRED_MESSAGE }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(TRIAL_EXPIRED_MESSAGE);
+    expect(screen.getByRole('alert')).toHaveTextContent(/records are kept safe/);
+    expect(screen.getAllByRole('button', { name: 'Upgrade' })).toHaveLength(3);
+    expect(screen.getAllByRole('link', { name: /support/ }).length).toBeGreaterThan(0);
+  });
+
+  it('pays only through the server: checkout first, then verification of Razorpay’s response', async () => {
+    const post = vi.spyOn(apiClient, 'apiPost').mockImplementation(async (url: string) => {
+      if (url === '/billing/checkout')
+        return { paymentId: 'p1', providerOrderId: 'order_ABC123', keyId: 'rzp_live_x', amountPaise: 23_600, currency: 'INR', receipt: 'LF-1', description: 'd', organizationName: 'Acme', prefill: { name: 'A', email: 'a@x' } } as never;
+      if (url === '/billing/verify') return { receipt: 'LF-1', status: 'PAID' } as never;
+      throw new Error(url);
     });
+    window.Razorpay = class {
+      constructor(private readonly options: Record<string, unknown>) {}
+      on() {}
+      open() {
+        (this.options['handler'] as (r: object) => void)({ razorpay_order_id: 'order_ABC123', razorpay_payment_id: 'pay_XYZ789', razorpay_signature: 'a'.repeat(64) });
+      }
+    } as never;
+    renderBilling(summary());
+    await userEvent.click((await screen.findAllByRole('button', { name: 'Upgrade' }))[0]!);
+    await waitFor(() => expect(screen.getByText('Payment LF-1 received. Thank you!')).toBeInTheDocument());
+    expect(post.mock.calls.map(([url]) => url)).toEqual(['/billing/checkout', '/billing/verify']);
+    expect(post.mock.calls[0]![1]).toEqual({ interval: 'MONTHLY' });
+    delete window.Razorpay;
   });
 
-  afterEach(() => {
-    vi.restoreAllMocks();
+  it('disables payment when checkout is off, and for someone who may not pay', async () => {
+    renderBilling(summary({ checkoutEnabled: false }));
+    expect(await screen.findByText(/Online payment is being switched on/)).toBeInTheDocument();
+    for (const b of screen.getAllByRole('button', { name: 'Upgrade' })) expect(b).toBeDisabled();
   });
 
-  it('shows the current plan and status', async () => {
-    renderBilling();
-
-    expect(await screen.findByText('Starter')).toBeInTheDocument();
-    expect(screen.getByText('Trial')).toBeInTheDocument();
-  });
-
-  it('counts down the trial from the real period end', async () => {
-    renderBilling();
-    expect(await screen.findByText(/5 days left in your trial/i)).toBeInTheDocument();
-  });
-
-  it('says plainly that no payment is set up', async () => {
-    renderBilling();
-
-    // An owner who believes a card is on file has been misled by the software.
-    expect(await screen.findByText(/no payment set up/i)).toBeInTheDocument();
-    expect(screen.getByText(/no card on file/i)).toBeInTheDocument();
-  });
-
-  it('says the stated limits are not applied', async () => {
-    renderBilling();
-
-    expect(await screen.findByText(/limits are not currently applied/i)).toBeInTheDocument();
-    // The numbers are still shown — they describe the tier, they just do not
-    // constrain the account.
-    expect(screen.getByText('3')).toBeInTheDocument();
-  });
-
-  it('changes plan only after an explicit confirmation', async () => {
-    const user = userEvent.setup();
-    vi.spyOn(apiClient, 'apiPatch').mockResolvedValue(
-      subscription({ plan: PLANS[1] as PlanView }) as never,
+  it('lists payment history with the GST breakdown', async () => {
+    renderBilling(
+      summary({
+        state: 'ACTIVE',
+        interval: 'MONTHLY',
+        payments: [
+          { id: 'p1', receipt: 'LF-20261107-abcd1234', interval: 'MONTHLY', status: 'PAID', currency: 'INR', baseAmount: '200.00', taxAmount: '36.00', totalAmount: '236.00', refundedAmount: '0.00', providerPaymentId: 'pay_1', periodStart: null, periodEnd: null, paidAt: '2026-11-07T10:00:00.000Z', createdAt: '2026-11-07T10:00:00.000Z' },
+        ],
+      }),
     );
-
-    renderBilling();
-
-    await user.click(await screen.findByRole('button', { name: /switch to basic/i }));
-    // Nothing has been sent yet.
-    expect(apiClient.apiPatch).not.toHaveBeenCalled();
-
-    const confirm = await screen.findByRole('alert');
-    await user.click(within(confirm).getByRole('button', { name: /yes, change plan/i }));
-
-    await waitFor(() => {
-      expect(apiClient.apiPatch).toHaveBeenCalledWith('/subscriptions/current', {
-        planCode: 'BASIC',
-      });
-    });
+    expect(await screen.findByText('LF-20261107-abcd1234')).toBeInTheDocument();
+    expect(screen.getByText('Paid')).toBeInTheDocument();
+    expect(screen.getByText('₹200 + ₹36 GST')).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: 'Renew' })).toHaveLength(2);
   });
 
-  it('NEVER sends a status when changing plan', async () => {
-    const user = userEvent.setup();
-    vi.spyOn(apiClient, 'apiPatch').mockResolvedValue(subscription() as never);
-
-    renderBilling();
-
-    await user.click(await screen.findByRole('button', { name: /switch to basic/i }));
-    const confirm = await screen.findByRole('alert');
-    await user.click(within(confirm).getByRole('button', { name: /yes, change plan/i }));
-
-    await waitFor(() => {
-      const body = vi.mocked(apiClient.apiPatch).mock.calls[0]?.[1] as Record<string, unknown>;
-      // Declaring yourself ACTIVE is declaring that you have paid. Only a
-      // payment provider can know that.
-      expect(body).not.toHaveProperty('status');
-    });
-  });
-
-  it('switches billing interval', async () => {
-    const user = userEvent.setup();
-    vi.spyOn(apiClient, 'apiPatch').mockResolvedValue(
-      subscription({ billingInterval: 'YEARLY' }) as never,
-    );
-
-    renderBilling();
-    await user.click(await screen.findByRole('radio', { name: 'Yearly' }));
-
-    await waitFor(() => {
-      expect(apiClient.apiPatch).toHaveBeenCalledWith('/subscriptions/current', {
-        billingInterval: 'YEARLY',
-      });
-    });
-  });
-
-  it('hides plan changes from someone who may only view', async () => {
-    mockAuth(['subscription.view']);
-    renderBilling();
-
-    expect(await screen.findByText('Starter')).toBeInTheDocument();
-    // The API enforces this too; hiding it just avoids offering an action that
-    // would certainly fail.
-    expect(screen.queryByRole('heading', { name: 'Change plan' })).toBeNull();
-  });
-
-  it('explains a past-due account without alarming the user', async () => {
-    vi.spyOn(apiClient, 'apiGet').mockImplementation((url: string) => {
-      if (url === '/plans') return Promise.resolve(PLANS as never);
-      if (url === '/subscriptions/entitlement') return Promise.resolve(entitlement() as never);
-      return Promise.resolve(subscription({ status: 'PAST_DUE' }) as never);
-    });
-
-    renderBilling();
-
-    expect(await screen.findByText('Payment due')).toBeInTheDocument();
-    // Access continues on purpose — cutting someone off on the first failed
-    // charge loses accounts a retry would have recovered.
-    expect(screen.getByText(/still works while we retry/i)).toBeInTheDocument();
-  });
-
-  it('reports a missing subscription as the fault it is', async () => {
-    // A BILLABLE organization with no subscription row really is a fault. The
-    // platform organization is a different case entirely — it is not billable,
-    // and never reaches this branch.
-    vi.spyOn(apiClient, 'apiGet').mockImplementation((url: string) => {
-      if (url === '/subscriptions/entitlement') return Promise.resolve(entitlement() as never);
-      return Promise.reject(new apiClient.ApiError('SUBSCRIPTION_NOT_FOUND', 'none', 404));
-    });
-
-    renderBilling();
-
-    expect(await screen.findByText(/should not happen/i)).toBeInTheDocument();
-  });
-
-  /**
-   * CRAVION's own organization.
-   *
-   * The platform operator has no plan, no period and no payment. The screen has
-   * to say that without claiming the account is "paid", which would be a
-   * different false statement from the one it replaces.
-   */
-  describe('the internal CRAVION account', () => {
-    beforeEach(() => {
-      vi.spyOn(apiClient, 'apiGet').mockImplementation((url: string) => {
-        if (url === '/plans') return Promise.resolve(PLANS as never);
-        if (url === '/subscriptions/entitlement') {
-          return Promise.resolve(
-            entitlement({
-              source: 'PLATFORM_INTERNAL',
-              billable: false,
-              maxUsers: null,
-              maxActiveLeads: null,
-              subscription: null,
-            }) as never,
-          );
-        }
-
-        // The platform organization has no subscription row, and asking for one
-        // is a 404. A screen that read this first would show an error on every
-        // visit — which is why the entitlement is read first.
-        return Promise.reject(new apiClient.ApiError('SUBSCRIPTION_NOT_FOUND', 'none', 404));
-      });
-    });
-
-    it('identifies the account as the platform owner', async () => {
-      renderBilling();
-
-      expect(await screen.findByText('Internal CRAVION account')).toBeInTheDocument();
-      expect(screen.getByText('Platform Owner')).toBeInTheDocument();
-    });
-
-    it('shows no trial countdown, no price and no upgrade prompt', async () => {
-      renderBilling();
-
-      await screen.findByText('Internal CRAVION account');
-
-      expect(screen.queryByText(/days left/i)).toBeNull();
-      expect(screen.queryByRole('heading', { name: 'Change plan' })).toBeNull();
-      expect(screen.queryByText(/upgrade/i)).toBeNull();
-      expect(screen.queryByText(/₹/)).toBeNull();
-    });
-
-    it('does not claim the account is paid', async () => {
-      renderBilling();
-
-      await screen.findByText('Internal CRAVION account');
-
-      // "No bill" is not "bill settled". Implying payment would be a new
-      // falsehood rather than the removal of one.
-      expect(screen.queryByText(/paid/i)).toBeNull();
-      expect(screen.queryByText(/active subscription/i)).toBeNull();
-    });
-
-    it('shows no subscription error, even though there is no subscription', async () => {
-      renderBilling();
-
-      await screen.findByText('Internal CRAVION account');
-
-      expect(screen.queryByText(/should not happen/i)).toBeNull();
-      expect(screen.queryByText(/Could not load/i)).toBeNull();
-    });
+  it('the internal CRAVION account sees no price, no countdown and no upgrade prompt', async () => {
+    renderBilling(summary({ state: 'EXEMPT', billable: false, prices: [], daysRemaining: null }));
+    expect(await screen.findByText('Internal CRAVION account')).toBeInTheDocument();
+    expect(screen.queryByText(/₹/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Upgrade' })).not.toBeInTheDocument();
   });
 });

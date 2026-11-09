@@ -480,6 +480,50 @@ export const envSchema = z
       .transform((value) => value === 'true'),
 
     /**
+     * Subscription enforcement: when true, an organization without access
+     * (trial or paid period ended, suspended) is refused paid CRM features
+     * with 402 SUBSCRIPTION_REQUIRED. Sign-in, billing, payment, account and
+     * support stay available. Off by default: entitlements are computed and
+     * shown either way, but nothing is blocked until this is switched on.
+     */
+    SUBSCRIPTION_ENFORCEMENT_ENABLED: z
+      .string()
+      .default('false')
+      .transform((value) => value === 'true'),
+    /**
+     * Online payment through Razorpay. Separate from enforcement so either can
+     * be switched off alone. Requires the Razorpay key pair.
+     */
+    BILLING_CHECKOUT_ENABLED: z
+      .string()
+      .default('false')
+      .transform((value) => value === 'true'),
+    /** The CRAVION Razorpay merchant key (rzp_live_… / rzp_test_…). Server-side only. */
+    RAZORPAY_KEY_ID: z.string().min(1).optional(),
+    RAZORPAY_KEY_SECRET: z.string().min(1).optional(),
+    /**
+     * Secret of the LeadFlow webhook configured in the Razorpay Dashboard.
+     * Optional: without it the webhook route answers 404 and payments are
+     * still confirmed at checkout and by the reconciliation sweep.
+     */
+    RAZORPAY_WEBHOOK_SECRET: z.string().min(16).optional(),
+    /** Where customers are told to write about billing. */
+    BILLING_SUPPORT_EMAIL: z.string().email().default('support@cravionventures.com'),
+    /**
+     * The signed CRAVION Admin subscription-management API (reads AND
+     * administrative writes). Its own key, never the analytics one: an
+     * analytics-read key must not become an entitlement-write key.
+     */
+    ADMIN_SUBSCRIPTIONS_ENABLED: z
+      .string()
+      .default('false')
+      .transform((value) => value === 'true'),
+    ADMIN_SUBSCRIPTIONS_SIGNING_SECRET: z
+      .string()
+      .min(32, 'must be at least 32 characters')
+      .optional(),
+
+    /**
      * How many reverse proxies sit in front of this process.
      *
      * Express derives `req.ip` — which is what every rate limit and audit row
@@ -623,6 +667,32 @@ export const envSchema = z
         code: 'custom',
         path: ['ADMIN_ANALYTICS_SIGNING_SECRET'],
         message: 'is required when ADMIN_ANALYTICS_ENABLED=true',
+      });
+    }
+    if (env.BILLING_CHECKOUT_ENABLED && (!env.RAZORPAY_KEY_ID || !env.RAZORPAY_KEY_SECRET)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['RAZORPAY_KEY_SECRET'],
+        message: 'RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET are required when BILLING_CHECKOUT_ENABLED=true',
+      });
+    }
+    if (env.ADMIN_SUBSCRIPTIONS_ENABLED && !env.ADMIN_SUBSCRIPTIONS_SIGNING_SECRET) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['ADMIN_SUBSCRIPTIONS_SIGNING_SECRET'],
+        message: 'is required when ADMIN_SUBSCRIPTIONS_ENABLED=true',
+      });
+    }
+    if (
+      env.ADMIN_SUBSCRIPTIONS_SIGNING_SECRET &&
+      [env.ADMIN_ANALYTICS_SIGNING_SECRET, env.ADMIN_CONTROL_SIGNING_SECRET, env.WEBSITE_INTAKE_SIGNING_SECRET].includes(
+        env.ADMIN_SUBSCRIPTIONS_SIGNING_SECRET,
+      )
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['ADMIN_SUBSCRIPTIONS_SIGNING_SECRET'],
+        message: 'must differ from every other integration signing secret',
       });
     }
     // Cross-tenant reads must not share a key with anything else.

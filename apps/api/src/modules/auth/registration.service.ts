@@ -207,7 +207,7 @@ export class RegistrationService {
     // its transaction: never throws, because a tenant with no subscription row
     // is recoverable, whereas a registration that fails because the plan
     // catalogue was not seeded turns a would-be customer away entirely.
-    await this.subscriptions.startTrial(created.organization.id);
+    await this.subscriptions.startTrial(created.organization.id, created.user.email);
 
     /*
      * NO SESSION. This is the security change.

@@ -182,6 +182,11 @@ api.interceptors.response.use(
     }
 
     const payload = error.response?.data;
+    // Paid CRM features need an active subscription: tell the app shell, which
+    // sends the user to Billing. The server decided; the client only reacts.
+    if (status === 402 && typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('leadflow:subscription-required'));
+    }
     if (payload && typeof payload === 'object' && 'error' in payload && !payload.success) {
       throw new ApiError(
         payload.error.code,

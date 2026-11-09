@@ -16,7 +16,8 @@ export const SUBSCRIPTION_STATUSES = [
 
 export type SubscriptionStatus = (typeof SUBSCRIPTION_STATUSES)[number];
 
-export const BILLING_INTERVALS = ['MONTHLY', 'YEARLY'] as const;
+/** LIFETIME is one payment with no renewal; see LIFETIME_SCOPE in billing.ts. */
+export const BILLING_INTERVALS = ['MONTHLY', 'YEARLY', 'LIFETIME'] as const;
 export type BillingInterval = (typeof BILLING_INTERVALS)[number];
 
 /**
