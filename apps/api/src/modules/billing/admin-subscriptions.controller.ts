@@ -29,6 +29,60 @@ import {
   verifyAdminSignature,
 } from '../integrations/admin-control/admin-control-signature';
 import { ADMIN_ACTIONS, AdminSubscriptionsService, type AdminAction } from './admin-subscriptions.service';
+import { PricingService } from './pricing.service';
+
+const INTERVALS = ['MONTHLY', 'YEARLY', 'LIFETIME'] as const;
+type Interval = (typeof INTERVALS)[number];
+
+class PricePreviewDto {
+  @IsIn(INTERVALS)
+  interval!: Interval;
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(100)
+  @Max(10_000_000)
+  baseAmountPaise!: number;
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(2800)
+  taxRateBp!: number;
+}
+
+class PriceDraftDto extends PricePreviewDto {
+  @IsOptional()
+  @IsISO8601()
+  effectiveFrom?: string;
+
+  @IsString()
+  @MinLength(5)
+  @MaxLength(500)
+  reason!: string;
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  expectedLatestVersion!: number;
+}
+
+class PricePublishDto {
+  @IsString()
+  @MinLength(5)
+  @MaxLength(500)
+  reason!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(20)
+  confirm?: string;
+}
+
+class PriceOnSaleDto extends PricePublishDto {
+  @IsBoolean()
+  active!: boolean;
+}
 
 class OrganizationsQueryDto {
   @IsOptional()
@@ -104,6 +158,7 @@ export class AdminSubscriptionsController {
 
   constructor(
     private readonly service: AdminSubscriptionsService,
+    private readonly pricing: PricingService,
     private readonly config: AppConfig,
     private readonly redis: RedisService,
   ) {}
@@ -137,6 +192,52 @@ export class AdminSubscriptionsController {
   ) {
     const actor = await this.authorise(request, headers);
     return this.service.act(id, dto, actor);
+  }
+
+  // --- pricing (same signed, super_admin-only boundary) ----------------------
+
+  @Get('pricing')
+  async pricingOverview(@Req() request: RawBodyRequest<Request>, @Headers() headers: Headers0) {
+    await this.authorise(request, headers);
+    return this.pricing.overview();
+  }
+
+  @Post('pricing/preview')
+  @HttpCode(HttpStatus.OK)
+  async pricingPreview(@Req() request: RawBodyRequest<Request>, @Headers() headers: Headers0, @Body() dto: PricePreviewDto) {
+    await this.authorise(request, headers);
+    return this.pricing.preview(dto);
+  }
+
+  @Post('pricing/drafts')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  async pricingDraft(@Req() request: RawBodyRequest<Request>, @Headers() headers: Headers0, @Body() dto: PriceDraftDto) {
+    const actor = await this.authorise(request, headers);
+    return this.pricing.createDraft(dto, actor);
+  }
+
+  @Post('pricing/prices/:id/publish')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  async pricingPublish(@Req() request: RawBodyRequest<Request>, @Headers() headers: Headers0, @Param('id', ParseUUIDPipe) id: string, @Body() dto: PricePublishDto) {
+    const actor = await this.authorise(request, headers);
+    return this.pricing.publish(id, dto, actor);
+  }
+
+  @Post('pricing/prices/:id/discard')
+  @HttpCode(HttpStatus.OK)
+  async pricingDiscard(@Req() request: RawBodyRequest<Request>, @Headers() headers: Headers0, @Param('id', ParseUUIDPipe) id: string, @Body() dto: PricePublishDto) {
+    const actor = await this.authorise(request, headers);
+    return this.pricing.discard(id, dto, actor);
+  }
+
+  @Post('pricing/intervals/:interval/on-sale')
+  @HttpCode(HttpStatus.OK)
+  async pricingOnSale(@Req() request: RawBodyRequest<Request>, @Headers() headers: Headers0, @Param('interval') interval: string, @Body() dto: PriceOnSaleDto) {
+    const actor = await this.authorise(request, headers);
+    if (!(INTERVALS as readonly string[]).includes(interval)) throw AppException.validation('Unknown interval.');
+    return this.pricing.setOnSale(interval as Interval, dto, actor);
   }
 
   private async authorise(request: RawBodyRequest<Request>, headers: Headers0): Promise<string> {

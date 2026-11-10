@@ -1335,6 +1335,7 @@ model Plan {
 
   subscriptions Subscription[]
   prices        PlanPrice[]
+  priceChanges  PricingChange[]
 
   @@index([active, sortOrder])
   @@map("plans")
@@ -3252,12 +3253,19 @@ model PlanPrice {
   effectiveFrom    DateTime        @map("effective_from") @db.Timestamptz(6)
   effectiveUntil   DateTime?       @map("effective_until") @db.Timestamptz(6)
   createdAt        DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  /// DRAFT, PUBLISHED or DISCARDED. Checkout only ever uses PUBLISHED.
+  status           String          @default("PUBLISHED") @db.VarChar(20)
+  publishedAt      DateTime?       @map("published_at") @db.Timestamptz(6)
+  publishedBy      String?         @map("published_by") @db.VarChar(200)
+  createdBy        String?         @map("created_by") @db.VarChar(200)
+  changeReason     String?         @map("change_reason") @db.VarChar(500)
 
   plan     Plan             @relation(fields: [planId], references: [id], onDelete: Restrict)
   payments BillingPayment[]
 
   @@unique([planId, interval, version])
   @@index([active, planId])
+  @@index([status, interval, effectiveFrom])
   @@map("plan_prices")
 }
 
@@ -3340,4 +3348,25 @@ model TrialClaim {
   claimedAt      DateTime @default(now()) @map("claimed_at") @db.Timestamptz(6)
 
   @@map("trial_claims")
+}
+
+/// The immutable pricing audit trail: every draft, publication, discard and
+/// activation change, with actor, reason, before and after. Append-only
+/// (database trigger).
+model PricingChange {
+  id          String          @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  planId      String          @map("plan_id") @db.Uuid
+  planPriceId String?         @map("plan_price_id") @db.Uuid
+  interval    BillingInterval
+  action      String          @db.VarChar(40)
+  actorRef    String          @map("actor_ref") @db.VarChar(200)
+  reason      String          @db.VarChar(500)
+  before      Json
+  after       Json
+  createdAt   DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  plan Plan @relation(fields: [planId], references: [id], onDelete: Restrict)
+
+  @@index([createdAt])
+  @@map("pricing_changes")
 }

@@ -27,6 +27,17 @@ export const subscriptionSelect = {
   plan: { select: { code: true, name: true, maxUsers: true, maxActiveLeads: true } },
 } as const;
 
+/** A version checkout may charge: published, on sale, and in effect at `now`. */
+export function livePriceWhere(now: Date) {
+  return {
+    status: 'PUBLISHED',
+    active: true,
+    effectiveFrom: { lte: now },
+    OR: [{ effectiveUntil: null }, { effectiveUntil: { gt: now } }],
+    plan: { active: true },
+  };
+}
+
 export const priceSelect = {
   id: true,
   interval: true,
@@ -64,6 +75,11 @@ export class BillingRepository {
     return this.prisma.client;
   }
 
+  /** The client, for services that run their own queries inside system() or transaction(). */
+  get client() {
+    return this.prisma.client;
+  }
+
   system<T>(reason: string, run: () => Promise<T>): Promise<T> {
     return this.tenantContext.runAsSystem(`billing: ${reason}`, run);
   }
@@ -95,21 +111,29 @@ export class BillingRepository {
 
   // --- prices ----------------------------------------------------------------
 
-  activePrices() {
-    return this.system('read prices', () =>
+  /**
+   * The price on sale for each interval right now: PUBLISHED, active, already
+   * effective, and the latest such. Drafts and scheduled future versions are
+   * never returned, so editing or scheduling a price cannot touch checkout.
+   */
+  async activePrices(now = new Date()) {
+    const rows = await this.system('read prices', () =>
       this.db.planPrice.findMany({
-        where: { active: true, plan: { active: true } },
-        orderBy: [{ totalAmountPaise: 'asc' }],
+        where: livePriceWhere(now),
+        orderBy: [{ effectiveFrom: 'desc' }, { version: 'desc' }],
         select: priceSelect,
       }),
     );
+    const seen = new Set<string>();
+    const live = rows.filter((r) => (seen.has(r.interval) ? false : (seen.add(r.interval), true)));
+    return live.sort((a, b) => a.totalAmountPaise - b.totalAmountPaise);
   }
 
-  activePrice(interval: BillingInterval) {
+  activePrice(interval: BillingInterval, now = new Date()) {
     return this.system('read price', () =>
       this.db.planPrice.findFirst({
-        where: { active: true, interval, plan: { active: true } },
-        orderBy: { version: 'desc' },
+        where: { ...livePriceWhere(now), interval },
+        orderBy: [{ effectiveFrom: 'desc' }, { version: 'desc' }],
         select: priceSelect,
       }),
     );

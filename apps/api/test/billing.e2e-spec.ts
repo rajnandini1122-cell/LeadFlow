@@ -9,6 +9,7 @@ import { adminSigningBase } from '../src/modules/integrations/admin-control/admi
 import { RazorpayClient, type RazorpayPayment } from '../src/modules/billing/razorpay.client';
 import { SubscriptionSweeper } from '../src/modules/billing/subscription-sweeper.service';
 import { BillingService } from '../src/modules/billing/billing.service';
+import { BillingRepository } from '../src/modules/billing/billing.repository';
 
 const DAY = 86_400_000;
 
@@ -369,6 +370,76 @@ describe('Billing', () => {
       const ended = await sys(() => prisma.notification.findMany({ where: { organizationId: org.organizationId, type: 'BILLING_EXPIRED' } }));
       expect(ended).toHaveLength(1);
       expect((await subscriptionOf(org.organizationId)).status).toBe('EXPIRED');
+    });
+  });
+
+  describe('Pricing management', () => {
+    type Interval = { interval: string; latestVersion: number; versions: { id: string; state: string; totalAmount: string }[] };
+    const pricing = () => admin('GET', '/pricing').expect(200).then((r) => r.body.data);
+    const monthly = (data: { plans: { intervals: Interval[] }[] }) => data.plans[0]!.intervals.find((i) => i.interval === 'MONTHLY')!;
+    const summaryPrices = async (token: string) =>
+      (await ctx.http().get('/api/v1/billing/summary').set(auth(token)).expect(200)).body.data.prices as { interval: string; totalAmount: string }[];
+
+    it('shows the live prices, computes previews server-side, and refuses bad input', async () => {
+      await ctx.http().get('/api/v1/integrations/admin-subscriptions/pricing').expect(401);
+      const data = await pricing();
+      const live = data.plans[0].intervals.map((i: Interval) => i.interval + ':' + i.versions.find((v) => v.state === 'LIVE')?.totalAmount);
+      expect(live).toEqual(['MONTHLY:236.00', 'YEARLY:2100.40', 'LIFETIME:5900.00']);
+      const preview = (await admin('POST', '/pricing/preview', { interval: 'YEARLY', baseAmountPaise: 178_000, taxRateBp: 1800 }).expect(200)).body.data;
+      expect(preview).toMatchObject({ taxAmountPaise: 32_040, totalAmountPaise: 210_040, customerText: '₹1,780/year + ₹320.40 GST (18%) = ₹2,100.40' });
+      await admin('POST', '/pricing/preview', { interval: 'MONTHLY', baseAmountPaise: 199.5, taxRateBp: 1800 }).expect(400);
+      await admin('POST', '/pricing/preview', { interval: 'MONTHLY', baseAmountPaise: 20_000, taxRateBp: 5000 }).expect(400);
+    });
+
+    it('a draft never touches checkout; a stale edit is refused; publishing needs confirmation and applies to new orders only', async () => {
+      const org = await register();
+      await expireTrial(org.organizationId);
+      invalidate(org.organizationId);
+      const before = (await ctx.http().post('/api/v1/billing/checkout').set(auth(org.token)).send({ interval: 'MONTHLY' }).expect(201)).body.data;
+      expect(before.amountPaise).toBe(23_600);
+
+      const current = monthly(await pricing());
+      await admin('POST', '/pricing/drafts', { interval: 'MONTHLY', baseAmountPaise: 25_000, taxRateBp: 1800, reason: 'Test price change', expectedLatestVersion: current.latestVersion + 5 }).expect(409);
+      const draft = (await admin('POST', '/pricing/drafts', { interval: 'MONTHLY', baseAmountPaise: 25_000, taxRateBp: 1800, reason: 'Test price change', expectedLatestVersion: current.latestVersion }).expect(200)).body.data;
+      expect((await summaryPrices(org.token))[0]!.totalAmount).toBe('236.00');
+
+      await admin('POST', '/pricing/prices/' + draft.id + '/publish', { reason: 'Test publish' }).expect(400);
+      await admin('POST', '/pricing/prices/' + draft.id + '/publish', { reason: 'Test publish', confirm: 'PUBLISH' }).expect(200);
+      await admin('POST', '/pricing/prices/' + draft.id + '/publish', { reason: 'Publish twice', confirm: 'PUBLISH' }).expect(409);
+
+      const after = (await ctx.http().post('/api/v1/billing/checkout').set(auth(org.token)).send({ interval: 'MONTHLY' }).expect(201)).body.data;
+      expect(after.amountPaise).toBe(29_500);
+      expect(after.providerOrderId).not.toBe(before.providerOrderId);
+      const old = await sys(() => prisma.billingPayment.findUniqueOrThrow({ where: { providerOrderId: before.providerOrderId } }));
+      expect(old.totalAmountPaise).toBe(23_600);
+
+      const v = monthly(await pricing()).latestVersion;
+      const restore = (await admin('POST', '/pricing/drafts', { interval: 'MONTHLY', baseAmountPaise: 20_000, taxRateBp: 1800, reason: 'Restore approved price', expectedLatestVersion: v }).expect(200)).body.data;
+      await admin('POST', '/pricing/prices/' + restore.id + '/publish', { reason: 'Restore approved price', confirm: 'PUBLISH' }).expect(200);
+      expect((await summaryPrices(org.token))[0]!.totalAmount).toBe('236.00');
+    });
+
+    it('a scheduled price is not live before its date and can be cancelled; an interval can go off sale', async () => {
+      const org = await register();
+      const v = monthly(await pricing()).latestVersion;
+      const later = new Date(Date.now() + 7 * DAY).toISOString();
+      const draft = (await admin('POST', '/pricing/drafts', { interval: 'MONTHLY', baseAmountPaise: 30_000, taxRateBp: 1800, effectiveFrom: later, reason: 'Scheduled increase', expectedLatestVersion: v }).expect(200)).body.data;
+      await admin('POST', '/pricing/prices/' + draft.id + '/publish', { reason: 'Scheduled increase', confirm: 'PUBLISH' }).expect(200);
+      expect(monthly(await pricing()).versions.find((x) => x.id === draft.id)?.state).toBe('SCHEDULED');
+      expect((await summaryPrices(org.token))[0]!.totalAmount).toBe('236.00');
+      await admin('POST', '/pricing/prices/' + draft.id + '/discard', { reason: 'Increase postponed' }).expect(200);
+
+      await admin('POST', '/pricing/intervals/LIFETIME/on-sale', { active: false, reason: 'Pause lifetime sales' }).expect(400);
+      await admin('POST', '/pricing/intervals/LIFETIME/on-sale', { active: false, reason: 'Pause lifetime sales', confirm: 'LIFETIME' }).expect(200);
+      expect((await summaryPrices(org.token)).map((p) => p.interval)).toEqual(['MONTHLY', 'YEARLY']);
+      // Checkout would refuse it (no live price); asserted on the query checkout uses, as checkout is rate-limited per route.
+      expect(await ctx.app.get(BillingRepository).activePrice('LIFETIME')).toBeNull();
+      await admin('POST', '/pricing/intervals/LIFETIME/on-sale', { active: true, reason: 'Resume lifetime sales' }).expect(200);
+
+      const changes = (await pricing()).changes.map((c: { action: string }) => c.action);
+      expect(changes).toEqual(expect.arrayContaining(['draft.created', 'version.published', 'version.scheduled', 'schedule.cancelled', 'interval.deactivated', 'interval.activated']));
+      const row = await sys(() => prisma.pricingChange.findFirstOrThrow());
+      await expect(sys(() => prisma.pricingChange.delete({ where: { id: row.id } }))).rejects.toThrow(/append-only/);
     });
   });
 
