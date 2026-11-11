@@ -96,6 +96,41 @@ describe('Email account settings', () => {
   });
 });
 
+describe('HostingRaja preset', () => {
+  it('fills mail.<domain>, IMAP 993 and SMTP 465 with SSL/TLS from the email address', async () => {
+    vi.spyOn(apiClient, 'apiGet').mockResolvedValue(
+      mailbox({
+        configured: false,
+        emailAddress: null,
+        imapHost: null,
+        smtpHost: null,
+        imapPort: null,
+        smtpPort: null,
+        imapSecurity: null,
+        smtpSecurity: null,
+        passwordSet: false,
+      }) as never,
+    );
+    renderAt('/settings/email', <EmailSettingsPage />, '/settings/email');
+    await userEvent.type(
+      await screen.findByLabelText('Email address'),
+      'sales@cravionventures.com',
+    );
+    await userEvent.selectOptions(screen.getByLabelText('Mail provider'), 'hostingraja');
+    expect(screen.getAllByLabelText('Hostname').map((i) => (i as HTMLInputElement).value)).toEqual([
+      'mail.cravionventures.com',
+      'mail.cravionventures.com',
+    ]);
+    expect(screen.getAllByLabelText('Port').map((i) => (i as HTMLInputElement).value)).toEqual([
+      '993',
+      '465',
+    ]);
+    expect(
+      screen.getAllByLabelText('Secure connection type').map((i) => (i as HTMLSelectElement).value),
+    ).toEqual(['SSL_TLS', 'SSL_TLS']);
+  });
+});
+
 describe('Unsubscribe page', () => {
   it('opening the link changes nothing; the button unsubscribes', async () => {
     const get = vi

@@ -15,6 +15,43 @@ const SECURITY_LABELS: Record<MailSecurity, string> = {
   SSL_TLS: 'SSL / TLS (recommended)',
   STARTTLS: 'STARTTLS',
 };
+interface MailProviderPreset {
+  id: string;
+  label: string;
+  host: (domain: string) => string;
+  imapPort: number;
+  imapSecurity: MailSecurity;
+  smtpPort: number;
+  smtpSecurity: MailSecurity;
+}
+
+/**
+ * Published settings for common providers. A preset only fills the form; the
+ * server still validates the hostname (public address only) and verifies TLS.
+ */
+export const MAIL_PROVIDER_PRESETS: MailProviderPreset[] = [
+  {
+    // Verified for sales@cravionventures.com: Dovecot IMAP 993 and Exim SMTP 465,
+    // implicit TLS, certificate *.cravionventures.com.
+    id: 'hostingraja',
+    label: 'HostingRaja (cPanel) — mail.yourdomain, SSL/TLS',
+    host: (domain) => (domain ? `mail.${domain}` : ''),
+    imapPort: 993,
+    imapSecurity: 'SSL_TLS',
+    smtpPort: 465,
+    smtpSecurity: 'SSL_TLS',
+  },
+  {
+    id: 'cpanel',
+    label: 'Other cPanel hosting — mail.yourdomain, SSL/TLS',
+    host: (domain) => (domain ? `mail.${domain}` : ''),
+    imapPort: 993,
+    imapSecurity: 'SSL_TLS',
+    smtpPort: 465,
+    smtpSecurity: 'SSL_TLS',
+  },
+];
+
 /** The port each secure connection type uses. Changing one changes the other. */
 const PORTS = {
   imap: { SSL_TLS: 993, STARTTLS: 143 },
@@ -68,6 +105,21 @@ function AccountForm({ view }: { view: MailboxView }): React.JSX.Element {
         : { ...f, smtpSecurity: security, smtpPort: PORTS.smtp[security] },
     );
 
+  /** Fills the server fields from a provider's published settings. Nothing is saved until Save. */
+  const applyPreset = (preset: MailProviderPreset) => {
+    const domain = form.emailAddress.split('@')[1]?.trim().toLowerCase() ?? '';
+    const host = preset.host(domain);
+    setForm((f) => ({
+      ...f,
+      imapHost: host,
+      imapPort: preset.imapPort,
+      imapSecurity: preset.imapSecurity,
+      smtpHost: host,
+      smtpPort: preset.smtpPort,
+      smtpSecurity: preset.smtpSecurity,
+    }));
+  };
+
   const submit = (event: FormEvent) => {
     event.preventDefault();
     setSaved(false);
@@ -95,6 +147,28 @@ function AccountForm({ view }: { view: MailboxView }): React.JSX.Element {
       <form onSubmit={submit} className="divide-y divide-slate-100" noValidate>
         <section className="space-y-4 p-5">
           <h3 className="text-sm font-semibold text-slate-900">Account details</h3>
+          <Labelled
+            id="provider"
+            label="Mail provider"
+            hint="Optional. Fills in the server settings below from the provider's published values."
+          >
+            <select
+              id="provider"
+              className={inputClass}
+              value=""
+              onChange={(e) => {
+                const preset = MAIL_PROVIDER_PRESETS.find((p) => p.id === e.target.value);
+                if (preset) applyPreset(preset);
+              }}
+            >
+              <option value="">Choose to fill in…</option>
+              {MAIL_PROVIDER_PRESETS.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+          </Labelled>
           <Labelled id="emailAddress" label="Email address">
             <input
               id="emailAddress"
