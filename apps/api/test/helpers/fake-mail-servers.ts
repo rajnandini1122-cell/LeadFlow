@@ -133,7 +133,6 @@ export async function startFakeSmtp(
         const decision = state.onData(mail);
         if (decision === 'drop-connection') {
           // The body arrived; the answer never does. The client cannot know.
-          (session as unknown as { _socket?: { destroy: () => void } })._socket?.destroy();
           for (const socket of sockets) socket.destroy();
           return;
         }
@@ -148,10 +147,16 @@ export async function startFakeSmtp(
   });
   server.on('error', () => undefined); // a client refusing our certificate is a test case, not a crash
   const sockets = new Set<{ destroy: () => void }>();
-  server.server.on('secureConnection', (socket: TLSSocket) => {
-    sockets.add(socket);
-    socket.on('close', () => sockets.delete(socket));
-  });
+  // The raw socket of every client: destroying it is how "the answer never
+  // comes" is simulated. ('connection' fires for the plain socket smtp-server
+  // wraps in TLS itself.)
+  server.server.on(
+    'connection',
+    (socket: { destroy: () => void; on: (e: string, f: () => void) => void }) => {
+      sockets.add(socket);
+      socket.on('close', () => sockets.delete(socket));
+    },
+  );
 
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
   state.port = (server.server.address() as { port: number }).port;
@@ -265,10 +270,15 @@ export async function startFakeImap(
         // RFC 3501: "n:*" always includes the highest UID, even when it is below n.
         if (selected.length === 0 && endRaw === '*' && state.messages.length > 0)
           selected = [state.messages.at(-1)!];
+        // A partial fetch (BODY.PEEK[]<0.N>) is answered as BODY[]<0>, cut to N bytes.
+        const partial = /BODY\.PEEK\[\]<0\.(\d+)>/i.exec(rest);
         for (const message of selected) {
           const seq = state.messages.indexOf(message) + 1;
-          const body = Buffer.from(message.source, 'utf8');
-          socket.write(`* ${seq} FETCH (UID ${message.uid} FLAGS () BODY[] {${body.length}}\r\n`);
+          const full = Buffer.from(message.source, 'utf8');
+          const body = partial ? full.subarray(0, Number(partial[1])) : full;
+          socket.write(
+            `* ${seq} FETCH (UID ${message.uid} FLAGS () BODY[]${partial ? '<0>' : ''} {${body.length}}\r\n`,
+          );
           socket.write(body);
           socket.write(')\r\n');
         }

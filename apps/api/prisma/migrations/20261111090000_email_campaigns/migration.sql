@@ -44,6 +44,7 @@ CREATE TYPE "email_inbound_kind" AS ENUM ('REPLY', 'BOUNCE', 'OTHER');
 
 
 ALTER TYPE "activity_type" ADD VALUE 'EMAIL_SENT';
+ALTER TYPE "activity_type" ADD VALUE 'EMAIL_FAILED';
 ALTER TYPE "activity_type" ADD VALUE 'EMAIL_REPLY_RECEIVED';
 
 BEGIN;
@@ -79,6 +80,9 @@ CREATE TABLE "email_mailboxes" (
     "last_sync_at" TIMESTAMPTZ(6),
     "last_sync_error" VARCHAR(300),
     "last_sync_count" INTEGER,
+    "dispatch_locked_by" VARCHAR(80),
+    "dispatch_locked_until" TIMESTAMPTZ(6),
+    "sync_locked_until" TIMESTAMPTZ(6),
     "created_by" UUID,
     "updated_by" UUID,
     "created_at" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,

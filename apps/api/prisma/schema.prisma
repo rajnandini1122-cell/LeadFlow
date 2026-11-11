@@ -190,6 +190,7 @@ enum ActivityType {
   DOCUMENT_REMOVED
 
   EMAIL_SENT
+  EMAIL_FAILED
   EMAIL_REPLY_RECEIVED
 
   @@map("activity_type")
@@ -3525,6 +3526,12 @@ model EmailMailbox {
   lastSyncAt      DateTime? @map("last_sync_at") @db.Timestamptz(6)
   lastSyncError   String?   @map("last_sync_error") @db.VarChar(300)
   lastSyncCount   Int?      @map("last_sync_count")
+
+  /// One dispatcher at a time per mailbox, across replicas: a lease, not a lock
+  /// held across SMTP conversations.
+  dispatchLockedBy    String?   @map("dispatch_locked_by") @db.VarChar(80)
+  dispatchLockedUntil DateTime? @map("dispatch_locked_until") @db.Timestamptz(6)
+  syncLockedUntil     DateTime? @map("sync_locked_until") @db.Timestamptz(6)
 
   createdBy String?  @map("created_by") @db.Uuid
   updatedBy String?  @map("updated_by") @db.Uuid
