@@ -40,7 +40,19 @@ describe('Email inbox: replies and bounces', () => {
   const prisma = () => ctx.app.get(PrismaService).client;
   const asSystem = <T>(run: () => Promise<T>) =>
     ctx.app.get(TenantContextService).runAsSystem('e2e', run);
-  const sync = () => ctx.app.get(InboxSyncService).syncAll();
+  /**
+   * This organization's inbox only. Suites share one database in CI, and
+   * syncAll would also visit mailboxes other suites left behind.
+   */
+  const sync = async () => {
+    const report = { mailboxes: 0, read: 0, replies: 0, bounces: 0, other: 0, errors: 0 };
+    await ctx.app
+      .get(TenantContextService)
+      .runForOrganization(ctx.orgA.id, 'e2e inbox sync', () =>
+        ctx.app.get(InboxSyncService).syncOne(new Date(), report),
+      );
+    return report;
+  };
   let nextUid = 1;
   const deliver = (lines: string[]) =>
     imap.messages.push({ uid: nextUid++, source: lines.join('\r\n') });
@@ -53,28 +65,22 @@ describe('Email inbox: replies and bounces', () => {
     tls = generateTestCertificate();
     smtp = await startFakeSmtp(tls, { user: SENDER, pass: PASSWORD });
     imap = await startFakeImap(tls, { user: SENDER, pass: PASSWORD });
-    ctx.app
-      .get(MailboxService)
-      .useConnectionDeps({
-        resolveHost: async () => '127.0.0.1',
-        testPorts: { smtp: smtp.port, imap: imap.port },
-        testCa: tls.cert,
-      });
+    ctx.app.get(MailboxService).useConnectionDeps({
+      resolveHost: async () => '127.0.0.1',
+      testPorts: { smtp: smtp.port, imap: imap.port },
+      testCa: tls.cert,
+    });
 
-    await ctx
-      .http()
-      .put('/api/v1/email/mailbox')
-      .set(owner())
-      .send({
-        emailAddress: SENDER,
-        imapHost: TEST_MAIL_HOST,
-        imapPort: 993,
-        imapSecurity: 'SSL_TLS',
-        smtpHost: TEST_MAIL_HOST,
-        smtpPort: 465,
-        smtpSecurity: 'SSL_TLS',
-        password: PASSWORD,
-      });
+    await ctx.http().put('/api/v1/email/mailbox').set(owner()).send({
+      emailAddress: SENDER,
+      imapHost: TEST_MAIL_HOST,
+      imapPort: 993,
+      imapSecurity: 'SSL_TLS',
+      smtpHost: TEST_MAIL_HOST,
+      smtpPort: 465,
+      smtpSecurity: 'SSL_TLS',
+      password: PASSWORD,
+    });
     await ctx.http().post('/api/v1/email/mailbox/test/smtp').set(owner());
     await ctx.http().post('/api/v1/email/mailbox/test/imap').set(owner());
     expect(
