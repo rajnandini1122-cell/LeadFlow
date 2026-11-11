@@ -45,6 +45,7 @@ import { InvitationsModule } from './modules/invitations/invitations.module';
 import { HealthModule } from './modules/health/health.module';
 import { IntegrationsModule } from './modules/integrations/integrations.module';
 import { TeamsModule } from './modules/teams/teams.module';
+import { CampaignsModule } from './modules/campaigns/campaigns.module';
 import { TerritoriesModule } from './modules/territories/territories.module';
 import { AssignmentRulesModule } from './modules/assignment-rules/assignment-rules.module';
 
@@ -154,6 +155,7 @@ import { AssignmentRulesModule } from './modules/assignment-rules/assignment-rul
     IntegrationsModule,
     TeamsModule,
     TerritoriesModule,
+    CampaignsModule,
     AssignmentRulesModule,
     HealthModule,
   ],

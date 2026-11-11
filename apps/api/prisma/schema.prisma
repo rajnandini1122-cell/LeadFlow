@@ -189,6 +189,9 @@ enum ActivityType {
   DOCUMENT_ATTACHED
   DOCUMENT_REMOVED
 
+  EMAIL_SENT
+  EMAIL_REPLY_RECEIVED
+
   @@map("activity_type")
 }
 
@@ -277,6 +280,15 @@ model Organization {
   territoryCoverage     TerritoryCoverage[]
   teamAssignmentCursors TeamAssignmentCursor[]
   adminControlCommands  AdminControlCommand[]
+  emailMailbox          EmailMailbox?
+  emailTemplates        EmailTemplate[]
+  emailAssets           EmailAsset[]
+  emailCampaigns        EmailCampaign[]
+  emailRecipients       EmailCampaignRecipient[]
+  emailAttempts         EmailDeliveryAttempt[]
+  marketingConsents     MarketingConsent[]
+  emailSuppressions     EmailSuppression[]
+  emailInbound          EmailInboundMessage[]
 
   @@index([status])
   @@map("organizations")
@@ -920,26 +932,28 @@ model Lead {
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  organization  Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  contact       Contact?            @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  organization    Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  contact         Contact?                 @relation(fields: [contactId], references: [id], onDelete: SetNull)
   /// SetNull, never Cascade: removing an account must never delete the
   /// opportunities that are the evidence of the relationship.
-  account       Account?            @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  account         Account?                 @relation(fields: [accountId], references: [id], onDelete: SetNull)
   /// SetNull, never Cascade: deleting a catalogue entry must not delete the
   /// enquiries that referenced it. The free-text productInterest survives too,
   /// so the lead still records what was wanted.
-  product       Product?            @relation(fields: [productId], references: [id], onDelete: SetNull)
-  assignedTo    User?               @relation("LeadAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
-  assignedBy    User?               @relation("LeadAssigner", fields: [assignedById], references: [id], onDelete: SetNull)
-  activities    LeadActivity[]
-  attachments   LeadAttachment[]
-  followUps     FollowUp[]
-  conversations Conversation[]
+  product         Product?                 @relation(fields: [productId], references: [id], onDelete: SetNull)
+  assignedTo      User?                    @relation("LeadAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+  assignedBy      User?                    @relation("LeadAssigner", fields: [assignedById], references: [id], onDelete: SetNull)
+  activities      LeadActivity[]
+  attachments     LeadAttachment[]
+  followUps       FollowUp[]
+  conversations   Conversation[]
   /// The website enquiries this lead was created from. Normally one; a list
   /// because the relation is defined by the intake side, not because a lead is
   /// expected to have several.
-  sourceIntakes IntegrationIntake[] @relation("IntakeConversion")
-  contactLinks  LeadContact[]
+  sourceIntakes   IntegrationIntake[]      @relation("IntakeConversion")
+  contactLinks    LeadContact[]
+  emailRecipients EmailCampaignRecipient[]
+  emailInbound    EmailInboundMessage[]
   /// Composite, so another tenant's batch has nothing to match.
   ///
   /// Restrict rather than SetNull. On a MULTI-COLUMN key SetNull nulls every
@@ -947,7 +961,7 @@ model Lead {
   /// delete was refused anyway, by a not-null violation rather than a readable
   /// constraint, while the comment claimed the link would be cleared. A test
   /// established which it actually was; see the migration for the reasoning.
-  importBatch   LeadImportBatch?    @relation(fields: [importBatchId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  importBatch     LeadImportBatch?         @relation(fields: [importBatchId, organizationId], references: [id, organizationId], onDelete: Restrict)
 
   /// Lets an intake point a COMPOSITE foreign key at the lead it became and
   /// carry the tenant into the key. `id` is unique on its own; this adds
@@ -1118,6 +1132,7 @@ model Contact {
 
   conversations     Conversation[]
   channelIdentities ContactChannelIdentity[]
+  emailRecipients   EmailCampaignRecipient[]
 
   @@index([organizationId, mobile])
   @@index([organizationId, email])
@@ -1979,6 +1994,7 @@ model Product {
   organization    Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   leads           Lead[]
   assignmentRules AssignmentRule[]
+  emailAssets     EmailAsset[]
 
   /// One SKU per tenant. Two products sharing a code would make the code
   /// useless as an identifier and any import ambiguous.
@@ -3369,4 +3385,385 @@ model PricingChange {
 
   @@index([createdAt])
   @@map("pricing_changes")
+}
+
+// =============================================================================
+// Email campaigns — see docs/email/LEADFLOW_EMAIL_ARCHITECTURE.md
+// =============================================================================
+
+/// How a mail connection is secured. There is no plaintext option: STARTTLS is
+/// REQUIRED (the upgrade must succeed), never opportunistic.
+enum EmailSecurity {
+  SSL_TLS
+  STARTTLS
+
+  @@map("email_security")
+}
+
+enum MarketingConsentStatus {
+  GRANTED
+  WITHDRAWN
+
+  @@map("marketing_consent_status")
+}
+
+/// Why an address may receive promotional mail. Recorded by a person; nothing
+/// is granted by import or by default.
+enum MarketingConsentBasis {
+  CONSENT
+  EXISTING_CUSTOMER
+  LEGITIMATE_INTEREST_REVIEWED
+
+  @@map("marketing_consent_basis")
+}
+
+enum EmailSuppressionReason {
+  UNSUBSCRIBED
+  BOUNCED
+  COMPLAINT
+  MANUAL
+
+  @@map("email_suppression_reason")
+}
+
+/// PROMOTIONAL needs recorded eligibility and carries an unsubscribe link.
+/// TRANSACTIONAL is a service message to existing customers; suppression still
+/// applies to it.
+enum EmailCampaignPurpose {
+  PROMOTIONAL
+  TRANSACTIONAL
+
+  @@map("email_campaign_purpose")
+}
+
+enum EmailCampaignCategory {
+  PROMOTIONAL_OFFER
+  PRODUCT_ANNOUNCEMENT
+  PRODUCT_CATALOGUE
+  SALES_FOLLOW_UP
+  CUSTOMER_UPDATE
+  CUSTOM
+
+  @@map("email_campaign_category")
+}
+
+enum EmailCampaignStatus {
+  DRAFT
+  SCHEDULED
+  SENDING
+  PAUSED
+  COMPLETED
+  CANCELLED
+
+  @@map("email_campaign_status")
+}
+
+/// One recipient's place in the queue.
+///
+/// UNCERTAIN: a send was in flight when its outcome was lost (process died,
+/// connection dropped after the message body was sent). The message may or may
+/// not have been accepted, so it is NEVER retried automatically: a duplicate
+/// promotional email is worse than a missing one.
+enum EmailRecipientStatus {
+  QUEUED
+  SENDING
+  ACCEPTED
+  FAILED
+  UNCERTAIN
+  CANCELLED
+  SKIPPED
+
+  @@map("email_recipient_status")
+}
+
+enum EmailInboundKind {
+  REPLY
+  BOUNCE
+  OTHER
+
+  @@map("email_inbound_kind")
+}
+
+/// The organization's own mailbox: campaigns are sent through its SMTP server
+/// and replies are read from its IMAP inbox.
+///
+/// The password is encrypted with CREDENTIAL_ENCRYPTION_KEY and never leaves the
+/// server; no API returns it, to anyone.
+model EmailMailbox {
+  id             String @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String @unique @map("organization_id") @db.Uuid
+
+  emailAddress String  @map("email_address") @db.VarChar(320)
+  description  String? @db.VarChar(200)
+  username     String  @db.VarChar(320)
+
+  encryptedPassword String   @map("encrypted_password") @db.Text
+  passwordUpdatedAt DateTime @map("password_updated_at") @db.Timestamptz(6)
+
+  smtpHost     String        @map("smtp_host") @db.VarChar(253)
+  smtpPort     Int           @map("smtp_port")
+  smtpSecurity EmailSecurity @map("smtp_security")
+  imapHost     String        @map("imap_host") @db.VarChar(253)
+  imapPort     Int           @map("imap_port")
+  imapSecurity EmailSecurity @map("imap_security")
+
+  /// Off until an administrator switches it on after successful tests.
+  enabled     Boolean @default(false)
+  hourlyLimit Int     @default(50) @map("hourly_limit")
+  dailyLimit  Int     @default(300) @map("daily_limit")
+
+  lastSmtpCheckAt DateTime? @map("last_smtp_check_at") @db.Timestamptz(6)
+  lastSmtpOkAt    DateTime? @map("last_smtp_ok_at") @db.Timestamptz(6)
+  lastSmtpError   String?   @map("last_smtp_error") @db.VarChar(300)
+  lastImapCheckAt DateTime? @map("last_imap_check_at") @db.Timestamptz(6)
+  lastImapOkAt    DateTime? @map("last_imap_ok_at") @db.Timestamptz(6)
+  lastImapError   String?   @map("last_imap_error") @db.VarChar(300)
+
+  /// Incremental IMAP sync position. Reset when UIDVALIDITY changes.
+  imapUidValidity BigInt?   @map("imap_uid_validity")
+  imapLastUid     BigInt?   @map("imap_last_uid")
+  lastSyncAt      DateTime? @map("last_sync_at") @db.Timestamptz(6)
+  lastSyncError   String?   @map("last_sync_error") @db.VarChar(300)
+  lastSyncCount   Int?      @map("last_sync_count")
+
+  createdBy String?  @map("created_by") @db.Uuid
+  updatedBy String?  @map("updated_by") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  inbound      EmailInboundMessage[]
+
+  @@unique([id, organizationId])
+  @@map("email_mailboxes")
+}
+
+/// Recorded marketing eligibility for one address in one organization.
+/// No row means unknown, and unknown means NOT eligible for promotional mail.
+model MarketingConsent {
+  id             String                 @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String                 @map("organization_id") @db.Uuid
+  email          String                 @db.VarChar(320)
+  status         MarketingConsentStatus
+  basis          MarketingConsentBasis
+  source         String                 @db.VarChar(60)
+  note           String?                @db.VarChar(500)
+  recordedBy     String?                @map("recorded_by") @db.Uuid
+  recordedAt     DateTime               @default(now()) @map("recorded_at") @db.Timestamptz(6)
+  withdrawnAt    DateTime?              @map("withdrawn_at") @db.Timestamptz(6)
+  updatedAt      DateTime               @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, email])
+  @@map("marketing_consents")
+}
+
+/// Addresses that must not receive campaign mail from this organization.
+model EmailSuppression {
+  id             String                 @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String                 @map("organization_id") @db.Uuid
+  email          String                 @db.VarChar(320)
+  reason         EmailSuppressionReason
+  source         String                 @db.VarChar(60)
+  campaignId     String?                @map("campaign_id") @db.Uuid
+  note           String?                @db.VarChar(500)
+  createdBy      String?                @map("created_by") @db.Uuid
+  createdAt      DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, email])
+  @@map("email_suppressions")
+}
+
+model EmailTemplate {
+  id             String                @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String                @map("organization_id") @db.Uuid
+  name           String                @db.VarChar(120)
+  category       EmailCampaignCategory
+  subject        String                @db.VarChar(200)
+  html           String                @db.Text
+  text           String                @db.Text
+  archivedAt     DateTime?             @map("archived_at") @db.Timestamptz(6)
+  createdBy      String?               @map("created_by") @db.Uuid
+  updatedBy      String?               @map("updated_by") @db.Uuid
+  createdAt      DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([id, organizationId])
+  @@index([organizationId, archivedAt])
+  @@map("email_templates")
+}
+
+/// A file that can be attached to campaign mail (a catalogue, a brochure).
+model EmailAsset {
+  id             String    @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  productId      String?   @map("product_id") @db.Uuid
+  fileName       String    @map("file_name") @db.VarChar(255)
+  mimeType       String    @map("mime_type") @db.VarChar(120)
+  sizeBytes      Int       @map("size_bytes")
+  sha256         String    @db.VarChar(64)
+  data           Bytes
+  uploadedBy     String?   @map("uploaded_by") @db.Uuid
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  deletedAt      DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  product      Product?     @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  @@unique([id, organizationId])
+  @@index([organizationId, createdAt(sort: Desc)])
+  @@map("email_assets")
+}
+
+model EmailCampaign {
+  id             String                @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String                @map("organization_id") @db.Uuid
+  name           String                @db.VarChar(150)
+  category       EmailCampaignCategory
+  purpose        EmailCampaignPurpose
+  status         EmailCampaignStatus   @default(DRAFT)
+  templateId     String?               @map("template_id") @db.Uuid
+  subject        String                @db.VarChar(200)
+  html           String                @db.Text
+  text           String                @db.Text
+  assetIds       String[]              @default([]) @map("asset_ids") @db.Uuid
+  /// The recipient filter, as submitted; re-evaluated at confirmation.
+  filter         Json                  @default("{}")
+
+  scheduledAt DateTime? @map("scheduled_at") @db.Timestamptz(6)
+  /// Idempotency key of the confirmation: a double click confirms once.
+  submitKey   String?   @map("submit_key") @db.VarChar(80)
+  confirmedAt DateTime? @map("confirmed_at") @db.Timestamptz(6)
+  confirmedBy String?   @map("confirmed_by") @db.Uuid
+  startedAt   DateTime? @map("started_at") @db.Timestamptz(6)
+  pausedAt    DateTime? @map("paused_at") @db.Timestamptz(6)
+  /// Why sending stopped, when LeadFlow stopped it (the mailbox refused sign-in, the subscription ended).
+  pauseReason String?   @map("pause_reason") @db.VarChar(300)
+  completedAt DateTime? @map("completed_at") @db.Timestamptz(6)
+  cancelledAt DateTime? @map("cancelled_at") @db.Timestamptz(6)
+
+  /// Audience at confirmation: everyone the filter matched, and why some were left out.
+  selectedCount Int  @default(0) @map("selected_count")
+  eligibleCount Int  @default(0) @map("eligible_count")
+  excluded      Json @default("{}")
+
+  createdBy String?  @map("created_by") @db.Uuid
+  updatedBy String?  @map("updated_by") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  recipients   EmailCampaignRecipient[]
+
+  @@unique([id, organizationId])
+  @@unique([organizationId, submitKey])
+  @@index([organizationId, createdAt(sort: Desc)])
+  @@index([status, scheduledAt])
+  @@map("email_campaigns")
+}
+
+/// One message to one address — and the delivery queue itself.
+model EmailCampaignRecipient {
+  id             String               @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String               @map("organization_id") @db.Uuid
+  campaignId     String               @map("campaign_id") @db.Uuid
+  leadId         String?              @map("lead_id") @db.Uuid
+  contactId      String?              @map("contact_id") @db.Uuid
+  email          String               @db.VarChar(320)
+  displayName    String?              @map("display_name") @db.VarChar(200)
+  mergeData      Json                 @default("{}") @map("merge_data")
+  status         EmailRecipientStatus @default(QUEUED)
+  skipReason     String?              @map("skip_reason") @db.VarChar(40)
+
+  attempts      Int       @default(0)
+  nextAttemptAt DateTime  @default(now()) @map("next_attempt_at") @db.Timestamptz(6)
+  lockedBy      String?   @map("locked_by") @db.VarChar(80)
+  lockedUntil   DateTime? @map("locked_until") @db.Timestamptz(6)
+
+  /// Our Message-ID for this message, fixed before the first attempt so a reply
+  /// can be matched however many attempts it took.
+  messageId            String  @unique @map("message_id") @db.VarChar(255)
+  /// SHA-256 of the unsubscribe token; the token itself is never stored.
+  unsubscribeTokenHash String  @unique @map("unsubscribe_token_hash") @db.Char(64)
+  lastSmtpCode         Int?    @map("last_smtp_code")
+  lastResponse         String? @map("last_response") @db.VarChar(500)
+
+  acceptedAt     DateTime? @map("accepted_at") @db.Timestamptz(6)
+  failedAt       DateTime? @map("failed_at") @db.Timestamptz(6)
+  repliedAt      DateTime? @map("replied_at") @db.Timestamptz(6)
+  unsubscribedAt DateTime? @map("unsubscribed_at") @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  campaign     EmailCampaign          @relation(fields: [campaignId, organizationId], references: [id, organizationId], onDelete: Cascade)
+  lead         Lead?                  @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  contact      Contact?               @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  attemptsLog  EmailDeliveryAttempt[]
+  inbound      EmailInboundMessage[]
+
+  @@unique([campaignId, email])
+  @@unique([id, organizationId])
+  @@index([status, nextAttemptAt])
+  @@index([organizationId, campaignId, status])
+  @@index([organizationId, email])
+  @@map("email_campaign_recipients")
+}
+
+/// Every SMTP attempt, written before the connection opens and finished once.
+model EmailDeliveryAttempt {
+  id             String    @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  recipientId    String    @map("recipient_id") @db.Uuid
+  campaignId     String    @map("campaign_id") @db.Uuid
+  attempt        Int
+  worker         String    @db.VarChar(80)
+  startedAt      DateTime  @default(now()) @map("started_at") @db.Timestamptz(6)
+  finishedAt     DateTime? @map("finished_at") @db.Timestamptz(6)
+  outcome        String?   @db.VarChar(20)
+  smtpCode       Int?      @map("smtp_code")
+  response       String?   @db.VarChar(500)
+
+  organization Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  recipient    EmailCampaignRecipient @relation(fields: [recipientId, organizationId], references: [id, organizationId], onDelete: Cascade)
+
+  @@unique([recipientId, attempt])
+  @@index([organizationId, startedAt])
+  @@map("email_delivery_attempts")
+}
+
+/// An inbound message already read from the IMAP inbox.
+model EmailInboundMessage {
+  id             String           @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String           @map("organization_id") @db.Uuid
+  mailboxId      String           @map("mailbox_id") @db.Uuid
+  uidValidity    BigInt           @map("uid_validity")
+  uid            BigInt
+  messageId      String?          @map("message_id") @db.VarChar(998)
+  inReplyTo      String?          @map("in_reply_to") @db.VarChar(998)
+  fromAddress    String?          @map("from_address") @db.VarChar(320)
+  subject        String?          @db.VarChar(500)
+  snippet        String?          @db.VarChar(1000)
+  receivedAt     DateTime?        @map("received_at") @db.Timestamptz(6)
+  kind           EmailInboundKind
+  recipientId    String?          @map("recipient_id") @db.Uuid
+  leadId         String?          @map("lead_id") @db.Uuid
+  activityId     String?          @map("activity_id") @db.Uuid
+  createdAt      DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  mailbox      EmailMailbox            @relation(fields: [mailboxId, organizationId], references: [id, organizationId], onDelete: Cascade)
+  recipient    EmailCampaignRecipient? @relation(fields: [recipientId], references: [id], onDelete: SetNull)
+  lead         Lead?                   @relation(fields: [leadId], references: [id], onDelete: SetNull)
+
+  @@unique([mailboxId, uidValidity, uid])
+  @@index([organizationId, messageId])
+  @@index([organizationId, recipientId])
+  @@map("email_inbound_messages")
 }

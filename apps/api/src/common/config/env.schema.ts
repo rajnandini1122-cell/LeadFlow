@@ -514,6 +514,24 @@ export const envSchema = z
      * administrative writes). Its own key, never the analytics one: an
      * analytics-read key must not become an entitlement-write key.
      */
+    /**
+     * Email campaigns. Two independent switches, both off by default:
+     *
+     *   EMAIL_DISPATCH_ENABLED — this process runs the campaign dispatcher and
+     *     the IMAP reply sync. Off: queued messages simply wait.
+     *   EMAIL_CAMPAIGNS_SENDING_ENABLED — the platform allows real sends to
+     *     customers at all. Off: campaigns can be drafted, previewed and
+     *     confirmed, and NOTHING is delivered. Turned on only with the owner's
+     *     explicit approval.
+     */
+    EMAIL_DISPATCH_ENABLED: z
+      .string()
+      .default('false')
+      .transform((value) => value === 'true'),
+    EMAIL_CAMPAIGNS_SENDING_ENABLED: z
+      .string()
+      .default('false')
+      .transform((value) => value === 'true'),
     ADMIN_SUBSCRIPTIONS_ENABLED: z
       .string()
       .default('false')

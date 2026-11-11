@@ -667,6 +667,8 @@ const ACTIVITY_TONE: Record<string, string> = {
   LEAD_LOST: 'bg-rose-100 text-rose-700',
   DOCUMENT_ATTACHED: 'bg-orange-100 text-orange-700',
   DOCUMENT_REMOVED: 'bg-slate-100 text-slate-600',
+  EMAIL_SENT: 'bg-sky-100 text-sky-700',
+  EMAIL_REPLY_RECEIVED: 'bg-emerald-100 text-emerald-700',
 };
 
 function Timeline({ activities }: { activities: LeadActivity[] }): React.JSX.Element {
