@@ -6,6 +6,7 @@ import {
   sendViaResend,
 } from '../mailbox/resend-transport';
 import { broadcastContent } from './broadcast.service';
+import { ResendMarketingClient } from './resend-marketing.client';
 
 const secret = `whsec_${randomBytes(32).toString('base64')}`;
 const body = Buffer.from('{"type":"email.sent"}');
@@ -146,5 +147,82 @@ describe('broadcast content', () => {
     expect(out.html).toContain('Dear {{{contact.first_name}}} {{{contact.last_name}}}');
     expect(out.html).toContain('href="{{{RESEND_UNSUBSCRIBE_URL}}}"');
     expect(out.text).toContain('Unsubscribe: {{{RESEND_UNSUBSCRIBE_URL}}}');
+  });
+});
+
+describe('ResendMarketingClient — documented endpoints, pagination and failures', () => {
+  type Call = { method: string; url: string };
+  const stub = (pages: (Response | Error)[]) => {
+    const calls: Call[] = [];
+    const fetchImpl = async (url: string, init: RequestInit) => {
+      calls.push({ method: init.method ?? 'GET', url });
+      const next = pages.shift();
+      if (!next) throw new Error('unexpected call');
+      if (next instanceof Error) throw next;
+      return next;
+    };
+    return { calls, client: new ResendMarketingClient('re_test', fetchImpl, 0) };
+  };
+  const page = (data: unknown[], hasMore: boolean) =>
+    new Response(JSON.stringify({ object: 'list', has_more: hasMore, data }), { status: 200 });
+
+  it("follows a contact's segment pages with `after` = the last id", async () => {
+    const { calls, client } = stub([
+      page([{ id: 'seg_1' }, { id: 'seg_2' }], true),
+      page([{ id: 'seg_3' }], false),
+    ]);
+    expect(await client.contactSegments('A@x.example')).toEqual({
+      kind: 'ok',
+      status: 200,
+      body: ['seg_1', 'seg_2', 'seg_3'],
+    });
+    expect(calls.map((c) => `${c.method} ${c.url.replace(/^https:\/\/[^/]+/, '')}`)).toEqual([
+      'GET /contacts/A%40x.example/segments?limit=100',
+      'GET /contacts/A%40x.example/segments?limit=100&after=seg_2',
+    ]);
+  });
+
+  it('never presents a partial list as whole: a failed page fails the whole read', async () => {
+    const { client } = stub([
+      page([{ id: 'c1', email: 'a@x.example' }], true),
+      new TypeError('fetch failed'),
+    ]);
+    expect((await client.listSegment('seg_1')).kind).toBe('network');
+    const second = stub([page([{ id: 'seg_1' }], true), new Response('{}', { status: 429 })]);
+    expect(await second.client.contactSegments('a@x.example')).toMatchObject({
+      kind: 'http',
+      status: 429,
+    });
+  });
+
+  it('refuses to verify an unbounded listing rather than guessing', async () => {
+    const { client } = stub([page([{ id: 'seg_1' }], true), page([{ id: 'seg_2' }], true)]);
+    expect(await client.contactSegments('a@x.example', 2)).toMatchObject({
+      kind: 'http',
+      error: 'too many segments to verify',
+    });
+  });
+
+  it('removes with DELETE /contacts/{email}/segments/{id} and cancels with POST /broadcasts/{id}/cancel', async () => {
+    const { calls, client } = stub([
+      new Response(JSON.stringify({ object: 'contact_segment', id: 'seg_1', deleted: true }), {
+        status: 200,
+      }),
+      new Response(JSON.stringify({ object: 'broadcast', id: 'b_1' }), { status: 200 }),
+    ]);
+    expect((await client.removeFromSegment('a@x.example', 'seg_1')).kind).toBe('ok');
+    expect((await client.cancelBroadcast('b_1')).kind).toBe('ok');
+    expect(calls.map((c) => `${c.method} ${c.url.replace(/^https:\/\/[^/]+/, '')}`)).toEqual([
+      'DELETE /contacts/a%40x.example/segments/seg_1',
+      'POST /broadcasts/b_1/cancel',
+    ]);
+  });
+
+  it('stays under 10 requests per second', async () => {
+    const fetchImpl = async () => page([], false);
+    const client = new ResendMarketingClient('re_test', fetchImpl);
+    const started = Date.now();
+    for (let i = 0; i < 4; i++) await client.contactSegments('a@x.example');
+    expect(Date.now() - started).toBeGreaterThanOrEqual(3 * 100);
   });
 });

@@ -449,6 +449,7 @@ ADD COLUMN     "webhook_secret_rotated_at" TIMESTAMPTZ(6);
 -- AlterTable
 ALTER TABLE "email_campaigns" ADD COLUMN     "broadcast_error" VARCHAR(500),
 ADD COLUMN     "broadcast_send_requested_at" TIMESTAMPTZ(6),
+ADD COLUMN     "broadcast_retry_since" TIMESTAMPTZ(6),
 ADD COLUMN     "broadcast_state" VARCHAR(30),
 ADD COLUMN     "broadcast_state_at" TIMESTAMPTZ(6),
 ADD COLUMN     "delivery_channel" VARCHAR(20),
@@ -528,7 +529,7 @@ ALTER TABLE "email_campaigns"
     ADD CONSTRAINT "email_campaigns_broadcast_state_check"
         CHECK ("broadcast_state" IS NULL OR "broadcast_state" IN (
             'PENDING', 'CONTACTS_SYNCED', 'SEGMENT_READY', 'DRAFT_CREATED',
-            'SEND_REQUESTED', 'HANDED_OFF', 'CANCELLED_AT_PROVIDER', 'BLOCKED'));
+            'SEND_REQUESTED', 'HANDED_OFF', 'CANCELLED_AT_PROVIDER', 'BLOCKED', 'NEEDS_REVIEW'));
 ALTER TABLE "email_mailboxes"
     ADD CONSTRAINT "email_mailboxes_api_key_access_check"
         CHECK ("api_key_access" IS NULL OR "api_key_access" IN ('full', 'sending'));

@@ -9,9 +9,10 @@ import { RESEND_API, type FetchLike } from '../mailbox/resend-transport';
  *   http     Resend answered with an error — a definite "this did not happen";
  *   network  no answer — the request may or may not have taken effect.
  *
- * API facts this relies on (docs checked 2026-11-11, see
+ * API facts this relies on (docs re-checked 2026-11-11, see
  * docs/email/LEADFLOW_RESEND_BROADCASTS.md): contacts are addressed by id or
- * email; POST /contacts/{email}/segments/{segmentId} adds to a segment;
+ * email; POST and DELETE /contacts/{email}/segments/{segmentId} add to and
+ * remove from a segment; GET /contacts/{email}/segments lists a contact's segments;
  * GET /contacts?segment_id= lists a segment (100 per page, `after` cursor);
  * broadcasts are created as drafts and sent with POST /broadcasts/{id}/send,
  * which documents NO idempotency key; broadcast status is one of draft,
@@ -19,6 +20,9 @@ import { RESEND_API, type FetchLike } from '../mailbox/resend-transport';
  */
 
 const TIMEOUT_MS = 20_000;
+
+/** Resend allows 10 requests/second per team; one client stays under it. */
+const MIN_INTERVAL_MS = 110;
 
 export type ApiResult<T> =
   | { kind: 'ok'; status: number; body: T }
@@ -36,12 +40,18 @@ export interface ResendContact {
 export type BroadcastStatus = 'draft' | 'scheduled' | 'queued' | 'sent' | 'canceled';
 
 export class ResendMarketingClient {
+  private nextCallAt = 0;
+
   constructor(
     private readonly apiKey: string,
     private readonly fetchImpl: FetchLike = fetch,
+    private readonly minIntervalMs = MIN_INTERVAL_MS,
   ) {}
 
   private async call<T>(method: string, path: string, body?: unknown): Promise<ApiResult<T>> {
+    const wait = this.nextCallAt - Date.now();
+    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+    this.nextCallAt = Date.now() + this.minIntervalMs;
     let response: Response;
     try {
       response = await this.fetchImpl(`${RESEND_API}${path}`, {
@@ -109,12 +119,35 @@ export class ResendMarketingClient {
     );
   }
 
-  /** Not in Resend's published reference (by symmetry with add). Callers fail closed if it is refused. */
+  /** DELETE /contacts/{id|email}/segments/{segmentId} ("Delete Contact Segment"). */
   removeFromSegment(email: string, segmentId: string) {
     return this.call<{ id: string }>(
       'DELETE',
       `/contacts/${encodeURIComponent(email)}/segments/${encodeURIComponent(segmentId)}`,
     );
+  }
+
+  /**
+   * The segments one contact belongs to (GET /contacts/{id|email}/segments,
+   * paginated). Used to verify membership contact by contact, because the
+   * segment listing documents no consistency or ordering guarantee.
+   */
+  async contactSegments(email: string, maxPages = 10): Promise<ApiResult<string[]>> {
+    const ids: string[] = [];
+    let after: string | undefined;
+    for (let page = 0; page < maxPages; page++) {
+      const query = new URLSearchParams({ limit: '100', ...(after ? { after } : {}) });
+      const res = await this.call<{ data?: { id: string }[]; has_more?: boolean }>(
+        'GET',
+        `/contacts/${encodeURIComponent(email)}/segments?${query}`,
+      );
+      if (res.kind !== 'ok') return res;
+      const data = res.body.data ?? [];
+      ids.push(...data.map((s) => s.id));
+      if (!res.body.has_more || data.length === 0) return { kind: 'ok', status: 200, body: ids };
+      after = data[data.length - 1]!.id;
+    }
+    return { kind: 'http', status: 0, error: 'too many segments to verify' };
   }
 
   /** Every member of a segment, or a failure — never a partial list presented as whole. */
@@ -184,6 +217,14 @@ export class ResendMarketingClient {
       'GET',
       `/broadcasts/${encodeURIComponent(id)}`,
     );
+  }
+
+  /**
+   * POST /broadcasts/{id}/cancel — queued or scheduled broadcasts only.
+   * Queued → canceled (emails already sent are NOT recalled); scheduled → draft.
+   */
+  cancelBroadcast(id: string) {
+    return this.call<{ id: string }>('POST', `/broadcasts/${encodeURIComponent(id)}/cancel`, {});
   }
 
   sendBroadcast(id: string) {

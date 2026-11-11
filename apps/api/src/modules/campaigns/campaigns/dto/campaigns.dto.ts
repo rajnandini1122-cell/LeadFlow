@@ -156,3 +156,15 @@ export class CampaignReasonDto {
   @Transform(trim)
   reason?: string;
 }
+
+/** A person's decision on a broadcast in NEEDS_REVIEW. */
+export class ResolveBroadcastDto {
+  @IsIn(['retry', 'abandon'])
+  action!: 'retry' | 'abandon';
+
+  @Transform(trim)
+  @IsString()
+  @MinLength(3)
+  @MaxLength(500)
+  reason!: string;
+}

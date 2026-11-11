@@ -37,6 +37,7 @@ import {
   HANDED_TO_PROVIDER,
   type BroadcastState,
 } from '../broadcast/broadcast-state';
+import { BroadcastService, type ReviewAction } from '../broadcast/broadcast.service';
 import { prepareContent, TemplatesService } from '../templates/templates.service';
 import { TemplatesRepository } from '../templates/templates.repository';
 import type { MergeValues } from '../content/email-content';
@@ -54,6 +55,7 @@ export const CAMPAIGN_AUDIT = {
   PAUSED: 'email.campaign.paused',
   RESUMED: 'email.campaign.resumed',
   CANCELLED: 'email.campaign.cancelled',
+  BROADCAST_RESOLVED: 'email.campaign.broadcast_resolved',
 } as const;
 
 const MAX_TEST_SENDS_PER_DAY = 20;
@@ -72,6 +74,7 @@ export class CampaignsService {
     private readonly mailbox: MailboxService,
     private readonly audit: AuditRepository,
     private readonly config: AppConfig,
+    private readonly broadcasts: BroadcastService,
   ) {}
 
   // --- reading ---------------------------------------------------------------
@@ -538,6 +541,12 @@ export class CampaignsService {
     if (!mailbox.enabled)
       throw AppException.validation('Turn the email account on in Email settings before resuming.');
     const campaign = await this.require(id);
+    if (campaign.broadcastState === 'NEEDS_REVIEW') {
+      throw AppException.conflict(
+        ERROR_CODES.CONFLICT,
+        'This broadcast needs review: choose Send again or Abandon instead of resuming.',
+      );
+    }
     const later = campaign.scheduledAt !== null && campaign.scheduledAt.getTime() > Date.now();
     const moved = await this.repository.transition(id, 'PAUSED', {
       status: later ? 'SCHEDULED' : 'SENDING',
@@ -558,7 +567,28 @@ export class CampaignsService {
 
   /** Stops everything still queued. A message already being handed to the server finishes its one attempt. */
   async cancel(id: string, actor: MutationActor): Promise<EmailCampaignView> {
-    await this.refuseIfHandedToResend(id, 'cancelled');
+    const campaign = await this.require(id);
+    if (campaign.deliveryChannel === 'RESEND_BROADCAST') {
+      const state = campaign.broadcastState as BroadcastState;
+      if (state === 'NEEDS_REVIEW') {
+        throw AppException.conflict(
+          ERROR_CODES.CONFLICT,
+          'This broadcast needs review: choose Send again or Abandon, with a reason.',
+        );
+      }
+      if (HANDED_TO_PROVIDER.includes(state)) {
+        // Resend is asked to cancel; the live status decides what LeadFlow records.
+        const result = await this.broadcasts.cancelAtProvider(campaign);
+        await this.audit.record({
+          action: CAMPAIGN_AUDIT.CANCELLED,
+          entityType: 'EmailCampaign',
+          entityId: id,
+          ...auditAttribution(actor),
+          after: { atProvider: true, ...result },
+        });
+        return this.get(id);
+      }
+    }
     let cancelledRecipients = 0;
     await this.repository.inTransaction(async (tx) => {
       const moved = await this.repository.transition(
@@ -584,6 +614,30 @@ export class CampaignsService {
     return this.get(id);
   }
 
+  /** A person's decision on a broadcast that LeadFlow would not decide on its own. */
+  async resolveBroadcast(
+    id: string,
+    action: ReviewAction,
+    reason: string,
+    actor: MutationActor,
+  ): Promise<EmailCampaignView> {
+    this.requireCustomerSending();
+    const campaign = await this.require(id);
+    if (campaign.deliveryChannel !== 'RESEND_BROADCAST') {
+      throw AppException.validation('Only a Resend broadcast can be resolved this way.');
+    }
+    const result = await this.broadcasts.resolveReview(campaign, action);
+    await this.audit.record({
+      action: CAMPAIGN_AUDIT.BROADCAST_RESOLVED,
+      entityType: 'EmailCampaign',
+      entityId: id,
+      ...auditAttribution(actor),
+      before: { broadcastState: 'NEEDS_REVIEW', broadcastError: campaign.broadcastError },
+      after: { action, reason, ...result },
+    });
+    return this.get(id);
+  }
+
   // --- helpers -------------------------------------------------------------------
 
   /**
@@ -599,7 +653,7 @@ export class CampaignsService {
     ) {
       throw AppException.conflict(
         ERROR_CODES.CONFLICT,
-        `This broadcast has already been handed to Resend and cannot be ${verb} from LeadFlow. Emails already sent cannot be recalled; a queued broadcast can be cancelled in Resend.`,
+        `This broadcast has already been handed to Resend and cannot be ${verb}. Cancel asks Resend to stop a queued or scheduled broadcast; emails already sent cannot be recalled.`,
       );
     }
   }

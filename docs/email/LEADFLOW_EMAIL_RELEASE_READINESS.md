@@ -67,4 +67,8 @@ real mailbox.
 ## Rollback
 
 Set `EMAIL_DISPATCH_ENABLED=false` (stops all sending and syncing immediately; queued rows wait),
-or pause/cancel campaigns. The migration is additive; the previous API ignores the new tables.
+or pause/cancel campaigns. The migration is additive; the previous API ignores the new tables
+while no email lead history exists. A schema rollback script
+(`apps/api/prisma/rollbacks/20261111090000_email_campaigns.down.sql`) was tested on a restored,
+sanitised production copy and restores the schema exactly; it refuses once email history exists. See
+[LEADFLOW_RESEND_BROADCASTS.md](LEADFLOW_RESEND_BROADCASTS.md#migration-review).

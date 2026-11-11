@@ -121,13 +121,13 @@ describe('Email broadcasts (Resend Marketing)', () => {
       }),
     );
 
-  /** Ticks until the broadcast state stops changing (each tick is one step). */
+  /** Ticks until the broadcast stops changing (each tick is one step, or one wait). */
   const run = async (id: string, now = new Date()) => {
     let last = '';
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < 12; i++) {
       await broadcasts().tick(now);
       const c = await campaign(id);
-      const signature = `${c!.status}/${c!.broadcastState}`;
+      const signature = `${c!.status}/${c!.broadcastState}/${c!.broadcastError}`;
       if (signature === last) return c!;
       last = signature;
     }
@@ -170,6 +170,7 @@ describe('Email broadcasts (Resend Marketing)', () => {
       testCa: tls.cert,
       fetchImpl: (url, init) => resend.fetch(url, init),
       dns: verifiedDomainDns('news.leadflow-test.example'),
+      resendMinIntervalMs: 0,
     });
 
     const account = {
@@ -206,6 +207,9 @@ describe('Email broadcasts (Resend Marketing)', () => {
   beforeEach(() => {
     ctx.redis.flush();
     resend.removeFromSegmentSupported = true;
+    resend.staleMembershipReads = 0;
+    resend.deliverOnSend = true;
+    resend.clearFaults();
   });
 
   afterAll(async () => {
@@ -294,20 +298,124 @@ describe('Email broadcasts (Resend Marketing)', () => {
       ).toHaveLength(2);
     });
 
-    it('a send that never reached Resend is sent once, after waiting and reading that it is still a draft', async () => {
+    it('an ambiguous send that still reads "draft" is NOT sent again automatically: it waits for a person (NEEDS_REVIEW)', async () => {
       const { id } = await confirmedCampaign(1);
       resend.fault('POST', /^\/broadcasts\/[^/]+\/send$/, 'network');
       const now = new Date();
       let c = await run(id, now);
       expect(c.broadcastState).toBe('SEND_REQUESTED');
-      // Too soon to conclude anything: still nothing sent.
+      // Too soon to conclude anything.
       c = await run(id, new Date(now.getTime() + 30_000));
-      expect(resend.broadcasts.get(c.providerBroadcastId!)!.status).toBe('draft');
+      expect(c.broadcastState).toBe('SEND_REQUESTED');
+      // After the settle period: still a draft. LeadFlow stops and asks a person.
       c = await run(id, new Date(now.getTime() + 5 * 60_000));
+      expect(c).toMatchObject({ status: 'PAUSED', broadcastState: 'NEEDS_REVIEW' });
+      expect(c.pauseReason).toContain('will not ask again on its own');
+      // Hours of ticks change nothing: exactly one send request, ever.
+      c = await run(id, new Date(now.getTime() + 6 * 3_600_000));
+      expect(c.broadcastState).toBe('NEEDS_REVIEW');
+      expect(sends(c.providerBroadcastId)).toBe(1);
+      expect(resend.broadcasts.get(c.providerBroadcastId!)!.status).toBe('draft');
+      expect(
+        resend.broadcastDeliveries.filter((d) => d.broadcastId === c.providerBroadcastId),
+      ).toHaveLength(0);
+
+      // Resume is refused; the decision is explicit, with a reason, and audited.
+      const resumed = await ctx.http().post(`/api/v1/email/campaigns/${id}/resume`).set(owner());
+      expect(resumed.status).toBe(409);
+      const noReason = await ctx
+        .http()
+        .post(`/api/v1/email/campaigns/${id}/broadcast/resolve`)
+        .set(owner())
+        .send({ action: 'retry' });
+      expect(noReason.status).toBe(400);
+      const resolved = await ctx
+        .http()
+        .post(`/api/v1/email/campaigns/${id}/broadcast/resolve`)
+        .set(owner())
+        .send({ action: 'retry', reason: 'Checked Resend: still a draft, nothing sent' });
+      expect(resolved.status).toBe(200);
+      c = (await campaign(id))!;
+      expect(c).toMatchObject({ status: 'SENDING', broadcastState: 'DRAFT_CREATED' });
+      // The normal path: precheck again, then one send request.
+      c = await run(id, new Date(now.getTime() + 6 * 3_600_000 + 60_000));
       expect(c.broadcastState).toBe('HANDED_OFF');
+      expect(sends(c.providerBroadcastId)).toBe(2);
       expect(
         resend.broadcastDeliveries.filter((d) => d.broadcastId === c.providerBroadcastId),
       ).toHaveLength(1);
+      const audit = await asSystem(() =>
+        prisma().auditLog.findFirst({
+          where: { entityId: id, action: 'email.campaign.broadcast_resolved' },
+        }),
+      );
+      expect(audit?.after).toMatchObject({
+        action: 'retry',
+        reason: 'Checked Resend: still a draft, nothing sent',
+        outcome: 'retrying',
+        providerStatus: 'draft',
+      });
+    });
+
+    it('a manual retry never re-sends a broadcast Resend has queued: the live status wins', async () => {
+      const { id } = await confirmedCampaign(1);
+      resend.fault('POST', /^\/broadcasts\/[^/]+\/send$/, 'network');
+      const now = new Date();
+      await run(id, now);
+      let c = await run(id, new Date(now.getTime() + 5 * 60_000));
+      expect(c.broadcastState).toBe('NEEDS_REVIEW');
+      // Meanwhile the broadcast was sent from Resend's dashboard.
+      resend.broadcasts.get(c.providerBroadcastId!)!.status = 'queued';
+      const resolved = await ctx
+        .http()
+        .post(`/api/v1/email/campaigns/${id}/broadcast/resolve`)
+        .set(owner())
+        .send({ action: 'retry', reason: 'Try again' });
+      expect(resolved.status).toBe(200);
+      c = (await campaign(id))!;
+      expect(c).toMatchObject({ status: 'SENDING', broadcastState: 'HANDED_OFF' });
+      expect(sends(c.providerBroadcastId)).toBe(1);
+      expect((await recipients(id)).every((r) => r.status === 'SENDING')).toBe(true);
+    });
+
+    it('a broadcast status that cannot be read for 15 minutes goes to NEEDS_REVIEW; abandoning it then marks recipients UNCERTAIN, not cancelled', async () => {
+      const { id } = await confirmedCampaign(2);
+      resend.fault('POST', /^\/broadcasts\/[^/]+\/send$/, 'lost-answer');
+      const now = new Date();
+      for (let i = 0; i < 6 && (await campaign(id))!.broadcastState !== 'SEND_REQUESTED'; i++) {
+        await broadcasts().tick(now);
+      }
+      resend.fault('GET', /^\/broadcasts\/[^/]+$/, 'network', 5);
+      await broadcasts().tick(new Date(now.getTime() + 60_000));
+      let c = (await campaign(id))!;
+      expect(c).toMatchObject({ status: 'SENDING', broadcastState: 'SEND_REQUESTED' });
+      expect(c.broadcastRetrySince).not.toBeNull();
+      await broadcasts().tick(new Date(now.getTime() + 10 * 60_000));
+      expect((await campaign(id))!.broadcastState).toBe('SEND_REQUESTED');
+      await broadcasts().tick(new Date(now.getTime() + 17 * 60_000));
+      c = (await campaign(id))!;
+      expect(c).toMatchObject({ status: 'PAUSED', broadcastState: 'NEEDS_REVIEW' });
+      expect(c.pauseReason).toContain('Could not read the broadcast status');
+
+      // Retry needs a live read; with Resend unreadable it is refused and nothing changes.
+      const retry = await ctx
+        .http()
+        .post(`/api/v1/email/campaigns/${id}/broadcast/resolve`)
+        .set(owner())
+        .send({ action: 'retry', reason: 'Try again' });
+      expect(retry.status).toBe(409);
+      expect((await campaign(id))!.broadcastState).toBe('NEEDS_REVIEW');
+      const abandoned = await ctx
+        .http()
+        .post(`/api/v1/email/campaigns/${id}/broadcast/resolve`)
+        .set(owner())
+        .send({ action: 'abandon', reason: 'Resend unreachable, will check by hand' });
+      expect(abandoned.status).toBe(200);
+      expect((await campaign(id))!.status).toBe('CANCELLED');
+      const rows = await recipients(id);
+      expect(rows.every((r) => r.status === 'UNCERTAIN')).toBe(true);
+      expect(rows[0]!.lastResponse).toContain('may have received');
+      expect(sends(c.providerBroadcastId)).toBe(1);
     });
 
     it('two workers advancing the same campaign at once send it once', async () => {
@@ -385,11 +493,124 @@ describe('Email broadcasts (Resend Marketing)', () => {
         segments: new Set([segment]),
       });
       resend.removeFromSegmentSupported = false;
-      const blocked = await run(second.id);
-      expect(blocked).toMatchObject({ status: 'PAUSED' });
-      expect(blocked.pauseReason).toContain('could not be removed');
-      expect(blocked.providerBroadcastId).toBeNull();
+      const now = new Date();
+      const waiting = await run(second.id, now);
+      // Not sent, not given up yet: the removal is tried again every tick.
+      expect(waiting).toMatchObject({ status: 'SENDING', broadcastState: 'SEGMENT_READY' });
+      expect(waiting.broadcastError).toContain('Could not remove');
+      expect(waiting.providerBroadcastId).toBeNull();
+      // Still failing 15 minutes later: a person decides. Nothing was sent.
+      await broadcasts().tick(new Date(now.getTime() + 16 * 60_000));
+      const review = (await campaign(second.id))!;
+      expect(review).toMatchObject({ status: 'PAUSED', broadcastState: 'NEEDS_REVIEW' });
+      expect(review.pauseReason).toContain('Could not remove');
+      expect(review.providerBroadcastId).toBeNull();
       expect(resend.broadcastDeliveries.some((d) => d.email === other)).toBe(false);
+      const removals = resend.log.filter(
+        (l) =>
+          l.method === 'DELETE' &&
+          l.path === `/contacts/${encodeURIComponent(other)}/segments/${segment}`,
+      );
+      expect(removals.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('membership is verified contact by contact; a change not yet visible is corrected and re-verified, never sent on the same pass', async () => {
+      const { id, emails } = await confirmedCampaign(2);
+      await broadcasts().tick(); // contacts synced
+      await broadcasts().tick(); // segment built
+      // Resend has not caught up: the next membership read shows the contact in no segment.
+      resend.staleMembershipReads = 1;
+      await broadcasts().tick();
+      let c = (await campaign(id))!;
+      expect(c).toMatchObject({ broadcastState: 'SEGMENT_READY', providerBroadcastId: null });
+      expect(c.broadcastError).toContain('was corrected');
+      const segmentReads = resend.log.filter(
+        (l) => l.method === 'GET' && /^\/contacts\/[^/]+\/segments/.test(l.path),
+      );
+      expect(segmentReads.map((l) => decodeURIComponent(l.path.split('/')[2]!)).sort()).toEqual(
+        expect.arrayContaining(emails),
+      );
+      c = await run(id);
+      expect(c.broadcastState).toBe('HANDED_OFF');
+      expect(sends(c.providerBroadcastId)).toBe(1);
+      expect(
+        resend.broadcastDeliveries
+          .filter((d) => d.broadcastId === c.providerBroadcastId)
+          .map((d) => d.email)
+          .sort(),
+      ).toEqual([...emails].sort());
+    });
+
+    it('a recipient who became ineligible after the segment was built is removed by the documented DELETE before the send', async () => {
+      const { id, emails } = await confirmedCampaign(2);
+      await broadcasts().tick();
+      await broadcasts().tick(); // both in the segment
+      const segment = (await campaign(id))!.providerSegmentId!;
+      await ctx
+        .http()
+        .post('/api/v1/email/eligibility/withdraw')
+        .set(owner())
+        .send({ emails: [emails[0]] });
+      const c = await run(id);
+      expect(c.broadcastState).toBe('HANDED_OFF');
+      expect(
+        resend.log.some(
+          (l) =>
+            l.method === 'DELETE' &&
+            l.path === `/contacts/${encodeURIComponent(emails[0]!)}/segments/${segment}`,
+        ),
+      ).toBe(true);
+      expect(
+        resend.broadcastDeliveries
+          .filter((d) => d.broadcastId === c.providerBroadcastId)
+          .map((d) => d.email),
+      ).toEqual([emails[1]]);
+    });
+
+    it('nobody without recorded eligibility is ever sent to Resend: leads with an email but no grant stay in LeadFlow', async () => {
+      const city = tag();
+      const granted = `ok.${city}@cust.example`;
+      const notGranted = [`no1.${city}@cust.example`, `no2.${city}@cust.example`];
+      for (const email of [granted, ...notGranted]) await lead(city, email);
+      expect((await grant([granted])).status).toBe(200);
+      const draft = await ctx
+        .http()
+        .post('/api/v1/email/campaigns')
+        .set(owner())
+        .send({
+          name: `Offer ${city}`,
+          category: 'PROMOTIONAL_OFFER',
+          purpose: 'PROMOTIONAL',
+          subject: 'Our new catalogue',
+          html: '<p>Dear {{first_name}}</p>',
+          filter: { cities: [city] },
+        });
+      const id = draft.body.data.id as string;
+      const preview = await ctx
+        .http()
+        .post('/api/v1/email/campaigns/audience')
+        .set(owner())
+        .send({ purpose: 'PROMOTIONAL', filter: { cities: [city] } });
+      expect(preview.body.data).toMatchObject({ selected: 3, eligible: 1 });
+      const confirmed = await ctx
+        .http()
+        .post(`/api/v1/email/campaigns/${id}/confirm`)
+        .set(owner())
+        .send({ submitKey: randomUUID().replace(/-/g, ''), eligibleCount: 1 });
+      expect(confirmed.status).toBe(200);
+      const c = await run(id);
+      expect(c.broadcastState).toBe('HANDED_OFF');
+      for (const email of notGranted) {
+        expect(resend.contacts.has(email)).toBe(false);
+        expect(
+          resend.log.some(
+            (l) =>
+              l.path.includes(encodeURIComponent(email)) ||
+              JSON.stringify(l.body ?? {}).includes(email),
+          ),
+        ).toBe(false);
+      }
+      expect((await recipients(id)).map((r) => r.email)).toEqual([granted]);
     });
 
     it('fails closed until a LeadFlow unsubscribe has reached Resend', async () => {
@@ -440,14 +661,92 @@ describe('Email broadcasts (Resend Marketing)', () => {
       ).rejects.toThrow(/never deleted/);
     });
 
-    it('once handed to Resend it cannot be paused or cancelled from LeadFlow', async () => {
+    it('once handed to Resend it cannot be paused; a SENT broadcast cannot be cancelled or recalled', async () => {
       const { id } = await confirmedCampaign(1);
-      await run(id);
-      for (const verb of ['pause', 'cancel']) {
-        const res = await ctx.http().post(`/api/v1/email/campaigns/${id}/${verb}`).set(owner());
-        expect(res.status).toBe(409);
-        expect(res.body.error.message).toContain('cannot be recalled');
-      }
+      const c = await run(id);
+      const paused = await ctx.http().post(`/api/v1/email/campaigns/${id}/pause`).set(owner());
+      expect(paused.status).toBe(409);
+      expect(paused.body.error.message).toContain('cannot be recalled');
+      resend.broadcasts.get(c.providerBroadcastId!)!.status = 'sent';
+      const cancelled = await ctx.http().post(`/api/v1/email/campaigns/${id}/cancel`).set(owner());
+      expect(cancelled.status).toBe(409);
+      expect(cancelled.body.error.message).toContain('cannot be recalled');
+      expect(resend.log.some((l) => l.path === `/broadcasts/${c.providerBroadcastId}/cancel`)).toBe(
+        false,
+      );
+      expect((await campaign(id))!).toMatchObject({
+        status: 'SENDING',
+        broadcastState: 'HANDED_OFF',
+      });
+    });
+
+    it('cancelling a QUEUED broadcast uses Resend’s cancel API; recipients stay UNCERTAIN, and a later "sent" report still wins', async () => {
+      resend.deliverOnSend = false; // queued at Resend, not yet delivered
+      const { id, emails, leadIds } = await confirmedCampaign(2);
+      const c = await run(id);
+      expect(c.broadcastState).toBe('HANDED_OFF');
+      expect(resend.broadcasts.get(c.providerBroadcastId!)!.status).toBe('queued');
+      const res = await ctx.http().post(`/api/v1/email/campaigns/${id}/cancel`).set(owner());
+      expect(res.status).toBe(200);
+      expect(
+        resend.log.filter(
+          (l) => l.method === 'POST' && l.path === `/broadcasts/${c.providerBroadcastId}/cancel`,
+        ),
+      ).toHaveLength(1);
+      expect(resend.broadcasts.get(c.providerBroadcastId!)!.status).toBe('canceled');
+      expect((await campaign(id))!).toMatchObject({
+        status: 'CANCELLED',
+        broadcastState: 'CANCELLED_AT_PROVIDER',
+      });
+      const rows = await recipients(id);
+      expect(rows.every((r) => r.status === 'UNCERTAIN')).toBe(true);
+      expect(rows[0]!.lastResponse).toContain('cannot be recalled');
+      const audit = await asSystem(() =>
+        prisma().auditLog.findFirst({
+          where: { entityId: id, action: 'email.campaign.cancelled' },
+        }),
+      );
+      expect(audit?.after).toMatchObject({
+        atProvider: true,
+        providerStatusBefore: 'queued',
+        providerStatusAfter: 'canceled',
+        recipientsClosed: 2,
+      });
+      // Resend had already sent one before the cancel took effect: its report is the truth.
+      const sent = await webhook({
+        type: 'email.sent',
+        created_at: new Date().toISOString(),
+        data: {
+          broadcast_id: c.providerBroadcastId,
+          email_id: randomUUID(),
+          message_id: `<${randomUUID()}@news.leadflow-test.example>`,
+          to: [emails[0]],
+        },
+      });
+      expect(sent.status).toBe(200);
+      const after = await recipients(id);
+      expect(after.find((r) => r.email === emails[0])!.status).toBe('ACCEPTED');
+      expect(after.find((r) => r.email === emails[1])!.status).toBe('UNCERTAIN');
+      const history = await asSystem(() =>
+        prisma().leadActivity.count({ where: { leadId: leadIds[0]!, activityType: 'EMAIL_SENT' } }),
+      );
+      expect(history).toBe(1);
+    });
+
+    it('a cancel Resend refuses changes nothing in LeadFlow', async () => {
+      resend.deliverOnSend = false;
+      const { id } = await confirmedCampaign(1);
+      const c = await run(id);
+      resend.fault('POST', /^\/broadcasts\/[^/]+\/cancel$/, 500);
+      const res = await ctx.http().post(`/api/v1/email/campaigns/${id}/cancel`).set(owner());
+      expect(res.status).toBe(409);
+      expect(res.body.error.message).toContain('did not cancel');
+      expect(resend.broadcasts.get(c.providerBroadcastId!)!.status).toBe('queued');
+      expect((await campaign(id))!).toMatchObject({
+        status: 'SENDING',
+        broadcastState: 'HANDED_OFF',
+      });
+      expect((await recipients(id)).every((r) => r.status === 'SENDING')).toBe(true);
     });
 
     it('refuses per-recipient fields a broadcast cannot fill, and attachments', async () => {
@@ -614,16 +913,12 @@ describe('Email broadcasts (Resend Marketing)', () => {
         smtpSecurity: 'SSL_TLS',
         password: 'B-password-123',
       });
-      const bView = await ctx
-        .http()
-        .put('/api/v1/email/mailbox/provider')
-        .set(bOwner)
-        .send({
-          provider: 'RESEND',
-          fromAddress: FROM,
-          apiKey: OTHER_ORG_KEY,
-          webhookSecret: bSecret,
-        });
+      const bView = await ctx.http().put('/api/v1/email/mailbox/provider').set(bOwner).send({
+        provider: 'RESEND',
+        fromAddress: FROM,
+        apiKey: OTHER_ORG_KEY,
+        webhookSecret: bSecret,
+      });
       const bMailbox = bView.body.data.resend.webhookUrl.split('/').pop();
 
       // A correctly signed B event naming A's broadcast and A's recipient.

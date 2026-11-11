@@ -49,6 +49,8 @@ export interface ConnectionDeps {
   /** Tests only: a fake Resend API and fake DNS answers. */
   fetchImpl?: FetchLike;
   dns?: DnsLookups;
+  /** Tests only: spacing between Resend calls (production: 110 ms, under 10/second). */
+  resendMinIntervalMs?: number;
   /** Tests only: the fake servers listen on ephemeral ports, not 465/993. */
   testPorts?: { smtp?: number; imap?: number };
   transportFactory?: TransportFactory;

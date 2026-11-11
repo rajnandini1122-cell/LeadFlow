@@ -66,9 +66,110 @@ export class BroadcastRepository {
   ): Promise<boolean> {
     const result = await this.prisma.client.emailCampaign.updateMany({
       where: { id, status: 'SENDING', broadcastState: from },
-      data: { ...data, broadcastState: to, broadcastStateAt: new Date(), broadcastError: null },
+      data: {
+        ...data,
+        broadcastState: to,
+        broadcastStateAt: new Date(),
+        broadcastError: null,
+        broadcastRetrySince: null,
+      },
     });
     return result.count === 1;
+  }
+
+  /**
+   * A step could not complete. The first failure starts the clock; the caller
+   * hands the campaign to a person once it has run for RETRY_LIMIT_MS.
+   */
+  async recordWaiting(id: string, message: string, at: Date): Promise<Date> {
+    await this.prisma.client.emailCampaign.updateMany({
+      where: { id, broadcastRetrySince: null },
+      data: { broadcastRetrySince: at },
+    });
+    await this.recordError(id, message);
+    const row = await this.prisma.client.emailCampaign.findFirst({
+      where: { id },
+      select: { broadcastRetrySince: true },
+    });
+    return row?.broadcastRetrySince ?? at;
+  }
+
+  /** Pauses the campaign in NEEDS_REVIEW: only a person's decision moves it on. */
+  async needsReview(id: string, reason: string): Promise<boolean> {
+    const result = await this.prisma.client.emailCampaign.updateMany({
+      where: { id, status: 'SENDING' },
+      data: {
+        status: 'PAUSED',
+        pausedAt: new Date(),
+        pauseReason: reason.slice(0, 300),
+        broadcastError: reason.slice(0, 500),
+        broadcastState: 'NEEDS_REVIEW',
+        broadcastStateAt: new Date(),
+        broadcastRetrySince: null,
+      },
+    });
+    return result.count === 1;
+  }
+
+  /** Leaves NEEDS_REVIEW (a person decided) for the given state; SENDING again. */
+  async leaveReview(
+    id: string,
+    to: BroadcastState,
+    data: Prisma.EmailCampaignUncheckedUpdateManyInput = {},
+  ): Promise<boolean> {
+    const result = await this.prisma.client.emailCampaign.updateMany({
+      where: { id, status: 'PAUSED', broadcastState: 'NEEDS_REVIEW' },
+      data: {
+        ...data,
+        status: 'SENDING',
+        pausedAt: null,
+        pauseReason: null,
+        broadcastState: to,
+        broadcastStateAt: new Date(),
+        broadcastError: null,
+        broadcastRetrySince: null,
+      },
+    });
+    return result.count === 1;
+  }
+
+  /**
+   * The campaign ends in LeadFlow (cancelled or abandoned). Recipients still
+   * open become UNCERTAIN when Resend may have sent to them, else CANCELLED.
+   */
+  async endBroadcast(
+    id: string,
+    fromStatus: ('SENDING' | 'PAUSED')[],
+    broadcastState: BroadcastState,
+    maybeSent: boolean,
+    note: string,
+  ): Promise<number | null> {
+    return this.prisma.client.$transaction(async (tx) => {
+      const moved = await tx.emailCampaign.updateMany({
+        where: { id, status: { in: fromStatus } },
+        data: {
+          status: 'CANCELLED',
+          cancelledAt: new Date(),
+          broadcastState,
+          broadcastStateAt: new Date(),
+          broadcastError: note.slice(0, 500),
+          broadcastRetrySince: null,
+        },
+      });
+      if (moved.count !== 1) return null;
+      const closed = await tx.emailCampaignRecipient.updateMany({
+        where: { campaignId: id, status: { in: ['QUEUED', 'SENDING'] } },
+        data: maybeSent
+          ? {
+              status: 'UNCERTAIN',
+              lastResponse: note.slice(0, 500),
+              lockedBy: null,
+              lockedUntil: null,
+            }
+          : { status: 'CANCELLED', lockedBy: null, lockedUntil: null },
+      });
+      return closed.count;
+    });
   }
 
   async recordError(id: string, message: string): Promise<void> {
@@ -104,6 +205,16 @@ export class BroadcastRepository {
       select: { id: true, email: true, displayName: true, mergeData: true, leadId: true },
       orderBy: { createdAt: 'asc' },
     });
+  }
+
+  /** Every address in this campaign: the most LeadFlow could ever have put in its segment. */
+  async campaignEmails(campaignId: string): Promise<string[]> {
+    const rows = await this.prisma.client.emailCampaignRecipient.findMany({
+      where: { campaignId },
+      select: { email: true },
+      orderBy: { createdAt: 'asc' },
+    });
+    return rows.map((r) => r.email);
   }
 
   async skip(ids: string[], reason: string): Promise<void> {

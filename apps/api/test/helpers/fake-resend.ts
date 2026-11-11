@@ -51,6 +51,14 @@ export interface FakeResend {
   resubscribeAttempts: string[];
   fault: (method: string, pathPattern: RegExp, fault: Fault, times?: number) => void;
   removeFromSegmentSupported: boolean;
+  /**
+   * Eventual consistency: the next N per-contact segment reads answer as if the
+   * contact were in no segment (a membership change not yet visible).
+   */
+  staleMembershipReads: number;
+  /** False: a send queues the broadcast but delivers nothing yet (so it can be cancelled). */
+  deliverOnSend: boolean;
+  clearFaults: () => void;
   reset: () => void;
 }
 
@@ -72,7 +80,12 @@ export function createFakeResend(options: {
     broadcastDeliveries: [],
     resubscribeAttempts: [],
     removeFromSegmentSupported: true,
+    staleMembershipReads: 0,
+    deliverOnSend: true,
     fault: (method, pattern, fault, times = 1) => faults.push({ method, pattern, fault, times }),
+    clearFaults: () => {
+      faults.length = 0;
+    },
     reset: () => {
       state.contacts.clear();
       state.segments.clear();
@@ -82,6 +95,8 @@ export function createFakeResend(options: {
       state.broadcastDeliveries.length = 0;
       state.resubscribeAttempts.length = 0;
       state.removeFromSegmentSupported = true;
+      state.staleMembershipReads = 0;
+      state.deliverOnSend = true;
       faults.length = 0;
       idempotency.clear();
     },
@@ -202,6 +217,28 @@ export function createFakeResend(options: {
           })),
         });
       }
+      const contactSegments = /^\/contacts\/([^/]+)\/segments$/.exec(path);
+      if (contactSegments && method === 'GET') {
+        const contact = state.contacts.get(decodeURIComponent(contactSegments[1]!).toLowerCase());
+        if (!contact) return json(404, { name: 'not_found', message: 'Contact not found' });
+        let ids = [...contact.segments];
+        if (state.staleMembershipReads > 0) {
+          state.staleMembershipReads--;
+          ids = [];
+        }
+        const limit = Number(u.searchParams.get('limit') ?? 20);
+        const after = u.searchParams.get('after');
+        if (after) ids = ids.slice(ids.indexOf(after) + 1);
+        return respond(200, {
+          object: 'list',
+          has_more: ids.length > limit,
+          data: ids.slice(0, limit).map((id) => ({
+            id,
+            name: state.segments.get(id)?.name ?? '',
+            created_at: new Date(0).toISOString(),
+          })),
+        });
+      }
       const segmentMembership = /^\/contacts\/([^/]+)\/segments\/([^/]+)$/.exec(path);
       if (segmentMembership) {
         const contact = state.contacts.get(decodeURIComponent(segmentMembership[1]!).toLowerCase());
@@ -216,7 +253,12 @@ export function createFakeResend(options: {
           if (!state.removeFromSegmentSupported)
             return json(405, { name: 'method_not_allowed', message: 'Not supported' });
           contact.segments.delete(segmentId);
-          return respond(200, { id: segmentId });
+          return respond(200, {
+            object: 'contact_segment',
+            id: segmentId,
+            audienceId: segmentId,
+            deleted: true,
+          });
         }
       }
 
@@ -241,18 +283,29 @@ export function createFakeResend(options: {
         });
         return respond(200, { id });
       }
-      const broadcastMatch = /^\/broadcasts\/([^/]+)(\/send)?$/.exec(path);
+      const broadcastMatch = /^\/broadcasts\/([^/]+)(\/send|\/cancel)?$/.exec(path);
       if (broadcastMatch) {
         const broadcast = state.broadcasts.get(decodeURIComponent(broadcastMatch[1]!));
         if (!broadcast) return json(404, { name: 'not_found', message: 'Broadcast not found' });
         if (method === 'GET' && !broadcastMatch[2])
           return respond(200, { object: 'broadcast', id: broadcast.id, status: broadcast.status });
+        if (method === 'POST' && broadcastMatch[2] === '/cancel') {
+          // Documented: queued → canceled, scheduled → draft; anything else is refused.
+          if (broadcast.status === 'queued') broadcast.status = 'canceled';
+          else if (broadcast.status === 'scheduled') broadcast.status = 'draft';
+          else
+            return json(422, {
+              name: 'validation_error',
+              message: 'Only queued or scheduled broadcasts can be canceled',
+            });
+          return respond(200, { object: 'broadcast', id: broadcast.id });
+        }
         if (method === 'POST' && broadcastMatch[2]) {
           // Only a draft can be sent: a second send of the same broadcast is refused.
           if (broadcast.status !== 'draft')
             return json(422, { name: 'validation_error', message: 'Broadcast already sent' });
           broadcast.status = 'queued';
-          for (const contact of state.contacts.values()) {
+          for (const contact of state.deliverOnSend ? state.contacts.values() : []) {
             if (contact.segments.has(broadcast.segmentId) && !contact.unsubscribed) {
               state.broadcastDeliveries.push({ broadcastId: broadcast.id, email: contact.email });
             }

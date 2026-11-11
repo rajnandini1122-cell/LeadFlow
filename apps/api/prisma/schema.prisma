@@ -3696,6 +3696,8 @@ model EmailCampaign {
   providerSegmentId        String?   @map("provider_segment_id") @db.VarChar(100)
   providerBroadcastId      String?   @unique @map("provider_broadcast_id") @db.VarChar(100)
   broadcastSendRequestedAt DateTime? @map("broadcast_send_requested_at") @db.Timestamptz(6)
+  /// When the current step first failed to complete; a step stuck for 15 minutes needs a person.
+  broadcastRetrySince      DateTime? @map("broadcast_retry_since") @db.Timestamptz(6)
   /// Why sending stopped, when LeadFlow stopped it (the mailbox refused sign-in, the subscription ended).
   pauseReason              String?   @map("pause_reason") @db.VarChar(300)
   completedAt              DateTime? @map("completed_at") @db.Timestamptz(6)

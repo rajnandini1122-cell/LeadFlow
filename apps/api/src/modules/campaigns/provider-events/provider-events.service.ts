@@ -204,7 +204,8 @@ export class ProviderEventsService implements OnApplicationBootstrap, OnModuleDe
           await this.repository.adoptProviderMessageId(recipient.id, messageId);
         }
         // A broadcast recipient becomes ACCEPTED here: until now only the broadcast was.
-        if (recipient.status === 'SENDING') {
+        // UNCERTAIN too: after a cancel at Resend, a report that it was sent is the truth.
+        if (recipient.status === 'SENDING' || recipient.status === 'UNCERTAIN') {
           await this.repository.updateRecipient(recipient.id, {
             status: 'ACCEPTED',
             acceptedAt: now,
