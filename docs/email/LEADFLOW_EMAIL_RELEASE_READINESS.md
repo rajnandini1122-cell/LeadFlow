@@ -30,7 +30,7 @@ real mailbox.
 | Delivery | One message per recipient, own Message-ID, one-address envelope, List-Unsubscribe headers (e2e, real SMTP). |
 | Idempotency | Double-click confirm creates one set of recipients; second key refused; stale audience count refused (e2e). |
 | Failures | 4xx retried with backoff; 5xx permanent with bounce suppression; lost answer during send = UNCERTAIN, never resent; expired lease recovered as UNCERTAIN (e2e). A nodemailer quirk that reported an in-flight timeout as a connect error was found by these tests and fixed by staging the conversation. |
-| Concurrency | Two workers claiming simultaneously never share a recipient (`FOR UPDATE SKIP LOCKED`, e2e). |
+| Concurrency | Two workers claiming simultaneously never share a recipient, and no claim exceeds its limit (`FOR UPDATE SKIP LOCKED` in a materialized CTE, e2e on real PostgreSQL). The earlier `UPDATE … WHERE id IN (SELECT … LIMIT n FOR UPDATE)` form claimed more than n rows on real PostgreSQL — caught in CI, fixed in #34. |
 | Limits | Hourly/daily mailbox limits enforced (e2e). |
 | Lead history | Every email: EMAIL_SENT (accepted, with server response) or EMAIL_FAILED (rejected/bounced/unknown); replies: EMAIL_REPLY_RECEIVED with text snippet (e2e). |
 | Replies | Matched only by our Message-IDs; HTML never stored; restart-safe, no duplicates; UIDVALIDITY change handled; nothing attached for unrelated mail (e2e). |
