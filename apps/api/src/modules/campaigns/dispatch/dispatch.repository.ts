@@ -165,6 +165,12 @@ export class DispatchRepository {
    * Atomically takes up to `limit` due rows of this organization: QUEUED →
    * SENDING with a lease, attempt counter incremented, in ONE statement. Rows
    * another worker holds are skipped, never waited on.
+   *
+   * The rows are picked in a CTE and the update joins to it. The tempting form,
+   * `UPDATE … WHERE id IN (SELECT … LIMIT n FOR UPDATE SKIP LOCKED)`, lets
+   * PostgreSQL re-run the subquery while updating and claim MORE than n rows —
+   * which on a real database (not PGlite) sent past the hourly limit in the e2e
+   * suite. A data-modifying statement's CTE is evaluated exactly once.
    */
   async claim(limit: number, worker: string, leaseUntil: Date): Promise<ClaimedRecipient[]> {
     const organizationId = this.tenantContext.requireOrganizationId();
@@ -181,10 +187,7 @@ export class DispatchRepository {
         attempts: number;
       }[]
     >`
-      UPDATE email_campaign_recipients AS r
-      SET status = 'SENDING', locked_by = ${worker}, locked_until = ${leaseUntil},
-          attempts = r.attempts + 1, updated_at = now()
-      WHERE r.id IN (
+      WITH picked AS MATERIALIZED (
         SELECT q.id
         FROM email_campaign_recipients AS q
         JOIN email_campaigns AS c ON c.id = q.campaign_id AND c.organization_id = q.organization_id
@@ -196,7 +199,12 @@ export class DispatchRepository {
         LIMIT ${limit}
         FOR UPDATE OF q SKIP LOCKED
       )
-      AND r.organization_id = ${organizationId}::uuid
+      UPDATE email_campaign_recipients AS r
+      SET status = 'SENDING', locked_by = ${worker}, locked_until = ${leaseUntil},
+          attempts = r.attempts + 1, updated_at = now()
+      FROM picked
+      WHERE r.id = picked.id
+        AND r.organization_id = ${organizationId}::uuid
       RETURNING r.id, r.campaign_id, r.lead_id, r.email, r.display_name, r.merge_data, r.message_id, r.attempts`;
     const claimed = rows.map((row) => ({
       id: row.id,
