@@ -205,6 +205,10 @@ export interface EmailReplyView {
 
 export interface MarketingEligibilityView {
   email: string;
+  name: string | null;
+  company: string | null;
+  /** Where LeadFlow knows the address from. */
+  sources: ('LEAD' | 'CONTACT')[];
   status: 'GRANTED' | 'WITHDRAWN' | 'UNKNOWN';
   basis: MarketingConsentBasis | null;
   source: string | null;
