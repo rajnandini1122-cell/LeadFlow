@@ -5,6 +5,9 @@
 
 export type MailSecurity = 'SSL_TLS' | 'STARTTLS';
 
+/** How campaign mail is sent. Replies are always read over IMAP. */
+export type EmailSendingProvider = 'SMTP' | 'RESEND';
+
 /** The mailbox as the settings screen sees it. There is no password field, by design. */
 export interface MailboxView {
   configured: boolean;
@@ -25,6 +28,19 @@ export interface MailboxView {
   smtp: { checkedAt: string | null; okAt: string | null; error: string | null };
   imap: { checkedAt: string | null; okAt: string | null; error: string | null };
   sync: { at: string | null; error: string | null; count: number | null };
+  sendingProvider: EmailSendingProvider;
+  /** Campaign From address (a verified sending domain); replies go to emailAddress. */
+  fromAddress: string | null;
+  resend: {
+    apiKeySet: boolean;
+    apiKeyHint: string | null;
+    webhookSecretSet: boolean;
+    /** Where Resend must POST email events. Not a secret: events are verified by signature. */
+    webhookUrl: string | null;
+    domainVerifiedAt: string | null;
+    lastWebhookAt: string | null;
+  };
+  provider: { checkedAt: string | null; okAt: string | null; error: string | null };
   /** Platform switches, so the screen can say why nothing is being sent. */
   platform: { sendingEnabled: boolean; dispatcherEnabled: boolean };
 }

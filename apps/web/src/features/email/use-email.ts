@@ -89,9 +89,22 @@ export function useSaveMailbox() {
 export function useTestMailbox() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (kind: 'smtp' | 'imap') =>
+    mutationFn: (kind: 'smtp' | 'imap' | 'provider') =>
       apiPost<MailConnectionTestResult>(`/email/mailbox/test/${kind}`),
     onSettled: () => void client.invalidateQueries({ queryKey: emailKeys.mailbox }),
+  });
+}
+
+export function useSaveProvider() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (input: {
+      provider: 'SMTP' | 'RESEND';
+      fromAddress?: string;
+      apiKey?: string;
+      webhookSecret?: string;
+    }) => apiPut<MailboxView>('/email/mailbox/provider', input),
+    onSuccess: (view) => client.setQueryData(emailKeys.mailbox, view),
   });
 }
 

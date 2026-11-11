@@ -33,6 +33,17 @@ const mailbox = (over: Partial<MailboxView> = {}): MailboxView => ({
   smtp: { checkedAt: null, okAt: null, error: null },
   imap: { checkedAt: null, okAt: null, error: null },
   sync: { at: null, error: null, count: null },
+  sendingProvider: 'SMTP',
+  fromAddress: 'sales@cravionventures.com',
+  resend: {
+    apiKeySet: false,
+    apiKeyHint: null,
+    webhookSecretSet: false,
+    webhookUrl: null,
+    domainVerifiedAt: null,
+    lastWebhookAt: null,
+  },
+  provider: { checkedAt: null, okAt: null, error: null },
   platform: { sendingEnabled: false, dispatcherEnabled: false },
   ...over,
 });

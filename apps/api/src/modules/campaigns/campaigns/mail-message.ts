@@ -18,7 +18,10 @@ export interface CampaignMessageInput {
     text: string;
   };
   organizationName: string;
+  /** Where replies go: the mailbox LeadFlow reads over IMAP. */
   mailboxAddress: string;
+  /** The From address, when campaigns send from a verified sending domain. Defaults to the mailbox. */
+  fromAddress?: string | null;
   recipient: {
     email: string;
     displayName: string | null;
@@ -75,12 +78,15 @@ export function buildCampaignMessage(input: CampaignMessageInput): {
   }
 
   const options: SendMailOptions = {
-    from: { name: displayName(input.organizationName), address: input.mailboxAddress },
+    from: {
+      name: displayName(input.organizationName),
+      address: input.fromAddress ?? input.mailboxAddress,
+    },
     to: { name: displayName(input.recipient.displayName), address: input.recipient.email },
     // Replies come back to the mailbox LeadFlow reads.
     replyTo: input.mailboxAddress,
     // The envelope is stated, never derived from headers: exactly one recipient.
-    envelope: { from: input.mailboxAddress, to: [input.recipient.email] },
+    envelope: { from: input.fromAddress ?? input.mailboxAddress, to: [input.recipient.email] },
     subject: rendered.subject,
     html: rendered.html,
     text: rendered.text,

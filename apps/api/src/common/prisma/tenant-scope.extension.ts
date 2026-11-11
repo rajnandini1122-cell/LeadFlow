@@ -167,6 +167,8 @@ export const TENANT_SCOPED_MODELS: Record<string, string> = {
   EmailCampaignRecipient: 'organizationId',
   EmailDeliveryAttempt: 'organizationId',
   EmailInboundMessage: 'organizationId',
+  EmailProviderEvent: 'organizationId',
+  EmailProviderContact: 'organizationId',
   // Plan is deliberately ABSENT: it is a global catalogue offered to every
   // tenant, and the public pricing page reads it with no tenant context at all.
   //

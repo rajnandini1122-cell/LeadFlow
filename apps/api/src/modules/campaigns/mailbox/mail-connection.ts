@@ -4,6 +4,7 @@ import MailComposer from 'nodemailer/lib/mail-composer';
 import SMTPConnection from 'nodemailer/lib/smtp-connection';
 import { ImapFlow, type ImapFlowOptions } from 'imapflow';
 import { resolvePublicMailHost, MailHostError, type Lookup } from './mail-host';
+import type { DnsLookups, FetchLike } from './resend-transport';
 
 /**
  * Connections to an organization's own mail server.
@@ -45,6 +46,9 @@ export interface ConnectionDeps {
    * own tests (mail-host.spec.ts).
    */
   resolveHost?: (host: string) => Promise<string>;
+  /** Tests only: a fake Resend API and fake DNS answers. */
+  fetchImpl?: FetchLike;
+  dns?: DnsLookups;
   /** Tests only: the fake servers listen on ephemeral ports, not 465/993. */
   testPorts?: { smtp?: number; imap?: number };
   transportFactory?: TransportFactory;

@@ -22,11 +22,21 @@ import {
 } from '../../../common/audit/mutation-actor';
 import { parseEncryptionKey } from '../../../common/crypto/secret-box';
 import type { TenantPrincipal } from '../../../common/tenancy/tenant-context.service';
-import type { EmailCampaign, EmailRecipientStatus } from '../../../generated/prisma/client';
+import type {
+  EmailCampaign,
+  EmailMailbox,
+  EmailRecipientStatus,
+} from '../../../generated/prisma/client';
 import { ConsentRepository } from '../consent/consent.repository';
 import { deriveUnsubscribeToken, unsubscribeKey } from '../consent/unsubscribe-token';
 import { MailboxService } from '../mailbox/mailbox.service';
-import { composeMessage, sendOnce } from '../mailbox/mail-connection';
+import { composeMessage, sendOnce, type SmtpOutcome } from '../mailbox/mail-connection';
+import { sendViaResend } from '../mailbox/resend-transport';
+import {
+  BROADCAST_MERGE_FIELDS,
+  HANDED_TO_PROVIDER,
+  type BroadcastState,
+} from '../broadcast/broadcast-state';
 import { prepareContent, TemplatesService } from '../templates/templates.service';
 import { TemplatesRepository } from '../templates/templates.repository';
 import type { MergeValues } from '../content/email-content';
@@ -287,8 +297,15 @@ export class CampaignsService {
   ): Promise<{ sentTo: string; accepted: boolean; message: string }> {
     const campaign = await this.require(id);
     const mailbox = await this.mailbox.require();
-    if (!mailbox.lastSmtpOkAt)
-      throw AppException.validation('Test the SMTP connection in Email settings first.');
+    const tested =
+      mailbox.sendingProvider === 'RESEND' ? mailbox.providerOkAt : mailbox.lastSmtpOkAt;
+    if (!tested) {
+      throw AppException.validation(
+        mailbox.sendingProvider === 'RESEND'
+          ? 'Test Resend in Email settings first.'
+          : 'Test the SMTP connection in Email settings first.',
+      );
+    }
     if ((await this.repository.testSendsToday()) >= MAX_TEST_SENDS_PER_DAY) {
       throw AppException.validation(`At most ${MAX_TEST_SENDS_PER_DAY} test emails per day.`);
     }
@@ -300,6 +317,7 @@ export class CampaignsService {
       campaign: { ...campaign, subject: `[TEST] ${campaign.subject}` },
       organizationName,
       mailboxAddress: mailbox.emailAddress,
+      fromAddress: mailbox.fromAddress,
       recipient: {
         email: user.email,
         displayName: user.name,
@@ -315,17 +333,44 @@ export class CampaignsService {
       webBaseUrl: this.config.get('WEB_BASE_URL'),
     });
 
-    const outcome = await sendOnce(
-      this.mailbox.account(mailbox),
-      { from: mailbox.emailAddress, to: [user.email] },
-      await composeMessage(options),
-      this.mailbox.deps,
-    );
+    const resend = mailbox.sendingProvider === 'RESEND';
+    const outcome: SmtpOutcome = resend
+      ? await sendViaResend(
+          this.mailbox.resendApiKey(mailbox),
+          {
+            from: `${organizationName.replace(/[\r\n"<>,;:@\\]/g, ' ').trim() || 'LeadFlow'} <${mailbox.fromAddress ?? mailbox.emailAddress}>`,
+            to: user.email,
+            replyTo: mailbox.emailAddress,
+            subject: String(options.subject),
+            html: String(options.html),
+            text: String(options.text),
+            headers: {},
+            attachments: assets.map((a) => ({
+              filename: a.fileName,
+              content: Buffer.from(a.data).toString('base64'),
+              contentType: a.mimeType,
+            })),
+            tags: [
+              { name: 'campaign_id', value: campaign.id },
+              { name: 'kind', value: 'test' },
+            ],
+            idempotencyKey: `leadflow-test-${randomUUID()}`,
+          },
+          this.mailbox.deps.fetchImpl,
+        )
+      : await sendOnce(
+          this.mailbox.account(mailbox),
+          { from: mailbox.fromAddress ?? mailbox.emailAddress, to: [user.email] },
+          await composeMessage(options),
+          this.mailbox.deps,
+        );
     const accepted = outcome.kind === 'ACCEPTED';
     const message = accepted
-      ? `Accepted by ${mailbox.smtpHost} for ${user.email}. Acceptance is not proof of inbox delivery — check the inbox.`
+      ? `Accepted by ${resend ? 'Resend' : mailbox.smtpHost} for ${user.email}. Acceptance is not proof of inbox delivery — check the inbox.`
       : outcome.kind === 'MAILBOX'
-        ? 'The SMTP server refused the email account. Check the password in Email settings.'
+        ? resend
+          ? 'Resend refused the API key or the sending domain. Check them in Email settings.'
+          : 'The SMTP server refused the email account. Check the password in Email settings.'
         : `The test email was not accepted (${outcome.code ?? 'no reply code'}: ${outcome.response}).`;
     await this.audit.record({
       action: CAMPAIGN_AUDIT.TEST_SENT,
@@ -364,6 +409,15 @@ export class CampaignsService {
     const mailbox = await this.mailbox.require();
     if (!mailbox.enabled)
       throw AppException.validation('Turn the email account on in Email settings before sending.');
+    // How it will be delivered is fixed now, so changing the provider later never
+    // changes a campaign already in flight.
+    const deliveryChannel =
+      mailbox.sendingProvider === 'SMTP'
+        ? 'SMTP'
+        : campaign.purpose === 'PROMOTIONAL'
+          ? 'RESEND_BROADCAST'
+          : 'RESEND_EMAIL';
+    if (deliveryChannel === 'RESEND_BROADCAST') this.requireBroadcastReady(campaign, mailbox);
     await this.templates.requireAssets(campaign.assetIds);
 
     const now = new Date();
@@ -418,6 +472,8 @@ export class CampaignsService {
             selectedCount: audience.selected,
             eligibleCount: audience.eligible.length,
             excluded: audience.excluded,
+            deliveryChannel,
+            broadcastState: deliveryChannel === 'RESEND_BROADCAST' ? 'PENDING' : null,
           },
           tx,
         );
@@ -452,6 +508,7 @@ export class CampaignsService {
   }
 
   async pause(id: string, actor: MutationActor): Promise<EmailCampaignView> {
+    await this.refuseIfHandedToResend(id, 'paused');
     const moved = await this.repository.transition(
       id,
       { in: ['SCHEDULED', 'SENDING'] },
@@ -501,6 +558,7 @@ export class CampaignsService {
 
   /** Stops everything still queued. A message already being handed to the server finishes its one attempt. */
   async cancel(id: string, actor: MutationActor): Promise<EmailCampaignView> {
+    await this.refuseIfHandedToResend(id, 'cancelled');
     let cancelledRecipients = 0;
     await this.repository.inTransaction(async (tx) => {
       const moved = await this.repository.transition(
@@ -527,6 +585,68 @@ export class CampaignsService {
   }
 
   // --- helpers -------------------------------------------------------------------
+
+  /**
+   * A broadcast Resend has been asked to send cannot be recalled from LeadFlow.
+   * (Resend can cancel a queued broadcast, stopping only the emails not yet
+   * delivered; that is done in Resend, and LeadFlow does not pretend otherwise.)
+   */
+  private async refuseIfHandedToResend(id: string, verb: string): Promise<void> {
+    const campaign = await this.require(id);
+    if (
+      campaign.deliveryChannel === 'RESEND_BROADCAST' &&
+      HANDED_TO_PROVIDER.includes(campaign.broadcastState as BroadcastState)
+    ) {
+      throw AppException.conflict(
+        ERROR_CODES.CONFLICT,
+        `This broadcast has already been handed to Resend and cannot be ${verb} from LeadFlow. Emails already sent cannot be recalled; a queued broadcast can be cancelled in Resend.`,
+      );
+    }
+  }
+
+  /** Promotional broadcasts: the safeguards that must all be in place before any audience leaves LeadFlow. */
+  private requireBroadcastReady(campaign: EmailCampaign, mailbox: EmailMailbox): void {
+    if (!this.config.get('EMAIL_RESEND_BROADCASTS_ENABLED')) {
+      throw AppException.validation(
+        'Resend Broadcasts are not enabled on this LeadFlow server yet.',
+      );
+    }
+    if (mailbox.apiKeyAccess !== 'full') {
+      throw AppException.validation(
+        'Broadcasts need a full-access API key for the dedicated Resend marketing account. Test Resend in Email settings.',
+      );
+    }
+    if (!mailbox.domainVerifiedAt) {
+      throw AppException.validation(
+        'Promotional email needs a verified sending domain (DKIM and return path). Test Resend in Email settings.',
+      );
+    }
+    if (!mailbox.encryptedWebhookSecret) {
+      throw AppException.validation(
+        'Promotional email needs the Resend webhook, so unsubscribes, bounces and complaints reach LeadFlow.',
+      );
+    }
+    if (campaign.assetIds.length > 0) {
+      throw AppException.validation(
+        'Broadcasts cannot carry attachments. Link to the catalogue instead.',
+      );
+    }
+    // One message for everyone: only fields Resend can fill per contact.
+    const used = [...`${campaign.html} ${campaign.text}`.matchAll(/\{\{\s*([a-z_]+)\s*\}\}/gi)].map(
+      (m) => m[1]!.toLowerCase(),
+    );
+    const unsupported = [...new Set(used)].filter(
+      (f) => !(f in BROADCAST_MERGE_FIELDS) && f !== 'organization' && f !== 'sender_name',
+    );
+    if (unsupported.length > 0) {
+      throw AppException.validation(
+        `A broadcast can only personalise first name and last name. Remove: ${unsupported.map((f) => `{{${f}}}`).join(', ')}.`,
+      );
+    }
+    if (/\{\{\s*(first_name|last_name|full_name)\s*\}\}/i.test(campaign.subject)) {
+      throw AppException.validation('A broadcast subject cannot be personalised per recipient.');
+    }
+  }
 
   private requireCustomerSending(): void {
     if (!this.config.get('EMAIL_CAMPAIGNS_SENDING_ENABLED')) {
