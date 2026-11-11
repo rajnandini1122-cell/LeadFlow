@@ -292,6 +292,7 @@ model Organization {
   emailInbound          EmailInboundMessage[]
   emailProviderEvents   EmailProviderEvent[]
   emailProviderContacts EmailProviderContact[]
+  emailBroadcastReviews EmailBroadcastReview[]
 
   @@index([status])
   @@map("organizations")
@@ -3698,6 +3699,11 @@ model EmailCampaign {
   broadcastSendRequestedAt DateTime? @map("broadcast_send_requested_at") @db.Timestamptz(6)
   /// When the current step first failed to complete; a step stuck for 15 minutes needs a person.
   broadcastRetrySince      DateTime? @map("broadcast_retry_since") @db.Timestamptz(6)
+  /// The last time LeadFlow read the broadcast's status at Resend, and what it said.
+  broadcastCheckedAt       DateTime? @map("broadcast_checked_at") @db.Timestamptz(6)
+  broadcastProviderStatus  String?   @map("broadcast_provider_status") @db.VarChar(20)
+  /// Bumped on every broadcast state change: a decision made on a stale page is refused.
+  broadcastVersion         Int       @default(0) @map("broadcast_version")
   /// Why sending stopped, when LeadFlow stopped it (the mailbox refused sign-in, the subscription ended).
   pauseReason              String?   @map("pause_reason") @db.VarChar(300)
   completedAt              DateTime? @map("completed_at") @db.Timestamptz(6)
@@ -3715,6 +3721,7 @@ model EmailCampaign {
 
   organization Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   recipients   EmailCampaignRecipient[]
+  reviews      EmailBroadcastReview[]
 
   @@unique([id, organizationId])
   @@unique([organizationId, submitKey])
@@ -3849,6 +3856,33 @@ model EmailProviderEvent {
   @@unique([mailboxId, eventId])
   @@index([organizationId, receivedAt])
   @@map("email_provider_events")
+}
+
+/// One person's decision (or refused attempt) on a broadcast in NEEDS_REVIEW.
+/// Append-only: the database refuses to change or delete a row directly.
+model EmailBroadcastReview {
+  id               String   @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId   String   @map("organization_id") @db.Uuid
+  campaignId       String   @map("campaign_id") @db.Uuid
+  actorUserId      String?  @map("actor_user_id") @db.Uuid
+  action           String   @db.VarChar(10)
+  reason           String   @db.VarChar(500)
+  /// retrying | abandoned | already_handed_off | cancelled_at_provider | refused
+  outcome          String   @db.VarChar(30)
+  refusal          String?  @db.VarChar(500)
+  previousState    String?  @map("previous_state") @db.VarChar(30)
+  previousStatus   String   @map("previous_status") @db.VarChar(20)
+  resultingState   String?  @map("resulting_state") @db.VarChar(30)
+  resultingStatus  String   @map("resulting_status") @db.VarChar(20)
+  providerStatus   String?  @map("provider_status") @db.VarChar(20)
+  recipientsClosed Int      @default(0) @map("recipients_closed")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  campaign     EmailCampaign @relation(fields: [campaignId, organizationId], references: [id, organizationId], onDelete: Cascade)
+
+  @@index([organizationId, campaignId, createdAt])
+  @@map("email_broadcast_reviews")
 }
 
 /// Every address LeadFlow has placed in an organization's Resend account, kept

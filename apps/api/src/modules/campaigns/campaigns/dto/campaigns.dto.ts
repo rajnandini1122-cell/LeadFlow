@@ -167,4 +167,10 @@ export class ResolveBroadcastDto {
   @MinLength(3)
   @MaxLength(500)
   reason!: string;
+
+  /** The broadcast version the person saw (EmailBroadcastView.version); a stale page is refused. */
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  expectedVersion!: number;
 }

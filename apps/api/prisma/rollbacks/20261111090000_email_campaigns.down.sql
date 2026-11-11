@@ -29,12 +29,13 @@ BEGIN
   END IF;
 END $$;
 
-DROP TABLE "email_provider_contacts", "email_provider_events", "email_inbound_messages",
+DROP TABLE "email_broadcast_reviews", "email_provider_contacts", "email_provider_events", "email_inbound_messages",
   "email_delivery_attempts", "email_campaign_recipients", "email_campaigns", "email_assets",
   "email_templates", "email_suppressions", "marketing_consents", "email_mailboxes";
 
 DROP FUNCTION "email_delivery_attempts_guard"();
 DROP FUNCTION "email_provider_contacts_guard"();
+DROP FUNCTION "email_broadcast_reviews_guard"();
 
 DROP TYPE "email_sending_provider", "email_inbound_kind", "email_recipient_status",
   "email_campaign_status", "email_campaign_category", "email_campaign_purpose",

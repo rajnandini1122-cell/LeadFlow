@@ -72,6 +72,7 @@ export class BroadcastRepository {
         broadcastStateAt: new Date(),
         broadcastError: null,
         broadcastRetrySince: null,
+        broadcastVersion: { increment: 1 },
       },
     });
     return result.count === 1;
@@ -106,6 +107,7 @@ export class BroadcastRepository {
         broadcastState: 'NEEDS_REVIEW',
         broadcastStateAt: new Date(),
         broadcastRetrySince: null,
+        broadcastVersion: { increment: 1 },
       },
     });
     return result.count === 1;
@@ -115,10 +117,11 @@ export class BroadcastRepository {
   async leaveReview(
     id: string,
     to: BroadcastState,
+    atVersion: number,
     data: Prisma.EmailCampaignUncheckedUpdateManyInput = {},
   ): Promise<boolean> {
     const result = await this.prisma.client.emailCampaign.updateMany({
-      where: { id, status: 'PAUSED', broadcastState: 'NEEDS_REVIEW' },
+      where: { id, status: 'PAUSED', broadcastState: 'NEEDS_REVIEW', broadcastVersion: atVersion },
       data: {
         ...data,
         status: 'SENDING',
@@ -128,6 +131,7 @@ export class BroadcastRepository {
         broadcastStateAt: new Date(),
         broadcastError: null,
         broadcastRetrySince: null,
+        broadcastVersion: { increment: 1 },
       },
     });
     return result.count === 1;
@@ -143,10 +147,15 @@ export class BroadcastRepository {
     broadcastState: BroadcastState,
     maybeSent: boolean,
     note: string,
+    atVersion?: number,
   ): Promise<number | null> {
     return this.prisma.client.$transaction(async (tx) => {
       const moved = await tx.emailCampaign.updateMany({
-        where: { id, status: { in: fromStatus } },
+        where: {
+          id,
+          status: { in: fromStatus },
+          ...(atVersion === undefined ? {} : { broadcastVersion: atVersion }),
+        },
         data: {
           status: 'CANCELLED',
           cancelledAt: new Date(),
@@ -154,6 +163,7 @@ export class BroadcastRepository {
           broadcastStateAt: new Date(),
           broadcastError: note.slice(0, 500),
           broadcastRetrySince: null,
+          broadcastVersion: { increment: 1 },
         },
       });
       if (moved.count !== 1) return null;
@@ -179,6 +189,46 @@ export class BroadcastRepository {
     });
   }
 
+  /**
+   * One operator at a time: moves the version on only if the page they decided
+   * on is still current and the campaign is still in NEEDS_REVIEW. The caller
+   * then finishes with `atVersion = expected + 1`; anyone else is refused.
+   */
+  async claimReview(id: string, expectedVersion: number): Promise<boolean> {
+    const result = await this.prisma.client.emailCampaign.updateMany({
+      where: {
+        id,
+        status: 'PAUSED',
+        broadcastState: 'NEEDS_REVIEW',
+        broadcastVersion: expectedVersion,
+      },
+      data: { broadcastVersion: { increment: 1 } },
+    });
+    return result.count === 1;
+  }
+
+  /** What Resend said the broadcast's status was, and when LeadFlow asked. */
+  async recordProviderStatus(id: string, status: string, at: Date): Promise<void> {
+    await this.prisma.client.emailCampaign.updateMany({
+      where: { id },
+      data: { broadcastProviderStatus: status.slice(0, 20), broadcastCheckedAt: at },
+    });
+  }
+
+  async recordReview(row: Omit<Prisma.EmailBroadcastReviewUncheckedCreateInput, 'organizationId'>) {
+    await this.prisma.client.emailBroadcastReview.create({
+      data: { ...row, organizationId: this.tenantContext.requireOrganizationId() },
+    });
+  }
+
+  async reviews(campaignId: string, take = 20) {
+    return this.prisma.client.emailBroadcastReview.findMany({
+      where: { campaignId },
+      orderBy: { createdAt: 'desc' },
+      take,
+    });
+  }
+
   async block(id: string, reason: string): Promise<void> {
     await this.prisma.client.emailCampaign.updateMany({
       where: { id, status: 'SENDING' },
@@ -187,6 +237,7 @@ export class BroadcastRepository {
         pausedAt: new Date(),
         pauseReason: reason.slice(0, 300),
         broadcastError: reason.slice(0, 500),
+        broadcastVersion: { increment: 1 },
       },
     });
   }

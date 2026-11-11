@@ -134,6 +134,43 @@ describe('Email broadcasts (Resend Marketing)', () => {
     return (await campaign(id))!;
   };
 
+  /** The campaign as the page sees it (API view, including the broadcast section). */
+  const view = async (id: string, as = owner()) =>
+    (await ctx.http().get(`/api/v1/email/campaigns/${id}`).set(as)).body.data;
+  /** A decision made from the page: sends the version the page was showing unless told otherwise. */
+  const resolve = async (id: string, body: Record<string, unknown>, as = owner()) => {
+    const expectedVersion =
+      'expectedVersion' in body ? body['expectedVersion'] : (await view(id)).broadcast?.version;
+    return ctx
+      .http()
+      .post(`/api/v1/email/campaigns/${id}/broadcast/resolve`)
+      .set(as)
+      .send({ ...body, expectedVersion });
+  };
+  /** A broadcast whose send got no answer and still reads "draft" after the settle period. */
+  const inReview = async (count: number) => {
+    const made = await confirmedCampaign(count);
+    const now = new Date();
+    // Up to the draft, then fail THIS broadcast's send (other suites' campaigns may be in flight).
+    for (let i = 0; i < 8 && (await campaign(made.id))!.broadcastState !== 'DRAFT_CREATED'; i++) {
+      await broadcasts().tick(now);
+    }
+    const draft = (await campaign(made.id))!;
+    expect(draft.broadcastState).toBe('DRAFT_CREATED');
+    resend.fault('POST', new RegExp(`^/broadcasts/${draft.providerBroadcastId}/send$`), 'network');
+    await run(made.id, now);
+    const c = await run(made.id, new Date(now.getTime() + 5 * 60_000));
+    expect(c).toMatchObject({ status: 'PAUSED', broadcastState: 'NEEDS_REVIEW' });
+    return { ...made, campaign: c };
+  };
+  const reviewRows = (campaignId: string) =>
+    asSystem(() =>
+      prisma().emailBroadcastReview.findMany({
+        where: { campaignId },
+        orderBy: { createdAt: 'asc' },
+      }),
+    );
+
   const sends = (broadcastId: string | null) =>
     resend.log.filter((l) => l.method === 'POST' && l.path === `/broadcasts/${broadcastId}/send`)
       .length;
@@ -323,17 +360,12 @@ describe('Email broadcasts (Resend Marketing)', () => {
       // Resume is refused; the decision is explicit, with a reason, and audited.
       const resumed = await ctx.http().post(`/api/v1/email/campaigns/${id}/resume`).set(owner());
       expect(resumed.status).toBe(409);
-      const noReason = await ctx
-        .http()
-        .post(`/api/v1/email/campaigns/${id}/broadcast/resolve`)
-        .set(owner())
-        .send({ action: 'retry' });
+      const noReason = await resolve(id, { action: 'retry' });
       expect(noReason.status).toBe(400);
-      const resolved = await ctx
-        .http()
-        .post(`/api/v1/email/campaigns/${id}/broadcast/resolve`)
-        .set(owner())
-        .send({ action: 'retry', reason: 'Checked Resend: still a draft, nothing sent' });
+      const resolved = await resolve(id, {
+        action: 'retry',
+        reason: 'Checked Resend: still a draft, nothing sent',
+      });
       expect(resolved.status).toBe(200);
       c = (await campaign(id))!;
       expect(c).toMatchObject({ status: 'SENDING', broadcastState: 'DRAFT_CREATED' });
@@ -366,11 +398,7 @@ describe('Email broadcasts (Resend Marketing)', () => {
       expect(c.broadcastState).toBe('NEEDS_REVIEW');
       // Meanwhile the broadcast was sent from Resend's dashboard.
       resend.broadcasts.get(c.providerBroadcastId!)!.status = 'queued';
-      const resolved = await ctx
-        .http()
-        .post(`/api/v1/email/campaigns/${id}/broadcast/resolve`)
-        .set(owner())
-        .send({ action: 'retry', reason: 'Try again' });
+      const resolved = await resolve(id, { action: 'retry', reason: 'Try again' });
       expect(resolved.status).toBe(200);
       c = (await campaign(id))!;
       expect(c).toMatchObject({ status: 'SENDING', broadcastState: 'HANDED_OFF' });
@@ -398,18 +426,13 @@ describe('Email broadcasts (Resend Marketing)', () => {
       expect(c.pauseReason).toContain('Could not read the broadcast status');
 
       // Retry needs a live read; with Resend unreadable it is refused and nothing changes.
-      const retry = await ctx
-        .http()
-        .post(`/api/v1/email/campaigns/${id}/broadcast/resolve`)
-        .set(owner())
-        .send({ action: 'retry', reason: 'Try again' });
+      const retry = await resolve(id, { action: 'retry', reason: 'Try again' });
       expect(retry.status).toBe(409);
       expect((await campaign(id))!.broadcastState).toBe('NEEDS_REVIEW');
-      const abandoned = await ctx
-        .http()
-        .post(`/api/v1/email/campaigns/${id}/broadcast/resolve`)
-        .set(owner())
-        .send({ action: 'abandon', reason: 'Resend unreachable, will check by hand' });
+      const abandoned = await resolve(id, {
+        action: 'abandon',
+        reason: 'Resend unreachable, will check by hand',
+      });
       expect(abandoned.status).toBe(200);
       expect((await campaign(id))!.status).toBe('CANCELLED');
       const rows = await recipients(id);
@@ -766,6 +789,212 @@ describe('Email broadcasts (Resend Marketing)', () => {
       expect(smtp.messages).toHaveLength(0);
       expect(resend.emails).toHaveLength(0);
       expect((await recipients(id)).every((r) => r.attempts === 0)).toBe(true);
+    });
+  });
+
+  describe('NEEDS_REVIEW recovery (campaign page)', () => {
+    it('the campaign view shows the broadcast state, last provider check, failure reason, Resend id and whether anyone may have the email', async () => {
+      const { id, campaign: c } = await inReview(1);
+      const b = (await view(id)).broadcast;
+      expect(b).toMatchObject({
+        state: 'NEEDS_REVIEW',
+        needsReview: true,
+        providerBroadcastId: c.providerBroadcastId,
+        lastProviderStatus: 'draft',
+        exposure: 'MAY_HAVE_BEEN_SENT',
+        reviews: [],
+      });
+      expect(b.error).toContain('will not ask again on its own');
+      expect(b.lastCheckedAt).not.toBeNull();
+      expect(b.sendRequestedAt).not.toBeNull();
+      expect(typeof b.version).toBe('number');
+    });
+
+    it('safe retry: reads the live status, continues from the confirmed draft once, and leaves an immutable record of who, why, before and after', async () => {
+      const { id, campaign: c } = await inReview(1);
+      const res = await resolve(id, {
+        action: 'retry',
+        reason: 'Resend shows a draft; nothing sent',
+      });
+      expect(res.status).toBe(200);
+      expect(res.body.data.broadcast).toMatchObject({ state: 'DRAFT_CREATED', needsReview: false });
+      const [row, ...more] = await reviewRows(id);
+      expect(more).toHaveLength(0);
+      expect(row).toMatchObject({
+        action: 'retry',
+        reason: 'Resend shows a draft; nothing sent',
+        outcome: 'retrying',
+        previousState: 'NEEDS_REVIEW',
+        previousStatus: 'PAUSED',
+        resultingState: 'DRAFT_CREATED',
+        resultingStatus: 'SENDING',
+        providerStatus: 'draft',
+      });
+      expect(row!.actorUserId).not.toBeNull();
+      expect(res.body.data.broadcast.reviews[0]).toMatchObject({
+        outcome: 'retrying',
+        actorUserId: row!.actorUserId,
+      });
+      expect(res.body.data.broadcast.reviews[0].actorName).toBeTruthy();
+      const done = await run(id);
+      expect(done.broadcastState).toBe('HANDED_OFF');
+      expect(sends(c.providerBroadcastId)).toBe(2);
+      expect(
+        resend.broadcastDeliveries.filter((d) => d.broadcastId === c.providerBroadcastId),
+      ).toHaveLength(1);
+    });
+
+    it('unsafe retry is rejected: with the live status unreadable nothing changes, and the refusal is recorded', async () => {
+      const { id, campaign: c } = await inReview(1);
+      resend.fault('GET', /^\/broadcasts\/[^/]+$/, 'network', 1);
+      const res = await resolve(id, { action: 'retry', reason: 'Try again' });
+      expect(res.status).toBe(409);
+      expect(res.body.error.message).toContain('not safe');
+      expect((await campaign(id))!).toMatchObject({
+        status: 'PAUSED',
+        broadcastState: 'NEEDS_REVIEW',
+      });
+      expect(sends(c.providerBroadcastId)).toBe(1);
+      const [row] = await reviewRows(id);
+      expect(row).toMatchObject({
+        action: 'retry',
+        outcome: 'refused',
+        previousState: 'NEEDS_REVIEW',
+        resultingState: 'NEEDS_REVIEW',
+        resultingStatus: 'PAUSED',
+      });
+      expect(row!.refusal).toContain('not safe');
+      const audit = await asSystem(() =>
+        prisma().auditLog.findFirst({
+          where: { entityId: id, action: 'email.campaign.broadcast_resolve_refused' },
+        }),
+      );
+      expect(audit?.actorUserId).toBe(row!.actorUserId);
+    });
+
+    it('abandon: a confirmed draft is never sent; the campaign is cancelled and recipients are cancelled', async () => {
+      const { id, campaign: c } = await inReview(2);
+      const res = await resolve(id, { action: 'abandon', reason: 'Offer withdrawn' });
+      expect(res.status).toBe(200);
+      expect((await campaign(id))!).toMatchObject({ status: 'CANCELLED' });
+      expect((await recipients(id)).every((r) => r.status === 'CANCELLED')).toBe(true);
+      expect(await reviewRows(id)).toMatchObject([
+        {
+          action: 'abandon',
+          outcome: 'abandoned',
+          resultingStatus: 'CANCELLED',
+          recipientsClosed: 2,
+        },
+      ]);
+      await run(id, new Date(Date.now() + 3_600_000));
+      expect(sends(c.providerBroadcastId)).toBe(1);
+      expect(
+        resend.broadcastDeliveries.filter((d) => d.broadcastId === c.providerBroadcastId),
+      ).toHaveLength(0);
+    });
+
+    it('a stale page and a repeated click are refused before anything happens', async () => {
+      const { id } = await inReview(1);
+      const version = (await view(id)).broadcast.version as number;
+      const stale = await resolve(id, {
+        action: 'abandon',
+        reason: 'old page',
+        expectedVersion: version - 1,
+      });
+      expect(stale.status).toBe(409);
+      expect(stale.body.error.message).toContain('changed since the page was loaded');
+      expect((await campaign(id))!.broadcastState).toBe('NEEDS_REVIEW');
+
+      const first = await resolve(id, {
+        action: 'retry',
+        reason: 'go ahead',
+        expectedVersion: version,
+      });
+      const again = await resolve(id, {
+        action: 'retry',
+        reason: 'go ahead',
+        expectedVersion: version,
+      });
+      expect([first.status, again.status]).toEqual([200, 409]);
+      expect((await reviewRows(id)).map((r) => r.outcome)).toEqual([
+        'refused',
+        'retrying',
+        'refused',
+      ]);
+    });
+
+    it('two operators deciding at the same moment: exactly one decision applies, the other is refused', async () => {
+      const { id, campaign: c } = await inReview(1);
+      const version = (await view(id)).broadcast.version as number;
+      const results = await Promise.all([
+        resolve(id, { action: 'retry', reason: 'operator 1', expectedVersion: version }),
+        resolve(id, { action: 'abandon', reason: 'operator 2', expectedVersion: version }),
+      ]);
+      expect(results.map((r) => r.status).sort()).toEqual([200, 409]);
+      const rows = await reviewRows(id);
+      expect(rows.filter((r) => r.outcome !== 'refused')).toHaveLength(1);
+      expect(rows.filter((r) => r.outcome === 'refused')).toHaveLength(1);
+      const winner = rows.find((r) => r.outcome !== 'refused')!;
+      expect((await campaign(id))!.status).toBe(winner.resultingStatus);
+      await run(id);
+      expect(sends(c.providerBroadcastId)).toBeLessThanOrEqual(2);
+      expect(
+        resend.broadcastDeliveries.filter((d) => d.broadcastId === c.providerBroadcastId).length,
+      ).toBeLessThanOrEqual(1);
+    });
+
+    it('only organisation administrators may decide: a sales rep is refused by the server', async () => {
+      const { id } = await inReview(1);
+      const version = (await view(id)).broadcast.version as number;
+      const rep = auth(ctx.orgA.rep.accessToken);
+      const res = await resolve(
+        id,
+        { action: 'abandon', reason: 'rep', expectedVersion: version },
+        rep,
+      );
+      expect(res.status).toBe(403);
+      expect((await campaign(id))!.broadcastState).toBe('NEEDS_REVIEW');
+      expect(await reviewRows(id)).toHaveLength(0);
+    });
+
+    it('another organisation cannot see or decide this broadcast, and cannot read its review history', async () => {
+      const { id } = await inReview(1);
+      const version = (await view(id)).broadcast.version as number;
+      expect((await resolve(id, { action: 'retry', reason: 'mine' })).status).toBe(200);
+      const other = auth(ctx.orgB.owner.accessToken);
+      expect((await ctx.http().get(`/api/v1/email/campaigns/${id}`).set(other)).status).toBe(404);
+      const res = await resolve(
+        id,
+        { action: 'abandon', reason: 'not mine', expectedVersion: version + 1 },
+        other,
+      );
+      expect(res.status).toBe(404);
+      expect((await campaign(id))!.broadcastState).toBe('DRAFT_CREATED');
+      const seenByB = await ctx.app
+        .get(TenantContextService)
+        .runForOrganization(ctx.orgB.id, 'e2e', () =>
+          prisma().emailBroadcastReview.findMany({ where: { campaignId: id } }),
+        );
+      expect(seenByB).toEqual([]);
+      expect(await reviewRows(id)).toHaveLength(1);
+    });
+
+    it('the review record is append-only: the database refuses to change or delete it', async () => {
+      const { id } = await inReview(1);
+      await resolve(id, { action: 'abandon', reason: 'append-only check' });
+      await expect(
+        asSystem(() =>
+          prisma().emailBroadcastReview.updateMany({
+            where: { campaignId: id },
+            data: { reason: 'rewritten' },
+          }),
+        ),
+      ).rejects.toThrow(/append-only/);
+      await expect(
+        asSystem(() => prisma().emailBroadcastReview.deleteMany({ where: { campaignId: id } })),
+      ).rejects.toThrow(/append-only/);
+      // (The row being unchanged afterwards is verified on PostgreSQL 17; the in-process test
+      // server drops its connection after a trigger error, so it is not re-read here.)
     });
   });
 

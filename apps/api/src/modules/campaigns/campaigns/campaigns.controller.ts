@@ -169,7 +169,13 @@ export class CampaignsController {
     @Body() dto: ResolveBroadcastDto,
     @CurrentUser() principal: TenantPrincipal,
   ) {
-    return this.campaigns.resolveBroadcast(id, dto.action, dto.reason, userActor(principal));
+    return this.campaigns.resolveBroadcast(
+      id,
+      dto.action,
+      dto.reason,
+      dto.expectedVersion,
+      userActor(principal),
+    );
   }
 
   @Get(':id/recipients')

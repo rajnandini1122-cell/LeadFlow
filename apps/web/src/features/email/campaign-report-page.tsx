@@ -13,6 +13,7 @@ import {
   SkeletonRows,
 } from '../../components/ui';
 import { STATUS_STYLES } from './campaigns-page';
+import { BroadcastRecoveryPanel } from './broadcast-recovery-panel';
 import {
   CATEGORY_LABELS,
   useCampaign,
@@ -51,6 +52,8 @@ export function CampaignReportPage(): React.JSX.Element {
   const c = live.data;
   const n = c.counts;
   const canSend = can(PERMISSIONS.CAMPAIGN_SEND);
+  // A broadcast waiting for review is decided in the recovery panel, not by resume/cancel.
+  const inReview = c.broadcast?.needsReview === true;
   const run = (verb: 'pause' | 'resume' | 'cancel') => {
     if (
       verb === 'cancel' &&
@@ -111,7 +114,7 @@ export function CampaignReportPage(): React.JSX.Element {
                   Pause
                 </button>
               )}
-              {c.status === 'PAUSED' && (
+              {c.status === 'PAUSED' && !inReview && (
                 <button
                   type="button"
                   onClick={() => run('resume')}
@@ -120,7 +123,7 @@ export function CampaignReportPage(): React.JSX.Element {
                   Resume
                 </button>
               )}
-              {['SCHEDULED', 'SENDING', 'PAUSED'].includes(c.status) && (
+              {['SCHEDULED', 'SENDING', 'PAUSED'].includes(c.status) && !inReview && (
                 <button
                   type="button"
                   onClick={() => run('cancel')}
@@ -162,6 +165,10 @@ export function CampaignReportPage(): React.JSX.Element {
           <span className="rounded bg-amber-50 px-2 py-0.5 text-amber-800">{c.pauseReason}</span>
         )}
       </div>
+
+      {c.broadcast && (
+        <BroadcastRecoveryPanel campaignId={c.id} broadcast={c.broadcast} canDecide={canSend} />
+      )}
 
       <div className="mb-6 grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-6">
         {tiles.map((t) => (

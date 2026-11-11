@@ -450,6 +450,9 @@ ADD COLUMN     "webhook_secret_rotated_at" TIMESTAMPTZ(6);
 ALTER TABLE "email_campaigns" ADD COLUMN     "broadcast_error" VARCHAR(500),
 ADD COLUMN     "broadcast_send_requested_at" TIMESTAMPTZ(6),
 ADD COLUMN     "broadcast_retry_since" TIMESTAMPTZ(6),
+ADD COLUMN     "broadcast_checked_at" TIMESTAMPTZ(6),
+ADD COLUMN     "broadcast_provider_status" VARCHAR(20),
+ADD COLUMN     "broadcast_version" INTEGER NOT NULL DEFAULT 0,
 ADD COLUMN     "broadcast_state" VARCHAR(30),
 ADD COLUMN     "broadcast_state_at" TIMESTAMPTZ(6),
 ADD COLUMN     "delivery_channel" VARCHAR(20),
@@ -550,5 +553,51 @@ END;
 $$;
 CREATE TRIGGER "email_provider_contacts_guard" BEFORE UPDATE OR DELETE ON "email_provider_contacts"
   FOR EACH ROW EXECUTE FUNCTION "email_provider_contacts_guard"();
+
+-- --- NEEDS_REVIEW decisions: an append-only record of every attempt
+CREATE TABLE "email_broadcast_reviews" (
+    "id" UUID NOT NULL DEFAULT uuidv7(),
+    "organization_id" UUID NOT NULL,
+    "campaign_id" UUID NOT NULL,
+    "actor_user_id" UUID,
+    "action" VARCHAR(10) NOT NULL,
+    "reason" VARCHAR(500) NOT NULL,
+    "outcome" VARCHAR(30) NOT NULL,
+    "refusal" VARCHAR(500),
+    "previous_state" VARCHAR(30),
+    "previous_status" VARCHAR(20) NOT NULL,
+    "resulting_state" VARCHAR(30),
+    "resulting_status" VARCHAR(20) NOT NULL,
+    "provider_status" VARCHAR(20),
+    "recipients_closed" INTEGER NOT NULL DEFAULT 0,
+    "created_at" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "email_broadcast_reviews_pkey" PRIMARY KEY ("id"),
+    CONSTRAINT "email_broadcast_reviews_action_check" CHECK ("action" IN ('retry', 'abandon')),
+    CONSTRAINT "email_broadcast_reviews_outcome_check" CHECK ("outcome" IN (
+        'retrying', 'abandoned', 'already_handed_off', 'cancelled_at_provider', 'refused'))
+);
+CREATE INDEX "email_broadcast_reviews_organization_id_campaign_id_created_at_idx"
+    ON "email_broadcast_reviews"("organization_id", "campaign_id", "created_at");
+ALTER TABLE "email_broadcast_reviews" ADD CONSTRAINT "email_broadcast_reviews_organization_id_fkey"
+    FOREIGN KEY ("organization_id") REFERENCES "organizations"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "email_broadcast_reviews" ADD CONSTRAINT "email_broadcast_reviews_campaign_id_organization_id_fkey"
+    FOREIGN KEY ("campaign_id", "organization_id") REFERENCES "email_campaigns"("id", "organization_id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- Rows are never changed, and never deleted directly. Only a cascade from the
+-- organization or campaign being removed (trigger depth > 1) takes them away.
+CREATE FUNCTION "email_broadcast_reviews_guard"() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP = 'UPDATE' THEN
+    RAISE EXCEPTION 'email_broadcast_reviews is append-only; rows cannot be changed';
+  END IF;
+  IF pg_trigger_depth() < 2 THEN
+    RAISE EXCEPTION 'email_broadcast_reviews is append-only; rows are not deleted directly';
+  END IF;
+  RETURN OLD;
+END;
+$$;
+CREATE TRIGGER "email_broadcast_reviews_guard" BEFORE UPDATE OR DELETE ON "email_broadcast_reviews"
+  FOR EACH ROW EXECUTE FUNCTION "email_broadcast_reviews_guard"();
 
 COMMIT;

@@ -298,6 +298,41 @@ export function useCampaignAction() {
   });
 }
 
+/**
+ * The one recovery call for a broadcast in NEEDS_REVIEW. The server reads
+ * Resend's live status and decides what is safe; `expectedVersion` makes a
+ * decision taken on a stale page (or a second click) fail instead of repeat.
+ */
+export function useResolveBroadcast() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      action,
+      reason,
+      expectedVersion,
+    }: {
+      id: string;
+      action: 'retry' | 'abandon';
+      reason: string;
+      expectedVersion: number;
+    }) =>
+      apiPost<EmailCampaignView>(`/email/campaigns/${id}/broadcast/resolve`, {
+        action,
+        reason,
+        expectedVersion,
+      }),
+    onSuccess: (view) => {
+      client.setQueryData(emailKeys.campaign(view.id), view);
+      void client.invalidateQueries({ queryKey: emailKeys.campaigns });
+    },
+    // Refused (stale, raced, Resend unreadable): show the page as it now is.
+    onError: (_error, input) => {
+      void client.invalidateQueries({ queryKey: emailKeys.campaign(input.id) });
+    },
+  });
+}
+
 export function useCampaignRecipients(id: string, status: EmailRecipientStatus | '') {
   return useQuery({
     queryKey: emailKeys.recipients(id, status),

@@ -7,6 +7,9 @@ import {
   type EmailCampaignCounts,
   type EmailCampaignListItem,
   type EmailCampaignRecipientView,
+  type EmailBroadcastExposure,
+  type EmailBroadcastReviewView,
+  type EmailBroadcastView,
   type EmailCampaignView,
   type EmailRecipientFilter,
   type EmailRenderedPreview,
@@ -37,7 +40,12 @@ import {
   HANDED_TO_PROVIDER,
   type BroadcastState,
 } from '../broadcast/broadcast-state';
-import { BroadcastService, type ReviewAction } from '../broadcast/broadcast.service';
+import {
+  BroadcastService,
+  type ReviewAction,
+  type ReviewOutcome,
+} from '../broadcast/broadcast.service';
+import { BroadcastRepository } from '../broadcast/broadcast.repository';
 import { prepareContent, TemplatesService } from '../templates/templates.service';
 import { TemplatesRepository } from '../templates/templates.repository';
 import type { MergeValues } from '../content/email-content';
@@ -56,6 +64,7 @@ export const CAMPAIGN_AUDIT = {
   RESUMED: 'email.campaign.resumed',
   CANCELLED: 'email.campaign.cancelled',
   BROADCAST_RESOLVED: 'email.campaign.broadcast_resolved',
+  BROADCAST_RESOLVE_REFUSED: 'email.campaign.broadcast_resolve_refused',
 } as const;
 
 const MAX_TEST_SENDS_PER_DAY = 20;
@@ -75,6 +84,7 @@ export class CampaignsService {
     private readonly audit: AuditRepository,
     private readonly config: AppConfig,
     private readonly broadcasts: BroadcastService,
+    private readonly broadcastRows: BroadcastRepository,
   ) {}
 
   // --- reading ---------------------------------------------------------------
@@ -615,10 +625,17 @@ export class CampaignsService {
   }
 
   /** A person's decision on a broadcast that LeadFlow would not decide on its own. */
+  /**
+   * The one recovery path for a broadcast in NEEDS_REVIEW (API and campaign
+   * page alike). Every attempt — decided or refused — is written to the
+   * append-only email_broadcast_reviews table and to the audit log, with the
+   * actor, the reason, and the state before and after.
+   */
   async resolveBroadcast(
     id: string,
     action: ReviewAction,
     reason: string,
+    expectedVersion: number,
     actor: MutationActor,
   ): Promise<EmailCampaignView> {
     this.requireCustomerSending();
@@ -626,16 +643,62 @@ export class CampaignsService {
     if (campaign.deliveryChannel !== 'RESEND_BROADCAST') {
       throw AppException.validation('Only a Resend broadcast can be resolved this way.');
     }
-    const result = await this.broadcasts.resolveReview(campaign, action);
-    await this.audit.record({
-      action: CAMPAIGN_AUDIT.BROADCAST_RESOLVED,
-      entityType: 'EmailCampaign',
-      entityId: id,
-      ...auditAttribution(actor),
-      before: { broadcastState: 'NEEDS_REVIEW', broadcastError: campaign.broadcastError },
-      after: { action, reason, ...result },
-    });
+    let result: ReviewOutcome | null = null;
+    let refusal: string | null = null;
+    try {
+      result = await this.broadcasts.resolveReview(campaign, action, expectedVersion);
+    } catch (error) {
+      refusal = error instanceof AppException ? error.message : 'Unexpected error';
+      await this.recordReview(campaign, action, reason, null, refusal, actor);
+      throw error;
+    }
+    await this.recordReview(campaign, action, reason, result, null, actor);
     return this.get(id);
+  }
+
+  private async recordReview(
+    before: EmailCampaign,
+    action: ReviewAction,
+    reason: string,
+    result: ReviewOutcome | null,
+    refusal: string | null,
+    actor: MutationActor,
+  ): Promise<void> {
+    const after = (await this.repository.find(before.id)) ?? before;
+    const attribution = auditAttribution(actor);
+    await this.broadcastRows.recordReview({
+      campaignId: before.id,
+      actorUserId: attribution.actorUserId,
+      action,
+      reason: reason.slice(0, 500),
+      outcome: result?.outcome ?? 'refused',
+      refusal: refusal?.slice(0, 500) ?? null,
+      previousState: before.broadcastState,
+      previousStatus: before.status,
+      resultingState: after.broadcastState,
+      resultingStatus: after.status,
+      providerStatus: result?.providerStatus ?? after.broadcastProviderStatus,
+      recipientsClosed: result?.recipientsClosed ?? 0,
+    });
+    await this.audit.record({
+      action: result ? CAMPAIGN_AUDIT.BROADCAST_RESOLVED : CAMPAIGN_AUDIT.BROADCAST_RESOLVE_REFUSED,
+      entityType: 'EmailCampaign',
+      entityId: before.id,
+      ...attribution,
+      before: {
+        broadcastState: before.broadcastState,
+        status: before.status,
+        broadcastVersion: before.broadcastVersion,
+        broadcastError: before.broadcastError,
+      },
+      after: {
+        action,
+        reason,
+        ...(result ?? { outcome: 'refused', refusal }),
+        broadcastState: after.broadcastState,
+        status: after.status,
+      },
+    });
   }
 
   // --- helpers -------------------------------------------------------------------
@@ -789,6 +852,53 @@ export class CampaignsService {
       createdAt: campaign.createdAt.toISOString(),
       updatedAt: campaign.updatedAt.toISOString(),
       counts,
+      broadcast:
+        campaign.deliveryChannel === 'RESEND_BROADCAST' ? await this.broadcastView(campaign) : null,
+    };
+  }
+
+  private async broadcastView(campaign: EmailCampaign): Promise<EmailBroadcastView> {
+    const rows = await this.broadcastRows.reviews(campaign.id);
+    const names = await this.repository.userNames(
+      rows.map((r) => r.actorUserId).filter((v): v is string => v !== null),
+    );
+    const handed =
+      campaign.broadcastState === 'HANDED_OFF' ||
+      ['queued', 'scheduled', 'sent'].includes(campaign.broadcastProviderStatus ?? '');
+    const exposure: EmailBroadcastExposure = handed
+      ? 'HANDED_TO_RESEND'
+      : campaign.broadcastSendRequestedAt
+        ? 'MAY_HAVE_BEEN_SENT'
+        : 'NOT_SENT';
+    return {
+      state: campaign.broadcastState,
+      stateAt: iso(campaign.broadcastStateAt),
+      version: campaign.broadcastVersion,
+      error: campaign.broadcastError,
+      providerBroadcastId: campaign.providerBroadcastId,
+      sendRequestedAt: iso(campaign.broadcastSendRequestedAt),
+      lastCheckedAt: iso(campaign.broadcastCheckedAt),
+      lastProviderStatus: campaign.broadcastProviderStatus,
+      exposure,
+      needsReview: campaign.broadcastState === 'NEEDS_REVIEW' && campaign.status === 'PAUSED',
+      reviews: rows.map(
+        (r): EmailBroadcastReviewView => ({
+          id: r.id,
+          actorUserId: r.actorUserId,
+          actorName: r.actorUserId ? (names.get(r.actorUserId) ?? null) : null,
+          action: r.action as EmailBroadcastReviewView['action'],
+          reason: r.reason,
+          outcome: r.outcome as EmailBroadcastReviewView['outcome'],
+          refusal: r.refusal,
+          previousState: r.previousState,
+          previousStatus: r.previousStatus as EmailBroadcastReviewView['previousStatus'],
+          resultingState: r.resultingState,
+          resultingStatus: r.resultingStatus as EmailBroadcastReviewView['resultingStatus'],
+          providerStatus: r.providerStatus,
+          recipientsClosed: r.recipientsClosed,
+          createdAt: r.createdAt.toISOString(),
+        }),
+      ),
     };
   }
 }

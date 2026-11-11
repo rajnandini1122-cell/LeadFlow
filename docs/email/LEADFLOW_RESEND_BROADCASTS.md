@@ -83,8 +83,8 @@ any step failing for 15 min ─▶ NEEDS_REVIEW
   is stamped in `broadcast_retry_since`; after **15 minutes** the campaign moves to **NEEDS_REVIEW**
   (paused, reason shown). Any successful step clears the stamp.
 - **NEEDS_REVIEW is left only by a person** — `POST /api/v1/email/campaigns/{id}/broadcast/resolve`
-  `{action: "retry" | "abandon", reason}` (permission `campaign.send`, audited as
-  `email.campaign.broadcast_resolved` with the reason and outcome). Resume is refused. The live status
+  `{action: "retry" | "abandon", reason, expectedVersion}` (permission `campaign.send`: organisation
+  owners and administrators only). Resume and Cancel are refused while in NEEDS_REVIEW. The live status
   is read first and always wins:
   | Live status | `retry` | `abandon` |
   |---|---|---|
@@ -93,6 +93,24 @@ any step failing for 15 min ─▶ NEEDS_REVIEW
   | `draft` | back to DRAFT_CREATED: precheck, then **one** send request | campaign cancelled; recipients CANCELLED |
   | no broadcast yet | back to PENDING (every step is idempotent) | campaign cancelled; recipients CANCELLED |
   | unreadable | **refused (409), nothing changed** | campaign cancelled; recipients **UNCERTAIN** if a send was ever requested |
+- **Recovery panel** (campaign page → _Resend broadcast_): shows the state, the last status check
+  with Resend and what it said, the failure reason, the Resend broadcast id, when a send was requested
+  and whether anyone may already have the email (_not sent_ / _may have been sent_ / _handed to
+  Resend_). Administrators get **Recheck & retry if safe** and **Abandon campaign**; each opens a
+  confirmation listing the actual consequences and requires a reason. The panel only calls the
+  endpoint above — there is no second recovery path.
+- **Concurrency and stale pages:** every broadcast state change bumps `broadcast_version`. A decision
+  carries the version the person saw, and the server first _claims_ the review with a conditional
+  update on (NEEDS_REVIEW, PAUSED, that version). A second operator, a page refreshed by someone
+  else's decision, or a repeated click finds the version moved and gets 409 before Resend is
+  called. The dialog also disables Confirm while a request is in flight and when the 10-second refresh
+  shows a newer version.
+- **Audit trail:** every attempt — decided or refused — writes a row to `email_broadcast_reviews`
+  (actor, time, action, reason, outcome, refusal text, state and status before and after, the
+  Resend status read, recipients closed) and an audit-log entry (`email.campaign.broadcast_resolved`
+  or `…_resolve_refused`). A database trigger refuses UPDATE and any direct DELETE (only a cascade
+  from deleting the organization removes them). Requests stopped by authentication, permission (403)
+  or tenant isolation (404) never reach the service and are not written there.
 - **Precheck, immediately before draft creation and before every send request:**
   1. push every outstanding LeadFlow unsubscribe to Resend (any failure → wait; nothing sent);
   2. re-evaluate each queued recipient against LeadFlow's consent and suppression records;
@@ -180,12 +198,12 @@ Local PostgreSQL 17 (127.0.0.1:55433), database `e2e_prodlike`. Production was n
 | `prisma migrate deploy` (branch)          | Applied `20261111090000_email_campaigns` in 5.7 s; `migrate status`: up to date                      |
 | Existing data                             | Row counts identical in all 55 existing tables                                                       |
 | Existing schema                           | Only change to pre-existing objects: the 4 enum values appended                                      |
-| New tables                                | All 11 email tables empty                                                                            |
+| New tables                                | All 12 email tables empty                                                                            |
 | Eligibility                               | 0 marketing consents; **78 lead emails → 0 eligible**                                                |
 | Drift (`prisma migrate diff` DB → schema) | 30 lines, **identical with and without the migration** (pre-existing production drift; none added)   |
 | Rollback script                           | Applied; `pg_dump --schema-only` **identical to the baseline**; row counts identical                 |
 | Re-apply after rollback                   | Applied again; schema identical to the first application                                             |
-| Rollback with an EMAIL_SENT history row   | Refused: "rollback refused: lead history contains email activity"; all 11 email tables still present |
+| Rollback with an EMAIL_SENT history row   | Refused: "rollback refused: lead history contains email activity"; all 12 email tables still present |
 
 ## Marketing eligibility — nobody is added without a record
 

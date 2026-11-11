@@ -148,6 +148,47 @@ export interface EmailCampaignCounts {
   unsubscribes: number;
 }
 
+/**
+ * Whether anyone may already have the email, as far as LeadFlow can know:
+ * NOT_SENT — no send was ever requested from Resend;
+ * MAY_HAVE_BEEN_SENT — a send was requested and Resend never confirmed it either way;
+ * HANDED_TO_RESEND — Resend reported the broadcast queued, scheduled or sent.
+ */
+export type EmailBroadcastExposure = 'NOT_SENT' | 'MAY_HAVE_BEEN_SENT' | 'HANDED_TO_RESEND';
+
+export interface EmailBroadcastReviewView {
+  id: string;
+  actorUserId: string | null;
+  actorName: string | null;
+  action: 'retry' | 'abandon';
+  reason: string;
+  outcome: 'retrying' | 'abandoned' | 'already_handed_off' | 'cancelled_at_provider' | 'refused';
+  refusal: string | null;
+  previousState: string | null;
+  previousStatus: EmailCampaignStatus;
+  resultingState: string | null;
+  resultingStatus: EmailCampaignStatus;
+  providerStatus: string | null;
+  recipientsClosed: number;
+  createdAt: string;
+}
+
+/** Resend Broadcast details; null for campaigns sent another way. */
+export interface EmailBroadcastView {
+  state: string | null;
+  stateAt: string | null;
+  /** Send this back with a decision: a decision made on an older version is refused. */
+  version: number;
+  error: string | null;
+  providerBroadcastId: string | null;
+  sendRequestedAt: string | null;
+  lastCheckedAt: string | null;
+  lastProviderStatus: string | null;
+  exposure: EmailBroadcastExposure;
+  needsReview: boolean;
+  reviews: EmailBroadcastReviewView[];
+}
+
 export interface EmailCampaignView {
   id: string;
   name: string;
@@ -169,6 +210,7 @@ export interface EmailCampaignView {
   createdAt: string;
   updatedAt: string;
   counts: EmailCampaignCounts;
+  broadcast: EmailBroadcastView | null;
 }
 
 export interface EmailCampaignListItem {

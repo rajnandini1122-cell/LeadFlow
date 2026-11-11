@@ -347,6 +347,7 @@ export class BroadcastService {
         now,
       );
     }
+    await this.repository.recordProviderStatus(campaign.id, status.body.status, now);
     switch (status.body.status) {
       case 'scheduled':
       case 'queued':
@@ -408,18 +409,37 @@ export class BroadcastService {
   // --- a person's decisions -------------------------------------------------------
 
   /**
-   * Resolves a campaign in NEEDS_REVIEW. The live broadcast status is read
-   * first and always wins: a broadcast Resend has queued or sent is recorded as
-   * handed off whatever was asked. `retry` sends only from a confirmed draft,
-   * and then through the normal path (precheck, one send request).
+   * Resolves a campaign in NEEDS_REVIEW — the one recovery path, used by the
+   * API and the campaign page alike.
+   *
+   * 1. Claim: only if the campaign is still in NEEDS_REVIEW at the version the
+   *    person was looking at. A second operator, a stale page or a repeated
+   *    click finds the version moved and is refused before anything happens.
+   * 2. Read the live broadcast status. It always wins: a broadcast Resend has
+   *    queued, scheduled or sent is recorded as handed off, whatever was asked.
+   * 3. `retry` continues only from a confirmed draft (or before any broadcast
+   *    existed), through the normal path: precheck, then one send request.
+   *    With the status unreadable, retry is refused and nothing changes.
    */
-  async resolveReview(campaign: EmailCampaign, action: ReviewAction): Promise<ReviewOutcome> {
+  async resolveReview(
+    campaign: EmailCampaign,
+    action: ReviewAction,
+    expectedVersion: number,
+    now = new Date(),
+  ): Promise<ReviewOutcome> {
     if (campaign.broadcastState !== 'NEEDS_REVIEW' || campaign.status !== 'PAUSED') {
       throw AppException.conflict(
         ERROR_CODES.CONFLICT,
         'This broadcast is not waiting for review.',
       );
     }
+    if (!(await this.repository.claimReview(campaign.id, expectedVersion))) {
+      throw AppException.conflict(
+        ERROR_CODES.CONFLICT,
+        'This broadcast changed since the page was loaded (another person may have acted). Reload it and decide again.',
+      );
+    }
+    const version = expectedVersion + 1;
     const mailbox = await this.repository.mailbox();
     const sendRequested = campaign.broadcastSendRequestedAt !== null;
     let providerStatus: string | null = null;
@@ -430,10 +450,11 @@ export class BroadcastService {
       const status = await this.client(mailbox).getBroadcast(campaign.providerBroadcastId);
       if (status.kind === 'ok') {
         providerStatus = status.body.status;
+        await this.repository.recordProviderStatus(campaign.id, providerStatus, now);
       } else if (action === 'retry') {
         throw AppException.conflict(
           ERROR_CODES.CONFLICT,
-          `Resend's status for this broadcast cannot be read right now (${describe(status)}). Nothing was changed; try again.`,
+          `Resend's status for this broadcast cannot be read right now (${describe(status)}). Retrying is not safe without it; nothing was changed.`,
         );
       }
     }
@@ -443,7 +464,7 @@ export class BroadcastService {
       providerStatus === 'queued' ||
       providerStatus === 'sent'
     ) {
-      if (!(await this.repository.leaveReview(campaign.id, 'HANDED_OFF'))) throw raced();
+      if (!(await this.repository.leaveReview(campaign.id, 'HANDED_OFF', version))) throw raced();
       await this.repository.markHandedOff(campaign.id);
       return { outcome: 'already_handed_off', providerStatus, recipientsClosed: 0 };
     }
@@ -454,6 +475,7 @@ export class BroadcastService {
         'CANCELLED_AT_PROVIDER',
         sendRequested,
         'The broadcast was cancelled in Resend. Emails Resend had already sent cannot be recalled; delivery reports update this row.',
+        version,
       );
       if (closed === null) throw raced();
       return { outcome: 'cancelled_at_provider', providerStatus, recipientsClosed: closed };
@@ -463,7 +485,7 @@ export class BroadcastService {
       // A confirmed draft (or no broadcast yet): back through the normal steps,
       // which re-run the precheck and request the send exactly once.
       const to: BroadcastState = campaign.providerBroadcastId ? 'DRAFT_CREATED' : 'PENDING';
-      if (!(await this.repository.leaveReview(campaign.id, to))) throw raced();
+      if (!(await this.repository.leaveReview(campaign.id, to, version))) throw raced();
       return { outcome: 'retrying', providerStatus, recipientsClosed: 0 };
     }
 
@@ -477,6 +499,7 @@ export class BroadcastService {
       maybeSent
         ? "Abandoned while Resend's status could not be read: this address may have received the email. A delivery report would update this row."
         : 'Abandoned after review; Resend had not sent the broadcast.',
+      version,
     );
     if (closed === null) throw raced();
     return { outcome: 'abandoned', providerStatus, recipientsClosed: closed };
@@ -501,6 +524,7 @@ export class BroadcastService {
       );
     }
     const statusBefore = before.body.status;
+    await this.repository.recordProviderStatus(campaign.id, statusBefore, now);
     if (statusBefore === 'sent') throw alreadySent();
 
     let statusAfter: string = statusBefore;
@@ -515,6 +539,7 @@ export class BroadcastService {
         );
       }
       statusAfter = after.body.status;
+      await this.repository.recordProviderStatus(campaign.id, statusAfter, now);
       if (statusAfter === 'sent') throw alreadySent();
       if (statusAfter !== 'canceled' && statusAfter !== 'draft') {
         throw AppException.conflict(
