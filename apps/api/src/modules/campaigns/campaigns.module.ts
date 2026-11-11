@@ -15,6 +15,8 @@ import { CampaignsRepository } from './campaigns/campaigns.repository';
 import { CampaignsService } from './campaigns/campaigns.service';
 import { DispatchRepository } from './dispatch/dispatch.repository';
 import { EmailDispatcher } from './dispatch/email-dispatcher.service';
+import { InboxRepository } from './inbox/inbox.repository';
+import { InboxSyncService } from './inbox/inbox-sync.service';
 import { TemplatesController } from './templates/templates.controller';
 import { TemplatesRepository } from './templates/templates.repository';
 import { TemplatesService } from './templates/templates.service';
@@ -46,8 +48,10 @@ import { TemplatesService } from './templates/templates.service';
     AudienceRepository,
     DispatchRepository,
     EmailDispatcher,
+    InboxRepository,
+    InboxSyncService,
     AuditRepository,
   ],
-  exports: [MailboxService, ConsentRepository, TemplatesService, EmailDispatcher],
+  exports: [MailboxService, ConsentRepository, TemplatesService, EmailDispatcher, InboxSyncService],
 })
 export class CampaignsModule {}

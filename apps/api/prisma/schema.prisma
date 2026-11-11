@@ -2172,6 +2172,8 @@ enum NotificationType {
   BILLING_EXPIRED
   /// A payment succeeded or failed.
   BILLING_PAYMENT
+  /// A customer replied to a campaign email: follow up.
+  EMAIL_REPLY_RECEIVED
 
   @@map("notification_type")
 }

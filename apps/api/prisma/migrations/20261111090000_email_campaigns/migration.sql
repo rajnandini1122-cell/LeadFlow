@@ -46,6 +46,7 @@ CREATE TYPE "email_inbound_kind" AS ENUM ('REPLY', 'BOUNCE', 'OTHER');
 ALTER TYPE "activity_type" ADD VALUE 'EMAIL_SENT';
 ALTER TYPE "activity_type" ADD VALUE 'EMAIL_FAILED';
 ALTER TYPE "activity_type" ADD VALUE 'EMAIL_REPLY_RECEIVED';
+ALTER TYPE "notification_type" ADD VALUE 'EMAIL_REPLY_RECEIVED';
 
 BEGIN;
 SET LOCAL lock_timeout = '5s';
