@@ -480,6 +480,9 @@ describe('Email campaigns: compose, confirm, deliver', () => {
       tenant.runForOrganization(ctx.orgA.id, 'e2e', () => repo.claim(4, 'worker-1', until)),
       tenant.runForOrganization(ctx.orgA.id, 'e2e', () => repo.claim(4, 'worker-2', until)),
     ]);
+    // Each claim stays within its own limit, however many rows are due.
+    expect(one.length).toBeLessThanOrEqual(4);
+    expect(two.length).toBeLessThanOrEqual(4);
     const ids = [...one, ...two].map((r) => r.id);
     expect(new Set(ids).size).toBe(ids.length);
     expect(ids).toHaveLength(6);
