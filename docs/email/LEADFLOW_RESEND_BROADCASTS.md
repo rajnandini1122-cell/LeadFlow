@@ -21,6 +21,14 @@ mailbox over IMAP (PR #35). Password-reset and other platform emails are untouch
 | `EMAIL_CAMPAIGNS_SENDING_ENABLED` | Customer campaigns may be confirmed and sent at all.                                      |
 | `EMAIL_RESEND_BROADCASTS_ENABLED` | Promotional campaigns may use Resend Broadcasts. Requires the switch above.               |
 
+**Every send path is behind the switches.** The dispatcher (SMTP and single Resend emails) needs
+`EMAIL_DISPATCH_ENABLED` and `EMAIL_CAMPAIGNS_SENDING_ENABLED`; broadcasts also need
+`EMAIL_RESEND_BROADCASTS_ENABLED`. A campaign **test email** (`POST /email/campaigns/:id/test`, one
+copy to the signed-in user) is a real send too: it needs **both** `EMAIL_DISPATCH_ENABLED=true` and
+`EMAIL_CAMPAIGNS_SENDING_ENABLED=true`, checked first, before the campaign, the mailbox or any provider
+is touched. Only the literal value `true` counts; unset or anything else is off. Connection tests in
+Email settings (SMTP sign-in, IMAP sign-in, Resend key and DNS checks) never send a message.
+
 ## Resend API — what this relies on
 
 Checked against Resend's documentation on 2026-11-11 (re-checked for the PR #37 review). "Doc" means
@@ -151,6 +159,31 @@ any step failing for 15 min ─▶ NEEDS_REVIEW
   with eligibility withdrawn and queued mail to that person skipped.
 - LeadFlow never sends `unsubscribed:false` for an existing contact, never re-creates a contact that its
   ledger knows unsubscribed, and ignores `contact.updated` with `unsubscribed:false`.
+
+## Audit retention
+
+Two records are kept of every NEEDS_REVIEW decision, with different lifetimes:
+
+| Record                                                                                                                         | Protected against                           | Removed when                                                                                                                                      |
+| ------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `email_broadcast_reviews` row (full detail)                                                                                    | UPDATE and direct DELETE (database trigger) | its **campaign or organization is deleted** — the foreign keys cascade, and the trigger allows deletes only as part of such a cascade             |
+| `audit_logs` entry (`email.campaign.broadcast_resolved` / `…_resolve_refused`: actor, reason, outcome, state before and after) | —                                           | **never by these deletions**: `audit_logs.organization_id` is `ON DELETE SET NULL`, so the entry survives with its organization reference cleared |
+
+What this means in practice:
+
+- **No LeadFlow code path deletes a campaign or an organization** (there is no delete endpoint or
+  repository call for either). Review rows can only disappear through direct database work.
+- **Organization deletion is blocked once email history exists.** `email_delivery_attempts` and
+  `email_provider_contacts` refuse every DELETE, including cascaded ones, so deleting an organization
+  that has sent campaign email or has a Resend contact ledger fails as a whole — its campaigns and
+  review rows stay.
+- **A campaign with no delivery attempts** (a broadcast campaign) could be removed by direct SQL, and
+  its review rows with it. The audit-log copy is the durable record in that case.
+- `actor_user_id` on review rows has no foreign key: deleting a user does not remove or rewrite rows
+  (the audit log sets its own `actor_user_id` to NULL).
+- Retention therefore depends on database backups for anything older than the latest backup. If
+  review rows must outlive a deliberate campaign deletion, the cascade would have to change to
+  RESTRICT — a deliberate future decision, not done here.
 
 ## Security assessment
 

@@ -18,6 +18,7 @@ import { MailboxService } from '../src/modules/campaigns/mailbox/mailbox.service
 import { BroadcastService } from '../src/modules/campaigns/broadcast/broadcast.service';
 import { EmailDispatcher } from '../src/modules/campaigns/dispatch/email-dispatcher.service';
 import { signSvix } from '../src/modules/campaigns/mailbox/svix-signature';
+import { AppConfig } from '../src/common/config/config.module';
 
 /**
  * Promotional campaigns through Resend Broadcasts, against an in-memory Resend.
@@ -1164,6 +1165,81 @@ describe('Email broadcasts (Resend Marketing)', () => {
       expect(
         (await webhook(sentEvent(c.providerBroadcastId!, emails[0]!), { secret: bSecret })).status,
       ).toBe(401);
+    });
+  });
+
+  describe('test emails through Resend', () => {
+    /** The two email switches as given (undefined = not set), for what the service reads per request. */
+    const withSwitches = async <T>(
+      dispatch: boolean | undefined,
+      sending: boolean | undefined,
+      fn: () => Promise<T>,
+    ): Promise<T> => {
+      const config = ctx.app.get(AppConfig);
+      const real = config.get.bind(config);
+      const spy = jest
+        .spyOn(config, 'get')
+        .mockImplementation(((key: string) =>
+          key === 'EMAIL_DISPATCH_ENABLED'
+            ? dispatch
+            : key === 'EMAIL_CAMPAIGNS_SENDING_ENABLED'
+              ? sending
+              : real(key as never)) as typeof config.get);
+      try {
+        return await fn();
+      } finally {
+        spy.mockRestore();
+      }
+    };
+    const draftCampaign = async () => {
+      const res = await ctx
+        .http()
+        .post('/api/v1/email/campaigns')
+        .set(owner())
+        .send({
+          name: `Test send ${tag()}`,
+          category: 'PROMOTIONAL_OFFER',
+          purpose: 'PROMOTIONAL',
+          subject: 'Our new catalogue',
+          html: '<p>Dear {{first_name}}</p>',
+          filter: { cities: [tag()] },
+        });
+      expect(res.status).toBe(201);
+      return res.body.data.id as string;
+    };
+    const testSend = (id: string) => {
+      ctx.redis.flush(); // the route allows 5 a minute; these tests are about the switches
+      return ctx.http().post(`/api/v1/email/campaigns/${id}/test`).set(owner()).send({});
+    };
+    const resendCalls = () => resend.log.length;
+
+    it.each([
+      ['dispatch off, sending off', false, false],
+      ['dispatch on, sending off', true, false],
+      ['dispatch off, sending on', false, true],
+      ['both unset', undefined, undefined],
+    ])('are refused with %s — no Resend request at all', async (_label, dispatch, sending) => {
+      const id = await draftCampaign();
+      const before = resendCalls();
+      const emails = resend.emails.length;
+      const res = await withSwitches(dispatch, sending, () => testSend(id));
+      expect(res.status).toBe(400);
+      expect(res.body.error.message).toContain('Test emails are switched off');
+      expect(resendCalls()).toBe(before);
+      expect(resend.emails).toHaveLength(emails);
+    });
+
+    it('with both switches on, one [TEST] email goes to the signed-in user through the marketing key', async () => {
+      const id = await draftCampaign();
+      const emails = resend.emails.length;
+      const res = await withSwitches(true, true, () => testSend(id));
+      expect(res.status).toBe(200);
+      expect(res.body.data).toMatchObject({ sentTo: ctx.orgA.owner.email, accepted: true });
+      expect(resend.emails).toHaveLength(emails + 1);
+      const sent = resend.emails[resend.emails.length - 1]!;
+      expect(sent.to.toLowerCase()).toBe(ctx.orgA.owner.email.toLowerCase());
+      expect(String(sent.body['subject'])).toContain('[TEST]');
+      expect(resend.log[resend.log.length - 1]!.auth).toBe(`Bearer ${MARKETING_KEY}`);
     });
   });
 

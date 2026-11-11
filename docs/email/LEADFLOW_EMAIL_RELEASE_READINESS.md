@@ -47,6 +47,7 @@ real mailbox.
 4. **Connect** `sales@cravionventures.com` (IMAP/SMTP `mail.cravionventures.com`, 993/465 SSL/TLS);
    both connection tests pass.
 5. **Test send** to an internal address arrives in the inbox (check spam folder and headers).
+   Test sends need both `EMAIL_DISPATCH_ENABLED=true` and `EMAIL_CAMPAIGNS_SENDING_ENABLED=true`.
 6. **Reply sync**: reply to the test campaign from an internal address; the reply appears on the
    lead history and in the campaign report.
 7. **Unsubscribe** link and one-click header work from a real mail client.

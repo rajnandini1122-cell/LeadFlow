@@ -301,13 +301,18 @@ export class CampaignsService {
 
   /**
    * Sends ONE copy to the signed-in user's own address — never to an address
-   * typed in, so this can never be used to mail strangers. Works before
-   * customer sending is enabled: proving the mailbox is part of activating it.
+   * typed in, so this can never be used to mail strangers.
+   *
+   * It is still a real send, so it is switched off with the rest of email:
+   * both EMAIL_DISPATCH_ENABLED and EMAIL_CAMPAIGNS_SENDING_ENABLED must be on.
+   * The check comes first, before the campaign, the mailbox or any provider
+   * is touched; unset switches read as off.
    */
   async testSend(
     id: string,
     principal: TenantPrincipal,
   ): Promise<{ sentTo: string; accepted: boolean; message: string }> {
+    this.requireTestSending();
     const campaign = await this.require(id);
     const mailbox = await this.mailbox.require();
     const tested =
@@ -768,7 +773,19 @@ export class CampaignsService {
   private requireCustomerSending(): void {
     if (!this.config.get('EMAIL_CAMPAIGNS_SENDING_ENABLED')) {
       throw AppException.validation(
-        'Sending campaigns to customers is not enabled on this LeadFlow server yet. Drafts, previews and test emails work.',
+        'Sending campaigns to customers is not enabled on this LeadFlow server yet. Drafts and previews work.',
+      );
+    }
+  }
+
+  /** Test emails are real sends: both email switches must be on (strictly true). */
+  private requireTestSending(): void {
+    if (
+      this.config.get('EMAIL_DISPATCH_ENABLED') !== true ||
+      this.config.get('EMAIL_CAMPAIGNS_SENDING_ENABLED') !== true
+    ) {
+      throw AppException.validation(
+        'Test emails are switched off on this LeadFlow server: email sending has not been enabled yet. Drafts and previews work.',
       );
     }
   }
