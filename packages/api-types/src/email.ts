@@ -5,6 +5,9 @@
 
 export type MailSecurity = 'SSL_TLS' | 'STARTTLS';
 
+/** How campaign mail is sent. Replies are always read over IMAP. */
+export type EmailSendingProvider = 'SMTP' | 'RESEND';
+
 /** The mailbox as the settings screen sees it. There is no password field, by design. */
 export interface MailboxView {
   configured: boolean;
@@ -25,6 +28,19 @@ export interface MailboxView {
   smtp: { checkedAt: string | null; okAt: string | null; error: string | null };
   imap: { checkedAt: string | null; okAt: string | null; error: string | null };
   sync: { at: string | null; error: string | null; count: number | null };
+  sendingProvider: EmailSendingProvider;
+  /** Campaign From address (a verified sending domain); replies go to emailAddress. */
+  fromAddress: string | null;
+  resend: {
+    apiKeySet: boolean;
+    apiKeyHint: string | null;
+    webhookSecretSet: boolean;
+    /** Where Resend must POST email events. Not a secret: events are verified by signature. */
+    webhookUrl: string | null;
+    domainVerifiedAt: string | null;
+    lastWebhookAt: string | null;
+  };
+  provider: { checkedAt: string | null; okAt: string | null; error: string | null };
   /** Platform switches, so the screen can say why nothing is being sent. */
   platform: { sendingEnabled: boolean; dispatcherEnabled: boolean };
 }
@@ -132,6 +148,47 @@ export interface EmailCampaignCounts {
   unsubscribes: number;
 }
 
+/**
+ * Whether anyone may already have the email, as far as LeadFlow can know:
+ * NOT_SENT — no send was ever requested from Resend;
+ * MAY_HAVE_BEEN_SENT — a send was requested and Resend never confirmed it either way;
+ * HANDED_TO_RESEND — Resend reported the broadcast queued, scheduled or sent.
+ */
+export type EmailBroadcastExposure = 'NOT_SENT' | 'MAY_HAVE_BEEN_SENT' | 'HANDED_TO_RESEND';
+
+export interface EmailBroadcastReviewView {
+  id: string;
+  actorUserId: string | null;
+  actorName: string | null;
+  action: 'retry' | 'abandon';
+  reason: string;
+  outcome: 'retrying' | 'abandoned' | 'already_handed_off' | 'cancelled_at_provider' | 'refused';
+  refusal: string | null;
+  previousState: string | null;
+  previousStatus: EmailCampaignStatus;
+  resultingState: string | null;
+  resultingStatus: EmailCampaignStatus;
+  providerStatus: string | null;
+  recipientsClosed: number;
+  createdAt: string;
+}
+
+/** Resend Broadcast details; null for campaigns sent another way. */
+export interface EmailBroadcastView {
+  state: string | null;
+  stateAt: string | null;
+  /** Send this back with a decision: a decision made on an older version is refused. */
+  version: number;
+  error: string | null;
+  providerBroadcastId: string | null;
+  sendRequestedAt: string | null;
+  lastCheckedAt: string | null;
+  lastProviderStatus: string | null;
+  exposure: EmailBroadcastExposure;
+  needsReview: boolean;
+  reviews: EmailBroadcastReviewView[];
+}
+
 export interface EmailCampaignView {
   id: string;
   name: string;
@@ -153,6 +210,7 @@ export interface EmailCampaignView {
   createdAt: string;
   updatedAt: string;
   counts: EmailCampaignCounts;
+  broadcast: EmailBroadcastView | null;
 }
 
 export interface EmailCampaignListItem {
@@ -205,6 +263,10 @@ export interface EmailReplyView {
 
 export interface MarketingEligibilityView {
   email: string;
+  name: string | null;
+  company: string | null;
+  /** Where LeadFlow knows the address from. */
+  sources: ('LEAD' | 'CONTACT')[];
   status: 'GRANTED' | 'WITHDRAWN' | 'UNKNOWN';
   basis: MarketingConsentBasis | null;
   source: string | null;

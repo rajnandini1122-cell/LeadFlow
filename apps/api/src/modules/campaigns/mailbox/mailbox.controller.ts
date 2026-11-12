@@ -18,11 +18,13 @@ import { RequirePermissions } from '../../auth/decorators/permissions.decorator'
 import { userActor } from '../../../common/audit/mutation-actor';
 import type { TenantPrincipal } from '../../../common/tenancy/tenant-context.service';
 import { MailboxService } from './mailbox.service';
-import { MailboxSendingDto, SaveMailboxDto } from './dto/mailbox.dto';
+import { InboxSyncService, type SyncReport } from '../inbox/inbox-sync.service';
+import { MailboxSendingDto, SaveMailboxDto, SaveProviderDto } from './dto/mailbox.dto';
 
 enum TestKind {
   smtp = 'smtp',
   imap = 'imap',
+  provider = 'provider',
 }
 
 /**
@@ -35,7 +37,10 @@ enum TestKind {
 @ApiTags('email')
 @Controller('email/mailbox')
 export class MailboxController {
-  constructor(private readonly mailbox: MailboxService) {}
+  constructor(
+    private readonly mailbox: MailboxService,
+    private readonly inbox: InboxSyncService,
+  ) {}
 
   @Get()
   @RequirePermissions(PERMISSIONS.EMAIL_SETTINGS_MANAGE)
@@ -68,7 +73,41 @@ export class MailboxController {
     @Param('kind', new ParseEnumPipe(TestKind)) kind: TestKind,
     @CurrentUser() principal: TenantPrincipal,
   ): Promise<MailConnectionTestResult> {
-    return this.mailbox.test(kind, userActor(principal));
+    return kind === TestKind.provider
+      ? this.mailbox.testProvider(userActor(principal))
+      : this.mailbox.test(kind, userActor(principal));
+  }
+
+  @Put('provider')
+  @RequirePermissions(PERMISSIONS.EMAIL_SETTINGS_MANAGE)
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @ApiOperation({
+    summary:
+      'Choose how campaigns are sent: SMTP or the Resend API (key and webhook secret are write-only)',
+  })
+  async provider(
+    @Body() dto: SaveProviderDto,
+    @CurrentUser() principal: TenantPrincipal,
+  ): Promise<MailboxView> {
+    return this.mailbox.saveProvider(dto, userActor(principal));
+  }
+
+  @Post('sync')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSIONS.EMAIL_SETTINGS_MANAGE)
+  @Throttle({ default: { limit: 6, ttl: 60_000 } })
+  @ApiOperation({ summary: 'Read new replies and bounces from the inbox now (read-only)' })
+  async sync(): Promise<SyncReport> {
+    const report: SyncReport = {
+      mailboxes: 0,
+      read: 0,
+      replies: 0,
+      bounces: 0,
+      other: 0,
+      errors: 0,
+    };
+    await this.inbox.syncOne(new Date(), report);
+    return report;
   }
 
   @Patch('sending')

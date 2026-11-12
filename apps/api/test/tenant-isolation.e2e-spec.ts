@@ -1,5 +1,9 @@
 import { ERROR_CODES } from '@leadflow/api-types';
+import { randomUUID } from 'node:crypto';
 import { createTestContext, type TestContext } from './helpers/test-app';
+import { PrismaService } from '../src/common/prisma/prisma.service';
+import { TenantContextService } from '../src/common/tenancy/tenant-context.service';
+import { DispatchRepository } from '../src/modules/campaigns/dispatch/dispatch.repository';
 
 /**
  * THE MANDATORY TEST (spec §29).
@@ -385,6 +389,46 @@ describe('Tenant isolation (Organization A vs Organization B)', () => {
         });
 
       expect(attempt.status).toBe(400);
+    });
+  });
+  describe('raw SQL in the email delivery queue stays inside one tenant', () => {
+    it('a dispatcher working for Organization A never claims Organization B’s queued email', async () => {
+      const prisma = ctx.app.get(PrismaService).client;
+      const tenant = ctx.app.get(TenantContextService);
+      const theirs = await tenant.runAsSystem('e2e seed', async () => {
+        const campaign = await prisma.emailCampaign.create({
+          data: {
+            organizationId: ctx.orgB.id,
+            name: 'B only',
+            category: 'CUSTOM',
+            purpose: 'TRANSACTIONAL',
+            status: 'SENDING',
+            subject: 'B',
+            html: '<p>B</p>',
+            text: 'B',
+          },
+        });
+        return prisma.emailCampaignRecipient.create({
+          data: {
+            organizationId: ctx.orgB.id,
+            campaignId: campaign.id,
+            email: 'b-customer@isolation.example',
+            messageId: `<${randomUUID()}@b.example>`,
+            unsubscribeTokenHash: randomUUID().replace(/-/g, '').padEnd(64, '0'),
+          },
+        });
+      });
+
+      const claimed = await tenant.runForOrganization(ctx.orgA.id, 'e2e', () =>
+        ctx.app
+          .get(DispatchRepository)
+          .claim(1000, 'isolation-test', new Date(Date.now() + 60_000)),
+      );
+      expect(claimed.map((r) => r.id)).not.toContain(theirs.id);
+      const after = await tenant.runAsSystem('e2e', () =>
+        prisma.emailCampaignRecipient.findUnique({ where: { id: theirs.id } }),
+      );
+      expect(after).toMatchObject({ status: 'QUEUED', attempts: 0, lockedBy: null });
     });
   });
 });

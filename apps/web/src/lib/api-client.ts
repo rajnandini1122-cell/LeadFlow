@@ -1,8 +1,4 @@
-import axios, {
-  type AxiosError,
-  type AxiosInstance,
-  type InternalAxiosRequestConfig,
-} from 'axios';
+import axios, { type AxiosError, type AxiosInstance, type InternalAxiosRequestConfig } from 'axios';
 import type { ApiResponse, AuthenticatedUser, ErrorCode, TokenPair } from '@leadflow/api-types';
 import { apiBaseUrl, isNativeApp, readStoredRefreshToken, storeRefreshToken } from './platform';
 
@@ -265,6 +261,11 @@ function formDataConfig(body: unknown) {
   // multipart/form-data with a generated boundary. (`undefined` also works at
   // runtime but is rejected under exactOptionalPropertyTypes.)
   return isFormData ? { headers: { 'Content-Type': null }, timeout: UPLOAD_TIMEOUT_MS } : undefined;
+}
+
+export async function apiPut<T>(url: string, body?: unknown): Promise<T> {
+  const response = await api.put<ApiResponse<T>>(url, body ?? {});
+  return unwrap(response.data);
 }
 
 export async function apiPatch<T>(url: string, body?: unknown): Promise<T> {

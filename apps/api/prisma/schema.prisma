@@ -190,6 +190,7 @@ enum ActivityType {
   DOCUMENT_REMOVED
 
   EMAIL_SENT
+  EMAIL_FAILED
   EMAIL_REPLY_RECEIVED
 
   @@map("activity_type")
@@ -289,6 +290,9 @@ model Organization {
   marketingConsents     MarketingConsent[]
   emailSuppressions     EmailSuppression[]
   emailInbound          EmailInboundMessage[]
+  emailProviderEvents   EmailProviderEvent[]
+  emailProviderContacts EmailProviderContact[]
+  emailBroadcastReviews EmailBroadcastReview[]
 
   @@index([status])
   @@map("organizations")
@@ -2171,6 +2175,8 @@ enum NotificationType {
   BILLING_EXPIRED
   /// A payment succeeded or failed.
   BILLING_PAYMENT
+  /// A customer replied to a campaign email: follow up.
+  EMAIL_REPLY_RECEIVED
 
   @@map("notification_type")
 }
@@ -3400,6 +3406,14 @@ enum EmailSecurity {
   @@map("email_security")
 }
 
+/// How an organization's campaign mail leaves LeadFlow. Replies are always read over IMAP.
+enum EmailSendingProvider {
+  SMTP
+  RESEND
+
+  @@map("email_sending_provider")
+}
+
 enum MarketingConsentStatus {
   GRANTED
   WITHDRAWN
@@ -3507,6 +3521,28 @@ model EmailMailbox {
   imapPort     Int           @map("imap_port")
   imapSecurity EmailSecurity @map("imap_security")
 
+  /// Which transport sends campaign mail. Replies are read over IMAP either way.
+  sendingProvider                EmailSendingProvider @default(SMTP) @map("sending_provider")
+  /// The From address of campaign mail, when it differs from the mailbox (a
+  /// verified sending subdomain, for example). Replies go to emailAddress.
+  fromAddress                    String?              @map("from_address") @db.VarChar(320)
+  /// Resend API key for campaigns, sealed like the password; never returned.
+  encryptedApiKey                String?              @map("encrypted_api_key") @db.Text
+  apiKeyHint                     String?              @map("api_key_hint") @db.VarChar(16)
+  /// 'full' (can manage contacts and broadcasts) or 'sending', as found by the last test.
+  apiKeyAccess                   String?              @map("api_key_access") @db.VarChar(10)
+  /// Resend webhook signing secret (whsec_…), sealed; verifies bounce/complaint events.
+  encryptedWebhookSecret         String?              @map("encrypted_webhook_secret") @db.Text
+  /// The secret before the last rotation, still accepted until webhookSecretRotatedAt + 24 h.
+  encryptedWebhookSecretPrevious String?              @map("encrypted_webhook_secret_previous") @db.Text
+  webhookSecretRotatedAt         DateTime?            @map("webhook_secret_rotated_at") @db.Timestamptz(6)
+  providerCheckAt                DateTime?            @map("provider_check_at") @db.Timestamptz(6)
+  providerOkAt                   DateTime?            @map("provider_ok_at") @db.Timestamptz(6)
+  providerError                  String?              @map("provider_error") @db.VarChar(300)
+  /// When the From domain's DKIM/SPF/return-path records were last found in DNS.
+  domainVerifiedAt               DateTime?            @map("domain_verified_at") @db.Timestamptz(6)
+  lastWebhookAt                  DateTime?            @map("last_webhook_at") @db.Timestamptz(6)
+
   /// Off until an administrator switches it on after successful tests.
   enabled     Boolean @default(false)
   hourlyLimit Int     @default(50) @map("hourly_limit")
@@ -3526,13 +3562,21 @@ model EmailMailbox {
   lastSyncError   String?   @map("last_sync_error") @db.VarChar(300)
   lastSyncCount   Int?      @map("last_sync_count")
 
+  /// One dispatcher at a time per mailbox, across replicas: a lease, not a lock
+  /// held across SMTP conversations.
+  dispatchLockedBy    String?   @map("dispatch_locked_by") @db.VarChar(80)
+  dispatchLockedUntil DateTime? @map("dispatch_locked_until") @db.Timestamptz(6)
+  syncLockedUntil     DateTime? @map("sync_locked_until") @db.Timestamptz(6)
+
   createdBy String?  @map("created_by") @db.Uuid
   updatedBy String?  @map("updated_by") @db.Uuid
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  organization Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  inbound      EmailInboundMessage[]
+  organization     Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  inbound          EmailInboundMessage[]
+  providerEvents   EmailProviderEvent[]
+  providerContacts EmailProviderContact[]
 
   @@unique([id, organizationId])
   @@map("email_mailboxes")
@@ -3635,17 +3679,35 @@ model EmailCampaign {
   /// The recipient filter, as submitted; re-evaluated at confirmation.
   filter         Json                  @default("{}")
 
-  scheduledAt DateTime? @map("scheduled_at") @db.Timestamptz(6)
+  scheduledAt              DateTime? @map("scheduled_at") @db.Timestamptz(6)
   /// Idempotency key of the confirmation: a double click confirms once.
-  submitKey   String?   @map("submit_key") @db.VarChar(80)
-  confirmedAt DateTime? @map("confirmed_at") @db.Timestamptz(6)
-  confirmedBy String?   @map("confirmed_by") @db.Uuid
-  startedAt   DateTime? @map("started_at") @db.Timestamptz(6)
-  pausedAt    DateTime? @map("paused_at") @db.Timestamptz(6)
+  submitKey                String?   @map("submit_key") @db.VarChar(80)
+  confirmedAt              DateTime? @map("confirmed_at") @db.Timestamptz(6)
+  confirmedBy              String?   @map("confirmed_by") @db.Uuid
+  startedAt                DateTime? @map("started_at") @db.Timestamptz(6)
+  pausedAt                 DateTime? @map("paused_at") @db.Timestamptz(6)
+  /// How this campaign is delivered, fixed when it is confirmed: SMTP, RESEND_EMAIL
+  /// (one API call per recipient) or RESEND_BROADCAST (Resend Broadcasts).
+  deliveryChannel          String?   @map("delivery_channel") @db.VarChar(20)
+  /// Broadcast state machine; see broadcast-state.ts. Every step is persisted
+  /// before the next provider call, so a restart resumes rather than repeats.
+  broadcastState           String?   @map("broadcast_state") @db.VarChar(30)
+  broadcastStateAt         DateTime? @map("broadcast_state_at") @db.Timestamptz(6)
+  broadcastError           String?   @map("broadcast_error") @db.VarChar(500)
+  providerSegmentId        String?   @map("provider_segment_id") @db.VarChar(100)
+  providerBroadcastId      String?   @unique @map("provider_broadcast_id") @db.VarChar(100)
+  broadcastSendRequestedAt DateTime? @map("broadcast_send_requested_at") @db.Timestamptz(6)
+  /// When the current step first failed to complete; a step stuck for 15 minutes needs a person.
+  broadcastRetrySince      DateTime? @map("broadcast_retry_since") @db.Timestamptz(6)
+  /// The last time LeadFlow read the broadcast's status at Resend, and what it said.
+  broadcastCheckedAt       DateTime? @map("broadcast_checked_at") @db.Timestamptz(6)
+  broadcastProviderStatus  String?   @map("broadcast_provider_status") @db.VarChar(20)
+  /// Bumped on every broadcast state change: a decision made on a stale page is refused.
+  broadcastVersion         Int       @default(0) @map("broadcast_version")
   /// Why sending stopped, when LeadFlow stopped it (the mailbox refused sign-in, the subscription ended).
-  pauseReason String?   @map("pause_reason") @db.VarChar(300)
-  completedAt DateTime? @map("completed_at") @db.Timestamptz(6)
-  cancelledAt DateTime? @map("cancelled_at") @db.Timestamptz(6)
+  pauseReason              String?   @map("pause_reason") @db.VarChar(300)
+  completedAt              DateTime? @map("completed_at") @db.Timestamptz(6)
+  cancelledAt              DateTime? @map("cancelled_at") @db.Timestamptz(6)
 
   /// Audience at confirmation: everyone the filter matched, and why some were left out.
   selectedCount Int  @default(0) @map("selected_count")
@@ -3659,6 +3721,7 @@ model EmailCampaign {
 
   organization Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   recipients   EmailCampaignRecipient[]
+  reviews      EmailBroadcastReview[]
 
   @@unique([id, organizationId])
   @@unique([organizationId, submitKey])
@@ -3688,6 +3751,8 @@ model EmailCampaignRecipient {
   /// Our Message-ID for this message, fixed before the first attempt so a reply
   /// can be matched however many attempts it took.
   messageId            String  @unique @map("message_id") @db.VarChar(255)
+  /// The provider's id for the accepted message (Resend email_id), for webhooks and reconciliation.
+  providerMessageId    String? @unique @map("provider_message_id") @db.VarChar(100)
   /// SHA-256 of the unsubscribe token; the token itself is never stored.
   unsubscribeTokenHash String  @unique @map("unsubscribe_token_hash") @db.Char(64)
   lastSmtpCode         Int?    @map("last_smtp_code")
@@ -3697,6 +3762,9 @@ model EmailCampaignRecipient {
   failedAt       DateTime? @map("failed_at") @db.Timestamptz(6)
   repliedAt      DateTime? @map("replied_at") @db.Timestamptz(6)
   unsubscribedAt DateTime? @map("unsubscribed_at") @db.Timestamptz(6)
+  /// Reported by the provider: handed to the recipient's mail server (still not proof of inbox placement).
+  deliveredAt    DateTime? @map("delivered_at") @db.Timestamptz(6)
+  complainedAt   DateTime? @map("complained_at") @db.Timestamptz(6)
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -3718,17 +3786,18 @@ model EmailCampaignRecipient {
 
 /// Every SMTP attempt, written before the connection opens and finished once.
 model EmailDeliveryAttempt {
-  id             String    @id @default(dbgenerated("uuidv7()")) @db.Uuid
-  organizationId String    @map("organization_id") @db.Uuid
-  recipientId    String    @map("recipient_id") @db.Uuid
-  campaignId     String    @map("campaign_id") @db.Uuid
+  id             String               @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId String               @map("organization_id") @db.Uuid
+  recipientId    String               @map("recipient_id") @db.Uuid
+  campaignId     String               @map("campaign_id") @db.Uuid
   attempt        Int
-  worker         String    @db.VarChar(80)
-  startedAt      DateTime  @default(now()) @map("started_at") @db.Timestamptz(6)
-  finishedAt     DateTime? @map("finished_at") @db.Timestamptz(6)
-  outcome        String?   @db.VarChar(20)
-  smtpCode       Int?      @map("smtp_code")
-  response       String?   @db.VarChar(500)
+  provider       EmailSendingProvider @default(SMTP)
+  worker         String               @db.VarChar(80)
+  startedAt      DateTime             @default(now()) @map("started_at") @db.Timestamptz(6)
+  finishedAt     DateTime?            @map("finished_at") @db.Timestamptz(6)
+  outcome        String?              @db.VarChar(20)
+  smtpCode       Int?                 @map("smtp_code")
+  response       String?              @db.VarChar(500)
 
   organization Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   recipient    EmailCampaignRecipient @relation(fields: [recipientId, organizationId], references: [id, organizationId], onDelete: Cascade)
@@ -3766,4 +3835,80 @@ model EmailInboundMessage {
   @@index([organizationId, messageId])
   @@index([organizationId, recipientId])
   @@map("email_inbound_messages")
+}
+
+/// A provider webhook event already applied. Unique per mailbox and event id,
+/// so a redelivered or replayed event changes nothing twice.
+model EmailProviderEvent {
+  id                String               @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId    String               @map("organization_id") @db.Uuid
+  mailboxId         String               @map("mailbox_id") @db.Uuid
+  provider          EmailSendingProvider
+  eventId           String               @map("event_id") @db.VarChar(100)
+  type              String               @db.VarChar(40)
+  providerMessageId String?              @map("provider_message_id") @db.VarChar(100)
+  recipientId       String?              @map("recipient_id") @db.Uuid
+  receivedAt        DateTime             @default(now()) @map("received_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  mailbox      EmailMailbox @relation(fields: [mailboxId, organizationId], references: [id, organizationId], onDelete: Cascade)
+
+  @@unique([mailboxId, eventId])
+  @@index([organizationId, receivedAt])
+  @@map("email_provider_events")
+}
+
+/// One person's decision (or refused attempt) on a broadcast in NEEDS_REVIEW.
+/// Append-only: the database refuses to change or delete a row directly.
+model EmailBroadcastReview {
+  id               String   @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId   String   @map("organization_id") @db.Uuid
+  campaignId       String   @map("campaign_id") @db.Uuid
+  actorUserId      String?  @map("actor_user_id") @db.Uuid
+  action           String   @db.VarChar(10)
+  reason           String   @db.VarChar(500)
+  /// retrying | abandoned | already_handed_off | cancelled_at_provider | refused
+  outcome          String   @db.VarChar(30)
+  refusal          String?  @db.VarChar(500)
+  previousState    String?  @map("previous_state") @db.VarChar(30)
+  previousStatus   String   @map("previous_status") @db.VarChar(20)
+  resultingState   String?  @map("resulting_state") @db.VarChar(30)
+  resultingStatus  String   @map("resulting_status") @db.VarChar(20)
+  providerStatus   String?  @map("provider_status") @db.VarChar(20)
+  recipientsClosed Int      @default(0) @map("recipients_closed")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  campaign     EmailCampaign @relation(fields: [campaignId, organizationId], references: [id, organizationId], onDelete: Cascade)
+
+  @@index([organizationId, campaignId, createdAt])
+  @@map("email_broadcast_reviews")
+}
+
+/// Every address LeadFlow has placed in an organization's Resend account, kept
+/// for good: it is the history that stops an unsubscribed person from ever
+/// being re-added as subscribed. Never deleted to save contact allowance.
+model EmailProviderContact {
+  id                  String    @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  organizationId      String    @map("organization_id") @db.Uuid
+  mailboxId           String    @map("mailbox_id") @db.Uuid
+  email               String    @db.VarChar(320)
+  providerContactId   String?   @map("provider_contact_id") @db.VarChar(100)
+  /// Last known state at Resend.
+  unsubscribed        Boolean   @default(false)
+  /// Set when Resend reported (or LeadFlow pushed) an unsubscribe. Never cleared.
+  unsubscribedAt      DateTime? @map("unsubscribed_at") @db.Timestamptz(6)
+  /// LeadFlow suppressed this address and Resend has not yet been told.
+  unsubscribePending  Boolean   @default(false) @map("unsubscribe_pending")
+  unsubscribePushedAt DateTime? @map("unsubscribe_pushed_at") @db.Timestamptz(6)
+  lastSyncedAt        DateTime? @map("last_synced_at") @db.Timestamptz(6)
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  mailbox      EmailMailbox @relation(fields: [mailboxId, organizationId], references: [id, organizationId], onDelete: Cascade)
+
+  @@unique([organizationId, email])
+  @@index([organizationId, unsubscribePending])
+  @@map("email_provider_contacts")
 }
