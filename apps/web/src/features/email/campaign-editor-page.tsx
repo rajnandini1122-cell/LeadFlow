@@ -438,6 +438,10 @@ function SendCard({
   const preview = useRenderedPreview(campaignId);
   const test = useTestSend();
   const mailbox = useMailbox();
+  // Mirrors the server, which refuses test sends unless both switches are on.
+  const testsAllowed =
+    mailbox.data?.platform.sendingEnabled === true &&
+    mailbox.data?.platform.dispatcherEnabled === true;
   const [confirming, setConfirming] = useState(false);
   return (
     <Card>
@@ -471,14 +475,20 @@ function SendCard({
         )}
         <button
           type="button"
-          disabled={dirty || test.isPending || !mailbox.data?.smtp.okAt}
+          disabled={dirty || test.isPending || !mailbox.data?.smtp.okAt || !testsAllowed}
           onClick={() => test.mutate(campaignId)}
           className="w-full rounded-lg border border-slate-300 px-3 py-2 hover:bg-slate-50 disabled:opacity-50"
         >
           {test.isPending ? 'Sending test…' : 'Send me a test email'}
         </button>
-        {!mailbox.data?.smtp.okAt && (
-          <p className="text-xs text-slate-500">Connect and test the email account first.</p>
+        {!testsAllowed ? (
+          <p className="text-xs text-slate-500">
+            Test emails are switched off on this server until email sending is enabled.
+          </p>
+        ) : (
+          !mailbox.data?.smtp.okAt && (
+            <p className="text-xs text-slate-500">Connect and test the email account first.</p>
+          )
         )}
         {test.data && (
           <p

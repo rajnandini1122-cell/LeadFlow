@@ -10,6 +10,7 @@ import {
   useTestMailbox,
   type MailboxInput,
 } from './use-email';
+import { SendingProviderCard } from './sending-provider-card';
 
 const SECURITY_LABELS: Record<MailSecurity, string> = {
   SSL_TLS: 'SSL / TLS (recommended)',
@@ -81,6 +82,7 @@ export function EmailSettingsPage(): React.JSX.Element {
           <AccountForm view={mailbox.data} />
           <div className="space-y-6">
             <ConnectionCard view={mailbox.data} />
+            <SendingProviderCard view={mailbox.data} />
             <SendingCard view={mailbox.data} />
           </div>
         </div>

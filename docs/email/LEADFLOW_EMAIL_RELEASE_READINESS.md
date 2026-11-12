@@ -47,6 +47,7 @@ real mailbox.
 4. **Connect** `sales@cravionventures.com` (IMAP/SMTP `mail.cravionventures.com`, 993/465 SSL/TLS);
    both connection tests pass.
 5. **Test send** to an internal address arrives in the inbox (check spam folder and headers).
+   Test sends need both `EMAIL_DISPATCH_ENABLED=true` and `EMAIL_CAMPAIGNS_SENDING_ENABLED=true`.
 6. **Reply sync**: reply to the test campaign from an internal address; the reply appears on the
    lead history and in the campaign report.
 7. **Unsubscribe** link and one-click header work from a real mail client.
@@ -67,4 +68,8 @@ real mailbox.
 ## Rollback
 
 Set `EMAIL_DISPATCH_ENABLED=false` (stops all sending and syncing immediately; queued rows wait),
-or pause/cancel campaigns. The migration is additive; the previous API ignores the new tables.
+or pause/cancel campaigns. The migration is additive; the previous API ignores the new tables
+while no email lead history exists. A schema rollback script
+(`apps/api/prisma/rollbacks/20261111090000_email_campaigns.down.sql`) was tested on a restored,
+sanitised production copy and restores the schema exactly; it refuses once email history exists. See
+[LEADFLOW_RESEND_BROADCASTS.md](LEADFLOW_RESEND_BROADCASTS.md#migration-review).

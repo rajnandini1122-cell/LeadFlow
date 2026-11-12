@@ -156,3 +156,21 @@ export class CampaignReasonDto {
   @Transform(trim)
   reason?: string;
 }
+
+/** A person's decision on a broadcast in NEEDS_REVIEW. */
+export class ResolveBroadcastDto {
+  @IsIn(['retry', 'abandon'])
+  action!: 'retry' | 'abandon';
+
+  @Transform(trim)
+  @IsString()
+  @MinLength(3)
+  @MaxLength(500)
+  reason!: string;
+
+  /** The broadcast version the person saw (EmailBroadcastView.version); a stale page is refused. */
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  expectedVersion!: number;
+}

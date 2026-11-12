@@ -13,10 +13,12 @@ import type { EmailCampaign } from '../../../generated/prisma/client';
 import { BillingService } from '../../billing/billing.service';
 import { deriveUnsubscribeToken, unsubscribeKey } from '../consent/unsubscribe-token';
 import { MailboxService } from '../mailbox/mailbox.service';
-import { composeMessage, sendOnce, type SmtpOutcome } from '../mailbox/mail-connection';
+import { composeMessage, sendOnce } from '../mailbox/mail-connection';
+import { sendViaResend, type ResendOutcome } from '../mailbox/resend-transport';
 import { normalizeEmailAddress, type MergeValues } from '../content/email-content';
 import { buildCampaignMessage, type MessageAttachment } from '../campaigns/mail-message';
 import { DispatchRepository, type ClaimedRecipient } from './dispatch.repository';
+import { BroadcastService } from '../broadcast/broadcast.service';
 
 /** At most this many messages per mailbox per tick. */
 const BATCH = 10;
@@ -69,6 +71,7 @@ export class EmailDispatcher implements OnApplicationBootstrap, OnModuleDestroy 
     private readonly mailbox: MailboxService,
     private readonly billing: BillingService,
     private readonly config: AppConfig,
+    private readonly broadcasts: BroadcastService,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -136,6 +139,8 @@ export class EmailDispatcher implements OnApplicationBootstrap, OnModuleDestroy 
           );
         }
       }
+      // Promotional broadcasts advance one persisted step per tick (off unless enabled).
+      await this.broadcasts.tick(now);
       for (const organizationId of await this.repository.organizationsSending()) {
         report.completed += await this.tenantContext.runForOrganization(
           organizationId,
@@ -180,7 +185,8 @@ export class EmailDispatcher implements OnApplicationBootstrap, OnModuleDestroy 
       const allowed = Math.min(BATCH, hourLeft, dayLeft);
       if (allowed <= 0) return;
 
-      const claimed = await this.repository.claim(allowed, this.worker, leaseUntil);
+      const provider = mailbox.sendingProvider;
+      const claimed = await this.repository.claim(allowed, this.worker, leaseUntil, provider);
       if (claimed.length === 0) return;
 
       const campaigns = new Map(
@@ -193,7 +199,9 @@ export class EmailDispatcher implements OnApplicationBootstrap, OnModuleDestroy 
       const facts = await this.repository.eligibilityFacts(claimed.map((r) => r.email));
       const organizationName = await this.repository.organizationName();
       const key = unsubscribeKey(parseEncryptionKey(this.config.get('CREDENTIAL_ENCRYPTION_KEY')));
-      const account = this.mailbox.account(mailbox);
+      // Exactly one credential is opened: the one this mailbox sends with.
+      const account = provider === 'SMTP' ? this.mailbox.account(mailbox) : null;
+      const apiKey = provider === 'RESEND' ? this.mailbox.resendApiKey(mailbox) : null;
 
       for (let index = 0; index < claimed.length; index++) {
         const recipient = claimed[index]!;
@@ -232,6 +240,7 @@ export class EmailDispatcher implements OnApplicationBootstrap, OnModuleDestroy 
           campaign,
           organizationName,
           mailboxAddress: mailbox.emailAddress,
+          fromAddress: mailbox.fromAddress,
           recipient: {
             email: recipient.email,
             displayName: recipient.displayName,
@@ -248,13 +257,45 @@ export class EmailDispatcher implements OnApplicationBootstrap, OnModuleDestroy 
           webBaseUrl: this.config.get('WEB_BASE_URL'),
         });
 
-        const raw = await composeMessage(options);
-        const outcome: SmtpOutcome = await sendOnce(
-          account,
-          { from: mailbox.emailAddress, to: [recipient.email] },
-          raw,
-          this.mailbox.deps,
-        );
+        const outcome: ResendOutcome =
+          provider === 'RESEND'
+            ? await sendViaResend(
+                apiKey!,
+                {
+                  from: `${displayFrom(organizationName)} <${mailbox.fromAddress ?? mailbox.emailAddress}>`,
+                  to: recipient.email,
+                  replyTo: mailbox.emailAddress,
+                  subject: String(options.subject),
+                  html: String(options.html),
+                  text: String(options.text),
+                  headers: (options.headers ?? {}) as Record<string, string>,
+                  attachments: campaign.assetIds.flatMap((id) => {
+                    const asset = assets.get(id);
+                    return asset
+                      ? [
+                          {
+                            filename: asset.fileName,
+                            content: Buffer.from(asset.data).toString('base64'),
+                            contentType: asset.mimeType,
+                          },
+                        ]
+                      : [];
+                  }),
+                  tags: [
+                    { name: 'campaign_id', value: campaign.id },
+                    { name: 'recipient_id', value: recipient.id },
+                  ],
+                  // The recipient row: the same message, however many times it is attempted.
+                  idempotencyKey: `leadflow-recipient-${recipient.id}`,
+                },
+                this.mailbox.deps.fetchImpl,
+              )
+            : await sendOnce(
+                account!,
+                { from: mailbox.fromAddress ?? mailbox.emailAddress, to: [recipient.email] },
+                await composeMessage(options),
+                this.mailbox.deps,
+              );
 
         if (outcome.kind === 'MAILBOX') {
           // The account itself is refused: put this and every remaining claim
@@ -275,11 +316,15 @@ export class EmailDispatcher implements OnApplicationBootstrap, OnModuleDestroy 
           }
           await this.repository.recordMailboxError(
             mailbox.id,
-            'Sending stopped: the SMTP server refused the account. Check the password and test the connection.',
+            provider === 'RESEND'
+              ? 'Sending stopped: Resend refused the API key or the sending domain. Check them and test Resend.'
+              : 'Sending stopped: the SMTP server refused the account. Check the password and test the connection.',
             now,
           );
           report.paused += await this.repository.pauseSending(
-            'Paused: the SMTP server refused the email account. Fix it in Email settings, then resume.',
+            provider === 'RESEND'
+              ? 'Paused: Resend refused the API key or sending domain. Fix it in Email settings, then resume.'
+              : 'Paused: the SMTP server refused the email account. Fix it in Email settings, then resume.',
             now,
           );
           return;
@@ -296,7 +341,7 @@ export class EmailDispatcher implements OnApplicationBootstrap, OnModuleDestroy 
     recipient: ClaimedRecipient,
     campaign: EmailCampaign,
     attempt: { id: string; attempt: number },
-    outcome: Exclude<SmtpOutcome, { kind: 'MAILBOX' }>,
+    outcome: Exclude<ResendOutcome, { kind: 'MAILBOX' }>,
     now: Date,
     report: TickReport,
   ): Promise<void> {
@@ -331,6 +376,9 @@ export class EmailDispatcher implements OnApplicationBootstrap, OnModuleDestroy 
               outcome: 'ACCEPTED',
               smtpCode: outcome.code,
               response: outcome.response,
+              ...(outcome.providerMessageId
+                ? { providerMessageId: outcome.providerMessageId }
+                : {}),
             },
             now,
           )
@@ -421,4 +469,15 @@ export class EmailDispatcher implements OnApplicationBootstrap, OnModuleDestroy 
       }
     }
   }
+}
+
+/** A display name Resend's "Name <address>" format cannot be broken by. */
+function displayFrom(name: string): string {
+  return (
+    name
+      .replace(/[\r\n"<>,;:@\\]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 120) || 'LeadFlow'
+  );
 }

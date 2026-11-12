@@ -89,9 +89,22 @@ export function useSaveMailbox() {
 export function useTestMailbox() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (kind: 'smtp' | 'imap') =>
+    mutationFn: (kind: 'smtp' | 'imap' | 'provider') =>
       apiPost<MailConnectionTestResult>(`/email/mailbox/test/${kind}`),
     onSettled: () => void client.invalidateQueries({ queryKey: emailKeys.mailbox }),
+  });
+}
+
+export function useSaveProvider() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (input: {
+      provider: 'SMTP' | 'RESEND';
+      fromAddress?: string;
+      apiKey?: string;
+      webhookSecret?: string;
+    }) => apiPut<MailboxView>('/email/mailbox/provider', input),
+    onSuccess: (view) => client.setQueryData(emailKeys.mailbox, view),
   });
 }
 
@@ -281,6 +294,41 @@ export function useCampaignAction() {
     onSuccess: (view) => {
       client.setQueryData(emailKeys.campaign(view.id), view);
       void client.invalidateQueries({ queryKey: emailKeys.campaigns });
+    },
+  });
+}
+
+/**
+ * The one recovery call for a broadcast in NEEDS_REVIEW. The server reads
+ * Resend's live status and decides what is safe; `expectedVersion` makes a
+ * decision taken on a stale page (or a second click) fail instead of repeat.
+ */
+export function useResolveBroadcast() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      action,
+      reason,
+      expectedVersion,
+    }: {
+      id: string;
+      action: 'retry' | 'abandon';
+      reason: string;
+      expectedVersion: number;
+    }) =>
+      apiPost<EmailCampaignView>(`/email/campaigns/${id}/broadcast/resolve`, {
+        action,
+        reason,
+        expectedVersion,
+      }),
+    onSuccess: (view) => {
+      client.setQueryData(emailKeys.campaign(view.id), view);
+      void client.invalidateQueries({ queryKey: emailKeys.campaigns });
+    },
+    // Refused (stale, raced, Resend unreadable): show the page as it now is.
+    onError: (_error, input) => {
+      void client.invalidateQueries({ queryKey: emailKeys.campaign(input.id) });
     },
   });
 }

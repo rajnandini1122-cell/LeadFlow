@@ -9,6 +9,7 @@ import {
   Max,
   MaxLength,
   Min,
+  Matches,
   MinLength,
 } from 'class-validator';
 
@@ -75,6 +76,33 @@ export class SaveMailboxDto {
 
   @IsIn(MAIL_SECURITY, { message: 'must be SSL_TLS or STARTTLS' })
   smtpSecurity!: (typeof MAIL_SECURITY)[number];
+}
+
+/**
+ * How campaign mail is sent. Secrets are optional on update (the stored ones
+ * are kept) and never returned.
+ */
+export class SaveProviderDto {
+  @IsIn(['SMTP', 'RESEND'], { message: 'must be SMTP or RESEND' })
+  provider!: 'SMTP' | 'RESEND';
+
+  @IsOptional()
+  @IsEmail({}, { message: 'must be an email address' })
+  @MaxLength(320)
+  @Transform(lower)
+  fromAddress?: string;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/^re_[A-Za-z0-9_-]{8,200}$/, { message: 'must be a Resend API key (re_…)' })
+  apiKey?: string;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/^whsec_[A-Za-z0-9+/=]{16,200}$/, {
+    message: 'must be a Resend webhook signing secret (whsec_…)',
+  })
+  webhookSecret?: string;
 }
 
 export class MailboxSendingDto {
