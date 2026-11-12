@@ -14,6 +14,8 @@ export interface AudienceResult {
   selected: number;
   eligible: AudienceMember[];
   excluded: Record<EmailExclusionReason, number>;
+  /** Would be eligible, but taken out by hand in the recipient list. */
+  handExcluded: AudienceMember[];
 }
 
 export interface EligibilityFacts {
@@ -32,6 +34,7 @@ export interface EligibilityFacts {
  *               applies to EVERY campaign, promotional or not
  *   NO_CONSENT  promotional, and nobody has recorded why this address may get it
  *   DUPLICATE   the same address reached twice (a lead and its contact)
+ *   EXCLUDED    would be eligible, but taken out by hand in the recipient list
  *
  * Run when the audience is previewed, again when the campaign is confirmed,
  * and the suppression and consent checks once more right before each send.
@@ -41,13 +44,16 @@ export function evaluateAudience(
   purpose: 'PROMOTIONAL' | 'TRANSACTIONAL',
   facts: EligibilityFacts,
   organizationName: string,
+  excludeEmails: ReadonlySet<string> = new Set(),
 ): AudienceResult {
   const excluded: Record<EmailExclusionReason, number> = {
     INVALID: 0,
     SUPPRESSED: 0,
     NO_CONSENT: 0,
     DUPLICATE: 0,
+    EXCLUDED: 0,
   };
+  const handExcluded: AudienceMember[] = [];
   const seen = new Set<string>();
   const eligible: AudienceMember[] = [];
 
@@ -72,7 +78,7 @@ export function evaluateAudience(
     seen.add(email);
     const fullName =
       [candidate.firstName, candidate.lastName].filter(Boolean).join(' ').trim() || null;
-    eligible.push({
+    (excludeEmails.has(email) ? handExcluded : eligible).push({
       email,
       leadId: candidate.leadId,
       contactId: candidate.contactId,
@@ -88,5 +94,53 @@ export function evaluateAudience(
     });
   }
 
-  return { selected: candidates.length, eligible, excluded };
+  excluded.EXCLUDED = handExcluded.length;
+  return { selected: candidates.length, eligible, excluded, handExcluded };
+}
+
+export interface RecipientListing {
+  recipients: { email: string; name: string | null; company: string | null; excluded: boolean }[];
+  recipientsTruncated: boolean;
+  recipientsListed: boolean;
+  recipientsTotal: number;
+  undisplayedEligible: number;
+}
+
+/**
+ * The addresses the editor shows for ticking: eligible and hand-excluded
+ * together, sorted by address, at most `limit`. Says exactly how many eligible
+ * people fall outside the displayed list, because they still receive it.
+ */
+export function listRecipients(
+  result: Pick<AudienceResult, 'eligible' | 'handExcluded'>,
+  mayList: boolean,
+  limit: number,
+): RecipientListing {
+  const total = result.eligible.length + result.handExcluded.length;
+  if (!mayList) {
+    return {
+      recipients: [],
+      recipientsTruncated: false,
+      recipientsListed: false,
+      recipientsTotal: total,
+      undisplayedEligible: result.eligible.length,
+    };
+  }
+  const all = [
+    ...result.eligible.map((m) => ({ m, excluded: false })),
+    ...result.handExcluded.map((m) => ({ m, excluded: true })),
+  ].sort((a, b) => a.m.email.localeCompare(b.m.email));
+  const shown = all.slice(0, limit);
+  return {
+    recipients: shown.map(({ m, excluded }) => ({
+      email: m.email,
+      name: m.displayName,
+      company: m.merge.company ?? null,
+      excluded,
+    })),
+    recipientsTruncated: all.length > limit,
+    recipientsListed: true,
+    recipientsTotal: total,
+    undisplayedEligible: all.slice(limit).filter((r) => !r.excluded).length,
+  };
 }

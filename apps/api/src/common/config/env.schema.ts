@@ -525,6 +525,20 @@ export const envSchema = z
       .string()
       .default('false')
       .transform((value) => value === 'true'),
+    /**
+     * Who campaign email may go to while sending is on. Fails closed: unless
+     * EMAIL_SENDING_UNRESTRICTED=true, LeadFlow sends only to addresses in
+     * EMAIL_RECIPIENT_ALLOWLIST (comma-separated) inside the one organization
+     * EMAIL_ALLOWED_ORGANIZATION_ID — and to nobody if either is unset. Covers
+     * campaigns of every kind, broadcasts and test emails. Unrestricted sending
+     * is a separate, deliberate switch for the real activation.
+     */
+    EMAIL_RECIPIENT_ALLOWLIST: z.string().default(''),
+    EMAIL_ALLOWED_ORGANIZATION_ID: z.string().default(''),
+    EMAIL_SENDING_UNRESTRICTED: z
+      .string()
+      .default('false')
+      .transform((value) => value === 'true'),
     ADMIN_SUBSCRIPTIONS_ENABLED: z
       .string()
       .default('false')

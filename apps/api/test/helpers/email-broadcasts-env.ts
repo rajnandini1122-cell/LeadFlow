@@ -9,6 +9,8 @@ export const EMAIL_BROADCASTS_ENV = {
   EMAIL_RESEND_BROADCASTS_ENABLED: 'true',
   EMAIL_DISPATCH_ENABLED: 'false',
   RESEND_API_KEY: 're_transactional_platform_key_000',
+  // The recipient allowlist is exercised by its own tests, which turn it back on.
+  EMAIL_SENDING_UNRESTRICTED: 'true',
 } as const;
 
 const previous: Record<string, string | undefined> = {};

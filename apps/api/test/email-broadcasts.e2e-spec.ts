@@ -1168,6 +1168,42 @@ describe('Email broadcasts (Resend Marketing)', () => {
     });
   });
 
+  describe('recipient allowlist on broadcasts', () => {
+    it('an address not on the allowlist is skipped before contact sync: never sent to Resend, never in the segment', async () => {
+      const { id, emails } = await confirmedCampaign(2);
+      const config = ctx.app.get(AppConfig);
+      const real = config.get.bind(config);
+      const spy = jest
+        .spyOn(config, 'get')
+        .mockImplementation(((key: string) =>
+          key === 'EMAIL_SENDING_UNRESTRICTED'
+            ? false
+            : key === 'EMAIL_ALLOWED_ORGANIZATION_ID'
+              ? ctx.orgA.id
+              : key === 'EMAIL_RECIPIENT_ALLOWLIST'
+                ? emails[0]
+                : real(key as never)) as typeof config.get);
+      let c;
+      try {
+        c = await run(id);
+      } finally {
+        spy.mockRestore();
+      }
+      expect(c.broadcastState).toBe('HANDED_OFF');
+      expect(
+        resend.broadcastDeliveries
+          .filter((d) => d.broadcastId === c.providerBroadcastId)
+          .map((d) => d.email),
+      ).toEqual([emails[0]]);
+      expect(resend.contacts.has(emails[1]!)).toBe(false);
+      expect(resend.log.some((l) => l.path.includes(encodeURIComponent(emails[1]!)))).toBe(false);
+      expect((await recipients(id)).find((r) => r.email === emails[1])).toMatchObject({
+        status: 'SKIPPED',
+        skipReason: 'NOT_ALLOWLISTED',
+      });
+    });
+  });
+
   describe('test emails through Resend', () => {
     /** The two email switches as given (undefined = not set), for what the service reads per request. */
     const withSwitches = async <T>(
