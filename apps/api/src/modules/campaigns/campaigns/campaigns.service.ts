@@ -3,6 +3,8 @@ import { Injectable, Logger } from '@nestjs/common';
 import {
   ERROR_CODES,
   PERMISSIONS,
+  RECIPIENT_LIST_LIMIT,
+  type EmailAudienceOptions,
   type EmailAudiencePreview,
   type EmailCampaignCounts,
   type EmailCampaignListItem,
@@ -226,6 +228,10 @@ export class CampaignsService {
     return this.get(id);
   }
 
+  async audienceOptions(): Promise<EmailAudienceOptions> {
+    return this.audience.options();
+  }
+
   /**
    * Who the filter would reach, and why some would not. Counts for everyone with
    * campaign access; the sample of addresses only for someone who may see every
@@ -246,6 +252,7 @@ export class CampaignsService {
             .slice(0, 20)
             .map((m) => ({ email: m.email, name: m.displayName, company: m.merge.company ?? null }))
         : [],
+      ...recipientList(result, mayList),
     };
   }
 
@@ -835,6 +842,7 @@ export class CampaignsService {
       purpose,
       { consented, suppressed: new Set(suppressions.keys()) },
       await this.repository.organizationName(),
+      new Set((filter.excludeEmails ?? []).map((e) => e.trim().toLowerCase())),
     );
   }
 
@@ -951,6 +959,27 @@ function iso(value: Date | null | undefined): string | null {
 }
 
 /** Drops empty lists so a stored filter says only what was chosen. */
+/** Everyone who could receive it, with the hand-excluded marked, for ticking in the editor. */
+function recipientList(
+  result: AudienceResult,
+  mayList: boolean,
+): Pick<EmailAudiencePreview, 'recipients' | 'recipientsTruncated'> {
+  if (!mayList) return { recipients: [], recipientsTruncated: false };
+  const all = [
+    ...result.eligible.map((m) => ({ m, excluded: false })),
+    ...result.handExcluded.map((m) => ({ m, excluded: true })),
+  ].sort((a, b) => a.m.email.localeCompare(b.m.email));
+  return {
+    recipients: all.slice(0, RECIPIENT_LIST_LIMIT).map(({ m, excluded }) => ({
+      email: m.email,
+      name: m.displayName,
+      company: m.merge.company ?? null,
+      excluded,
+    })),
+    recipientsTruncated: all.length > RECIPIENT_LIST_LIMIT,
+  };
+}
+
 function cleanFilter(filter: EmailRecipientFilter): EmailRecipientFilter {
   const out: EmailRecipientFilter = {};
   for (const [key, value] of Object.entries(filter ?? {})) {

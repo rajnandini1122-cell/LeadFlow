@@ -74,6 +74,25 @@ export class RecipientFilterDto {
   @MaxLength(20, STRINGS)
   qualifications?: string[];
   @IsOptional() @IsBoolean() includeContacts?: boolean;
+
+  /** Addresses taken out by hand from the matching list. */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(5000)
+  @IsString(STRINGS)
+  @MaxLength(254, STRINGS)
+  @Transform(({ value }: { value: unknown }) =>
+    Array.isArray(value)
+      ? [...new Set(value.map((v) => (typeof v === 'string' ? v.trim().toLowerCase() : v)))]
+      : value,
+  )
+  excludeEmails?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(2)
+  @IsIn(['NEVER', 'CONTACTED'], STRINGS)
+  contacted?: ('NEVER' | 'CONTACTED')[];
 }
 
 export class SaveCampaignDto {

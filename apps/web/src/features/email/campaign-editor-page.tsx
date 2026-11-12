@@ -17,6 +17,7 @@ import { Card, CardHeader, ErrorNotice, PageHeader, SkeletonRows } from '../../c
 import {
   CATEGORY_LABELS,
   useAssets,
+  useAudienceOptions,
   useAudiencePreview,
   useCampaign,
   useCampaignAction,
@@ -37,6 +38,7 @@ const EXCLUSION_LABELS: Record<string, string> = {
   SUPPRESSED: 'unsubscribed, bounced or suppressed',
   INVALID: 'no valid email address',
   DUPLICATE: 'same address reached twice',
+  EXCLUDED: 'taken out by hand in the list below',
 };
 
 const EMPTY: CampaignInput = {
@@ -91,6 +93,7 @@ export function CampaignEditorPage(): React.JSX.Element {
 
   const set = <K extends keyof CampaignInput>(key: K, value: CampaignInput[K]) =>
     setForm((f) => ({ ...f, [key]: value }));
+  const options = useAudienceOptions();
   const setFilter = (patch: Partial<EmailRecipientFilter>) =>
     setForm((f) => ({ ...f, filter: { ...f.filter, ...patch } }));
 
@@ -256,14 +259,23 @@ export function CampaignEditorPage(): React.JSX.Element {
                 value={form.filter.priorities ?? []}
                 onChange={(priorities) => setFilter({ priorities })}
               />
-              <Field label="Cities" id="cities" hint="Comma-separated">
-                <input
-                  id="cities"
-                  className={inputClass}
-                  defaultValue={(form.filter.cities ?? []).join(', ')}
-                  onBlur={(e) => setFilter({ cities: toList(e.target.value) })}
-                />
-              </Field>
+              <MultiCheck
+                label="Contact history"
+                options={['NEVER', 'CONTACTED']}
+                labels={{
+                  NEVER: `Not contacted yet${options.data ? ` (${options.data.contacted.never})` : ''}`,
+                  CONTACTED: `Contacted before${options.data ? ` (${options.data.contacted.contacted})` : ''}`,
+                }}
+                value={form.filter.contacted ?? []}
+                onChange={(contacted) =>
+                  setFilter({ contacted: contacted as ('NEVER' | 'CONTACTED')[] })
+                }
+              />
+              <CityChecklist
+                cities={options.data?.cities ?? []}
+                value={form.filter.cities ?? []}
+                onChange={(cities) => setFilter({ cities })}
+              />
               <Field label="States" id="states" hint="Comma-separated">
                 <input
                   id="states"
@@ -301,7 +313,11 @@ export function CampaignEditorPage(): React.JSX.Element {
         </div>
 
         <div className="space-y-6">
-          <AudienceCard purpose={form.purpose} filter={form.filter} />
+          <AudienceCard
+            purpose={form.purpose}
+            filter={form.filter}
+            onExcludeChange={(excludeEmails) => setFilter({ excludeEmails })}
+          />
           {id && existing.data && (
             <SendCard
               campaignId={id}
@@ -350,14 +366,25 @@ function clean(filter: EmailRecipientFilter): EmailRecipientFilter {
 function AudienceCard({
   purpose,
   filter,
+  onExcludeChange,
 }: {
   purpose: EmailCampaignPurpose;
   filter: EmailRecipientFilter;
+  onExcludeChange: (excludeEmails: string[]) => void;
 }): React.JSX.Element {
   const preview = useAudiencePreview();
+  // The last answer stays on screen while a new count runs, so ticking a box
+  // does not make the list jump.
+  const [shown, setShown] = useState<EmailAudiencePreview | null>(null);
   const key = JSON.stringify([purpose, clean(filter)]);
   useEffect(() => {
-    preview.mutate({ purpose, filter: clean(filter) });
+    // Short pause so ticking several boxes asks the server once, not per click.
+    const timer = setTimeout(
+      () =>
+        preview.mutate({ purpose, filter: clean(filter) }, { onSuccess: (data) => setShown(data) }),
+      400,
+    );
+    return () => clearTimeout(timer);
   }, [key]);
   return (
     <Card>
@@ -366,15 +393,120 @@ function AudienceCard({
         subtitle="Checked again when you send, and before every message"
       />
       <div className="p-5 text-sm">
-        {preview.isPending && <p className="text-slate-500">Counting…</p>}
+        {preview.isPending && !shown && <p className="text-slate-500">Counting…</p>}
         {preview.error && (
           <p className="text-red-700">
             {preview.error instanceof ApiError ? preview.error.message : 'Could not count.'}
           </p>
         )}
-        {preview.data && <AudienceSummary data={preview.data} />}
+        {shown && <AudienceSummary data={shown} />}
+        {shown && shown.recipients.length > 0 && (
+          <RecipientChecklist
+            recipients={shown.recipients}
+            truncated={shown.recipientsTruncated}
+            excluded={filter.excludeEmails ?? []}
+            onChange={onExcludeChange}
+          />
+        )}
       </div>
     </Card>
+  );
+}
+
+/**
+ * Every address the filters reach, one checkbox each: untick to leave someone
+ * out of this campaign, tick again to put them back. Only shown to people who
+ * may see every lead; the server applies the same list when it confirms.
+ */
+export function RecipientChecklist({
+  recipients,
+  truncated,
+  excluded,
+  onChange,
+}: {
+  recipients: EmailAudiencePreview['recipients'];
+  truncated: boolean;
+  excluded: string[];
+  onChange: (excludeEmails: string[]) => void;
+}): React.JSX.Element {
+  const [search, setSearch] = useState('');
+  const out = new Set(excluded);
+  const q = search.trim().toLowerCase();
+  const visible = q
+    ? recipients.filter(
+        (r) =>
+          r.email.includes(q) ||
+          (r.name ?? '').toLowerCase().includes(q) ||
+          (r.company ?? '').toLowerCase().includes(q),
+      )
+    : recipients;
+  const setAll = (include: boolean) => {
+    const next = new Set(out);
+    for (const r of visible) {
+      if (include) next.delete(r.email);
+      else next.add(r.email);
+    }
+    onChange([...next]);
+  };
+  const toggle = (email: string) => {
+    const next = new Set(out);
+    if (next.has(email)) next.delete(email);
+    else next.add(email);
+    onChange([...next]);
+  };
+  const included = recipients.filter((r) => !out.has(r.email)).length;
+  return (
+    <fieldset className="mt-4 border-t border-slate-100 pt-3">
+      <legend className="sr-only">Recipients</legend>
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs">
+        <span className="font-medium text-slate-700">
+          {included} of {recipients.length} ticked
+        </span>
+        <span className="flex gap-2">
+          <button type="button" className="underline" onClick={() => setAll(true)}>
+            Tick {q ? 'shown' : 'all'}
+          </button>
+          <button type="button" className="underline" onClick={() => setAll(false)}>
+            Untick {q ? 'shown' : 'all'}
+          </button>
+        </span>
+      </div>
+      <input
+        type="search"
+        aria-label="Search recipients"
+        placeholder="Search name, email or company"
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        className="mb-2 w-full rounded-lg border border-slate-200 px-2 py-1 text-xs"
+      />
+      <ul className="max-h-72 space-y-1 overflow-y-auto pr-1 text-xs">
+        {visible.map((r) => (
+          <li key={r.email}>
+            <label className="flex items-start gap-2">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={!out.has(r.email)}
+                onChange={() => toggle(r.email)}
+              />
+              <span className="min-w-0">
+                <span className="block truncate text-slate-800">{r.name ?? r.email}</span>
+                <span className="block truncate text-slate-500">
+                  {r.name ? r.email : ''}
+                  {r.company ? `${r.name ? ' · ' : ''}${r.company}` : ''}
+                </span>
+              </span>
+            </label>
+          </li>
+        ))}
+        {visible.length === 0 && <li className="text-slate-500">No match.</li>}
+      </ul>
+      {truncated && (
+        <p className="mt-2 text-xs text-amber-700">
+          Showing the first {recipients.length}. Narrow the filters to see everyone.
+        </p>
+      )}
+    </fieldset>
   );
 }
 
@@ -768,11 +900,13 @@ function AttachmentPicker({
 function MultiCheck({
   label,
   options,
+  labels,
   value,
   onChange,
 }: {
   label: string;
   options: readonly string[];
+  labels?: Record<string, string>;
   value: string[];
   onChange: (v: string[]) => void;
 }): React.JSX.Element {
@@ -789,10 +923,78 @@ function MultiCheck({
                 onChange(value.includes(o) ? value.filter((v) => v !== o) : [...value, o])
               }
             />
-            {o.replace(/_/g, ' ').toLowerCase()}
+            {labels?.[o] ?? o.replace(/_/g, ' ').toLowerCase()}
           </label>
         ))}
       </div>
+    </fieldset>
+  );
+}
+
+/**
+ * Cities from this organization's own leads, one checkbox each (with how many
+ * leads have an email there). None ticked means every city.
+ */
+export function CityChecklist({
+  cities,
+  value,
+  onChange,
+}: {
+  cities: { name: string; count: number }[];
+  value: string[];
+  onChange: (cities: string[]) => void;
+}): React.JSX.Element {
+  const [search, setSearch] = useState('');
+  const picked = new Set(value.map((v) => v.toLowerCase()));
+  const q = search.trim().toLowerCase();
+  const visible = q ? cities.filter((c) => c.name.toLowerCase().includes(q)) : cities;
+  const toggle = (name: string) =>
+    onChange(
+      picked.has(name.toLowerCase())
+        ? value.filter((v) => v.toLowerCase() !== name.toLowerCase())
+        : [...value, name],
+    );
+  return (
+    <fieldset className="sm:col-span-2">
+      <legend className="mb-1 text-xs font-medium text-slate-700">
+        Cities{' '}
+        <span className="font-normal text-slate-500">
+          {value.length === 0 ? '(none ticked = every city)' : `(${value.length} ticked)`}
+        </span>
+      </legend>
+      {cities.length === 0 ? (
+        <p className="text-xs text-slate-500">No lead with an email has a city yet.</p>
+      ) : (
+        <>
+          <div className="mb-1 flex items-center gap-2">
+            <input
+              type="search"
+              aria-label="Search cities"
+              placeholder="Search cities"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="w-full rounded-lg border border-slate-200 px-2 py-1 text-xs"
+            />
+            {value.length > 0 && (
+              <button type="button" className="text-xs underline" onClick={() => onChange([])}>
+                Clear
+              </button>
+            )}
+          </div>
+          <div className="flex max-h-40 flex-wrap gap-x-3 gap-y-1 overflow-y-auto text-xs">
+            {visible.map((c) => (
+              <label key={c.name} className="flex items-center gap-1">
+                <input
+                  type="checkbox"
+                  checked={picked.has(c.name.toLowerCase())}
+                  onChange={() => toggle(c.name)}
+                />
+                {c.name} <span className="text-slate-400">({c.count})</span>
+              </label>
+            ))}
+          </div>
+        </>
+      )}
     </fieldset>
   );
 }

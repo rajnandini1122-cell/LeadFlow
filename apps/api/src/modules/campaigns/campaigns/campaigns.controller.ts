@@ -14,6 +14,7 @@ import { ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import {
   PERMISSIONS,
+  type EmailAudienceOptions,
   type EmailAudiencePreview,
   type EmailCampaignListItem,
   type EmailCampaignRecipientView,
@@ -71,6 +72,13 @@ export class CampaignsController {
     @CurrentUser() principal: TenantPrincipal,
   ): Promise<EmailCampaignView> {
     return this.campaigns.create(dto, userActor(principal));
+  }
+
+  @Get('audience/options')
+  @RequirePermissions(PERMISSIONS.CAMPAIGN_MANAGE)
+  @ApiOperation({ summary: 'Cities and contact history to offer as recipient filter checkboxes.' })
+  async audienceOptions(): Promise<EmailAudienceOptions> {
+    return this.campaigns.audienceOptions();
   }
 
   @Post('audience')

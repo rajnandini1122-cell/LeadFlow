@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
+  EmailAudienceOptions,
   EmailAssetView,
   EmailAudiencePreview,
   EmailCampaignCategory,
@@ -252,6 +253,15 @@ export function useSaveCampaign() {
       void client.invalidateQueries({ queryKey: emailKeys.campaigns });
       void client.invalidateQueries({ queryKey: emailKeys.preview(view.id) });
     },
+  });
+}
+
+/** This organization's cities and contact history, for the recipient filter checkboxes. */
+export function useAudienceOptions() {
+  return useQuery({
+    queryKey: ['email', 'audience-options'] as const,
+    queryFn: () => apiGet<EmailAudienceOptions>('/email/campaigns/audience/options'),
+    staleTime: 60_000,
   });
 }
 

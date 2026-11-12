@@ -700,4 +700,96 @@ describe('Email campaigns: compose, confirm, deliver', () => {
       ).status,
     ).toBe(403);
   });
+
+  describe('recipient checklist and filters', () => {
+    const preview = async (filter: Record<string, unknown>, purpose = 'PROMOTIONAL') => {
+      ctx.redis.flush();
+      const res = await ctx
+        .http()
+        .post('/api/v1/email/campaigns/audience')
+        .set(owner())
+        .send({ purpose, filter });
+      expect(res.status).toBe(200);
+      return res.body.data;
+    };
+
+    it('an address unticked in the list is left out of the count, the confirmation and the queue', async () => {
+      const city = tag();
+      const emails = ['k0', 'k1', 'k2'].map((p) => `${p}.${city}@cust.example`.toLowerCase());
+      for (const e of emails) await lead(city, e);
+      await grant(emails);
+      const all = await preview({ cities: [city] });
+      expect(all).toMatchObject({ eligible: 3, recipientsTruncated: false });
+      expect(all.recipients.map((r: { email: string }) => r.email)).toEqual([...emails].sort());
+
+      const some = await preview({ cities: [city], excludeEmails: [emails[1]!.toUpperCase()] });
+      expect(some.eligible).toBe(2);
+      expect(some.excluded.EXCLUDED).toBe(1);
+      expect(some.recipients).toHaveLength(3); // still listed, so it can be ticked again
+      expect(some.recipients.find((r: { email: string }) => r.email === emails[1])).toMatchObject({
+        excluded: true,
+      });
+
+      const id = await draft(city, { filter: { cities: [city], excludeEmails: [emails[1]] } });
+      expect((await confirm(id, 2)).status).toBe(200);
+      expect((await recipients(id)).map((r) => r.email)).toEqual([emails[0], emails[2]].sort());
+    });
+
+    it('contact history: not contacted yet versus contacted before', async () => {
+      const city = tag();
+      const fresh = `fresh.${city}@cust.example`.toLowerCase();
+      const spoken = `spoken.${city}@cust.example`.toLowerCase();
+      await lead(city, fresh);
+      const spokenId = await lead(city, spoken);
+      await grant([fresh, spoken]);
+      await asSystem(() =>
+        prisma().lead.update({ where: { id: spokenId }, data: { lastContactedAt: new Date() } }),
+      );
+      const never = await preview({ cities: [city], contacted: ['NEVER'] });
+      expect(never.recipients.map((r: { email: string }) => r.email)).toEqual([fresh]);
+      const before = await preview({ cities: [city], contacted: ['CONTACTED'] });
+      expect(before.recipients.map((r: { email: string }) => r.email)).toEqual([spoken]);
+      expect((await preview({ cities: [city], contacted: ['NEVER', 'CONTACTED'] })).eligible).toBe(
+        2,
+      );
+      ctx.redis.flush();
+      const bad = await ctx
+        .http()
+        .post('/api/v1/email/campaigns/audience')
+        .set(owner())
+        .send({ purpose: 'PROMOTIONAL', filter: { contacted: ['SOMETIMES'] } });
+      expect(bad.status).toBe(400);
+    });
+
+    it('city options come from this organization’s own leads, merged across spellings, for campaign managers only', async () => {
+      const city = tag();
+      await lead(city, `c1.${city}@cust.example`.toLowerCase());
+      await lead(city.toLowerCase(), `c2.${city}@cust.example`.toLowerCase());
+      const res = await ctx.http().get('/api/v1/email/campaigns/audience/options').set(owner());
+      expect(res.status).toBe(200);
+      const entry = res.body.data.cities.find(
+        (c: { name: string }) => c.name.toLowerCase() === city.toLowerCase(),
+      );
+      expect(entry?.count).toBe(2);
+      expect(res.body.data.contacted.never).toBeGreaterThanOrEqual(2);
+      expect(
+        (
+          await ctx
+            .http()
+            .get('/api/v1/email/campaigns/audience/options')
+            .set(auth(ctx.orgA.rep.accessToken))
+        ).status,
+      ).toBe(403);
+      const other = await ctx
+        .http()
+        .get('/api/v1/email/campaigns/audience/options')
+        .set(auth(ctx.orgB.owner.accessToken));
+      expect(other.status).toBe(200);
+      expect(
+        other.body.data.cities.some(
+          (c: { name: string }) => c.name.toLowerCase() === city.toLowerCase(),
+        ),
+      ).toBe(false);
+    });
+  });
 });
