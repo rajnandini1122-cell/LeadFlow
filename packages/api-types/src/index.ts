@@ -11,3 +11,4 @@ export * from './contact-input';
 export * from './lead-contacts';
 export * from './lead-qualification';
 export * from './public-pages';
+export * from './email';

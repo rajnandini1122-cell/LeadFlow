@@ -1,10 +1,5 @@
 import { z } from 'zod';
-import {
-  isValidCountry,
-  isValidCurrency,
-  isValidLocale,
-  isValidTimezone,
-} from '../utils/locale';
+import { isValidCountry, isValidCurrency, isValidLocale, isValidTimezone } from '../utils/locale';
 
 /**
  * Environment schema.
@@ -54,9 +49,7 @@ export const envSchema = z
     // Kept in configuration rather than in source so the same build can be
     // rebranded per deployment without a code change.
     PRODUCT_NAME: z.string().min(1).default('LeadFlow'),
-    PRODUCT_TAGLINE: z
-      .string()
-      .default('Simple lead management and follow-up for growing teams'),
+    PRODUCT_TAGLINE: z.string().default('Simple lead management and follow-up for growing teams'),
     PRODUCT_LOGO_URL: z.string().default(''),
 
     // --- email --------------------------------------------------------------
@@ -409,10 +402,7 @@ export const envSchema = z
      * HMAC key is a guessable HMAC key. Never logged, never returned by any
      * API, and never compared with `===`.
      */
-    WEBSITE_INTAKE_SIGNING_SECRET: z
-      .string()
-      .min(32, 'must be at least 32 characters')
-      .optional(),
+    WEBSITE_INTAKE_SIGNING_SECRET: z.string().min(32, 'must be at least 32 characters').optional(),
 
     /**
      * The Central Admin control plane.
@@ -447,10 +437,7 @@ export const envSchema = z
      * guessable HMAC key. Never logged, never returned by any endpoint, and
      * never compared with `===`.
      */
-    ADMIN_CONTROL_SIGNING_SECRET: z
-      .string()
-      .min(32, 'must be at least 32 characters')
-      .optional(),
+    ADMIN_CONTROL_SIGNING_SECRET: z.string().min(32, 'must be at least 32 characters').optional(),
 
     /**
      * Platform analytics for the CRAVION Admin "LeadFlow Analytics" module.
@@ -465,10 +452,7 @@ export const envSchema = z
       .default('false')
       .transform((value) => value === 'true'),
     /** The key the CRAVION Admin backend signs analytics reads with. 32+ characters. */
-    ADMIN_ANALYTICS_SIGNING_SECRET: z
-      .string()
-      .min(32, 'must be at least 32 characters')
-      .optional(),
+    ADMIN_ANALYTICS_SIGNING_SECRET: z.string().min(32, 'must be at least 32 characters').optional(),
     /**
      * First-party public-website analytics (page views, visits, conversions).
      * On by default: it stores no IP address, no cookie and no personal data,
@@ -514,6 +498,33 @@ export const envSchema = z
      * administrative writes). Its own key, never the analytics one: an
      * analytics-read key must not become an entitlement-write key.
      */
+    /**
+     * Email campaigns. Two independent switches, both off by default:
+     *
+     *   EMAIL_DISPATCH_ENABLED — this process runs the campaign dispatcher and
+     *     the IMAP reply sync. Off: queued messages simply wait.
+     *   EMAIL_CAMPAIGNS_SENDING_ENABLED — the platform allows real sends to
+     *     customers at all. Off: campaigns can be drafted, previewed and
+     *     confirmed, and NOTHING is delivered. Turned on only with the owner's
+     *     explicit approval.
+     */
+    EMAIL_DISPATCH_ENABLED: z
+      .string()
+      .default('false')
+      .transform((value) => value === 'true'),
+    /**
+     * Resend Broadcasts for promotional campaigns. Off by default, and only
+     * effective when EMAIL_CAMPAIGNS_SENDING_ENABLED is also on: a separate
+     * switch so broadcasts can be turned on (or off) on their own during rollout.
+     */
+    EMAIL_RESEND_BROADCASTS_ENABLED: z
+      .string()
+      .default('false')
+      .transform((value) => value === 'true'),
+    EMAIL_CAMPAIGNS_SENDING_ENABLED: z
+      .string()
+      .default('false')
+      .transform((value) => value === 'true'),
     ADMIN_SUBSCRIPTIONS_ENABLED: z
       .string()
       .default('false')
@@ -673,7 +684,8 @@ export const envSchema = z
       ctx.addIssue({
         code: 'custom',
         path: ['RAZORPAY_KEY_SECRET'],
-        message: 'RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET are required when BILLING_CHECKOUT_ENABLED=true',
+        message:
+          'RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET are required when BILLING_CHECKOUT_ENABLED=true',
       });
     }
     if (env.ADMIN_SUBSCRIPTIONS_ENABLED && !env.ADMIN_SUBSCRIPTIONS_SIGNING_SECRET) {
@@ -685,9 +697,11 @@ export const envSchema = z
     }
     if (
       env.ADMIN_SUBSCRIPTIONS_SIGNING_SECRET &&
-      [env.ADMIN_ANALYTICS_SIGNING_SECRET, env.ADMIN_CONTROL_SIGNING_SECRET, env.WEBSITE_INTAKE_SIGNING_SECRET].includes(
-        env.ADMIN_SUBSCRIPTIONS_SIGNING_SECRET,
-      )
+      [
+        env.ADMIN_ANALYTICS_SIGNING_SECRET,
+        env.ADMIN_CONTROL_SIGNING_SECRET,
+        env.WEBSITE_INTAKE_SIGNING_SECRET,
+      ].includes(env.ADMIN_SUBSCRIPTIONS_SIGNING_SECRET)
     ) {
       ctx.addIssue({
         code: 'custom',
@@ -788,11 +802,7 @@ export const envSchema = z
      * That is the failure mode this whole class of check exists to prevent, so
      * it fails at boot in every environment rather than only in production.
      */
-    const fcmParts = [
-      env.FIREBASE_PROJECT_ID,
-      env.FIREBASE_CLIENT_EMAIL,
-      env.FIREBASE_PRIVATE_KEY,
-    ];
+    const fcmParts = [env.FIREBASE_PROJECT_ID, env.FIREBASE_CLIENT_EMAIL, env.FIREBASE_PRIVATE_KEY];
     const fcmSet = fcmParts.filter(Boolean).length;
 
     if (fcmSet > 0 && fcmSet < fcmParts.length) {
@@ -840,8 +850,7 @@ export const envSchema = z
           code: 'custom',
           path: ['RELEASE_SHA'],
           message:
-            'must be set in production so errors group by deploy — ' +
-            'see docs/production.md',
+            'must be set in production so errors group by deploy — ' + 'see docs/production.md',
         });
       }
 
@@ -884,7 +893,9 @@ export function validateEnv(raw: Record<string, unknown>): Env {
   const result = envSchema.safeParse(raw);
 
   if (!result.success) {
-    const lines = result.error.issues.map((i) => `  • ${i.path.join('.') || '(root)'} ${i.message}`);
+    const lines = result.error.issues.map(
+      (i) => `  • ${i.path.join('.') || '(root)'} ${i.message}`,
+    );
     throw new Error(
       `Invalid environment configuration:\n${lines.join('\n')}\n\n` +
         `See .env.example for the full template.`,

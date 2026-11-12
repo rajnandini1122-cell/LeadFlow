@@ -150,6 +150,26 @@ export const TENANT_SCOPED_MODELS: Record<string, string> = {
    */
   Territory: 'organizationId',
   TerritoryCoverage: 'organizationId',
+  /*
+   * Email campaigns.
+   *
+   * A mailbox row holds an encrypted mail password; recipients, replies and
+   * consent records are customer correspondence and marketing choices. All of
+   * it is scoped on the same fail-closed terms as leads. The dispatcher and
+   * inbox sync reach them through runWithTenant, one organization at a time.
+   */
+  EmailMailbox: 'organizationId',
+  MarketingConsent: 'organizationId',
+  EmailSuppression: 'organizationId',
+  EmailTemplate: 'organizationId',
+  EmailAsset: 'organizationId',
+  EmailCampaign: 'organizationId',
+  EmailCampaignRecipient: 'organizationId',
+  EmailDeliveryAttempt: 'organizationId',
+  EmailInboundMessage: 'organizationId',
+  EmailProviderEvent: 'organizationId',
+  EmailProviderContact: 'organizationId',
+  EmailBroadcastReview: 'organizationId',
   // Plan is deliberately ABSENT: it is a global catalogue offered to every
   // tenant, and the public pricing page reads it with no tenant context at all.
   //

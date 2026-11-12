@@ -1,0 +1,13 @@
+{
+  "//": "Tests only: transpiles the ES-module-only dependencies of sanitize-html to CommonJS for Jest. See jest.config.js.",
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": false,
+    "module": "commonjs",
+    "target": "es2022",
+    "esModuleInterop": true,
+    "isolatedModules": true,
+    "noEmit": false,
+    "sourceMap": false
+  }
+}

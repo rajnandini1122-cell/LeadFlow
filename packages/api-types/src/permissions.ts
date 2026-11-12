@@ -129,6 +129,12 @@ export const PERMISSIONS = {
   DASHBOARD_VIEW_ALL: 'dashboard.view.all',
   REPORT_VIEW: 'report.view',
 
+  EMAIL_SETTINGS_MANAGE: 'email.settings.manage',
+  CAMPAIGN_VIEW: 'campaign.view',
+  CAMPAIGN_MANAGE: 'campaign.manage',
+  CAMPAIGN_SEND: 'campaign.send',
+  MARKETING_CONSENT_MANAGE: 'marketing.consent.manage',
+
   SUBSCRIPTION_VIEW: 'subscription.view',
   SUBSCRIPTION_MANAGE: 'subscription.manage',
 
@@ -227,6 +233,8 @@ const MANAGER_PERMISSIONS: Permission[] = [
   PERMISSIONS.INTEGRATION_INTAKE_VIEW,
   PERMISSIONS.DASHBOARD_VIEW_TEAM,
   PERMISSIONS.REPORT_VIEW,
+  PERMISSIONS.CAMPAIGN_VIEW,
+  PERMISSIONS.CAMPAIGN_MANAGE,
 ];
 
 const ADMIN_PERMISSIONS: Permission[] = [
@@ -259,6 +267,9 @@ const ADMIN_PERMISSIONS: Permission[] = [
   PERMISSIONS.DASHBOARD_VIEW_ALL,
   // Admins see the subscription and receive its reminders; only the OWNER pays.
   PERMISSIONS.SUBSCRIPTION_VIEW,
+  PERMISSIONS.EMAIL_SETTINGS_MANAGE,
+  PERMISSIONS.CAMPAIGN_SEND,
+  PERMISSIONS.MARKETING_CONSENT_MANAGE,
 ];
 
 const OWNER_PERMISSIONS: Permission[] = [

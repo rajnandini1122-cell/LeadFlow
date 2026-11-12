@@ -131,6 +131,9 @@ export const ACTIVITY_TYPES = [
   'LEAD_LOST',
   'DOCUMENT_ATTACHED',
   'DOCUMENT_REMOVED',
+  'EMAIL_SENT',
+  'EMAIL_FAILED',
+  'EMAIL_REPLY_RECEIVED',
 ] as const;
 export type ActivityType = (typeof ACTIVITY_TYPES)[number];
 
