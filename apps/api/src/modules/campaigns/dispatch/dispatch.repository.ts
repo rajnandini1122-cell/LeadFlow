@@ -1,7 +1,14 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../../common/prisma/prisma.service';
 import { TenantContextService } from '../../../common/tenancy/tenant-context.service';
-import type { EmailRecipientStatus, Prisma } from '../../../generated/prisma/client';
+import type {
+  EmailRecipientStatus,
+  EmailSendingProvider,
+  Prisma,
+} from '../../../generated/prisma/client';
+
+/** A Resend attempt younger than this can be retried under the same idempotency key (kept 24 h). */
+const IDEMPOTENT_RETRY_WINDOW_MS = 20 * 3_600_000;
 
 export interface RecoveredRecipient {
   id: string;
@@ -72,28 +79,63 @@ export class DispatchRepository {
       });
       if (stuck.length === 0) return [];
       const ids = stuck.map((row) => row.id);
-      await this.prisma.client.emailCampaignRecipient.updateMany({
-        where: { id: { in: ids }, status: 'SENDING' },
-        data: {
-          status: 'UNCERTAIN',
-          lockedBy: null,
-          lockedUntil: null,
-          lastResponse:
-            'The sending process stopped during this attempt; delivery is unknown and it was not retried.',
-        },
+      // Under Resend every attempt carried the recipient's idempotency key, so
+      // sending again within the key's lifetime cannot produce a second email.
+      const attempts = await this.prisma.client.emailDeliveryAttempt.findMany({
+        where: { recipientId: { in: ids } },
+        select: { recipientId: true, provider: true, startedAt: true },
+        orderBy: { startedAt: 'asc' },
       });
+      const firstAttempt = new Map<string, { provider: string; startedAt: Date }>();
+      for (const a of attempts)
+        if (!firstAttempt.has(a.recipientId)) firstAttempt.set(a.recipientId, a);
+      const retryable = ids.filter((id) => {
+        const first = firstAttempt.get(id);
+        return (
+          first?.provider === 'RESEND' &&
+          now.getTime() - first.startedAt.getTime() < IDEMPOTENT_RETRY_WINDOW_MS
+        );
+      });
+      const uncertain = ids.filter((id) => !retryable.includes(id));
+      if (retryable.length > 0) {
+        await this.prisma.client.emailCampaignRecipient.updateMany({
+          where: { id: { in: retryable }, status: 'SENDING' },
+          data: { status: 'QUEUED', lockedBy: null, lockedUntil: null, nextAttemptAt: now },
+        });
+      }
+      if (uncertain.length > 0) {
+        await this.prisma.client.emailCampaignRecipient.updateMany({
+          where: { id: { in: uncertain }, status: 'SENDING' },
+          data: {
+            status: 'UNCERTAIN',
+            lockedBy: null,
+            lockedUntil: null,
+            lastResponse:
+              'The sending process stopped during this attempt; delivery is unknown and it was not retried.',
+          },
+        });
+      }
       await this.prisma.client.emailDeliveryAttempt.updateMany({
         where: { recipientId: { in: ids }, finishedAt: null },
-        data: { finishedAt: now, outcome: 'UNCERTAIN', response: 'worker lease expired' },
+        data: { finishedAt: now, outcome: 'INTERRUPTED', response: 'worker lease expired' },
       });
-      return stuck;
+      // Only the UNCERTAIN ones are reported (and written to lead history).
+      return stuck.filter((row) => uncertain.includes(row.id));
     });
   }
 
   async organizationsWithWork(now: Date): Promise<string[]> {
     return this.tenantContext.runAsSystem('email dispatch: find due work', async () => {
       const rows = await this.prisma.client.emailCampaignRecipient.findMany({
-        where: { status: 'QUEUED', nextAttemptAt: { lte: now }, campaign: { status: 'SENDING' } },
+        where: {
+          status: 'QUEUED',
+          nextAttemptAt: { lte: now },
+          // Broadcast campaigns are delivered by Resend as a whole, never one by one here.
+          campaign: {
+            status: 'SENDING',
+            OR: [{ deliveryChannel: null }, { deliveryChannel: { not: 'RESEND_BROADCAST' } }],
+          },
+        },
         distinct: ['organizationId'],
         select: { organizationId: true },
         take: 200,
@@ -172,7 +214,12 @@ export class DispatchRepository {
    * which on a real database (not PGlite) sent past the hourly limit in the e2e
    * suite. A data-modifying statement's CTE is evaluated exactly once.
    */
-  async claim(limit: number, worker: string, leaseUntil: Date): Promise<ClaimedRecipient[]> {
+  async claim(
+    limit: number,
+    worker: string,
+    leaseUntil: Date,
+    provider: EmailSendingProvider = 'SMTP',
+  ): Promise<ClaimedRecipient[]> {
     const organizationId = this.tenantContext.requireOrganizationId();
     // eslint-disable-next-line no-restricted-syntax -- Prisma has no SKIP LOCKED; organizationId is bound explicitly and covered by test/tenant-isolation.e2e-spec.ts
     const rows = await this.prisma.client.$queryRaw<
@@ -195,6 +242,7 @@ export class DispatchRepository {
           AND q.status = 'QUEUED'
           AND q.next_attempt_at <= now()
           AND c.status = 'SENDING'
+          AND (c.delivery_channel IS NULL OR c.delivery_channel <> 'RESEND_BROADCAST')
         ORDER BY q.next_attempt_at, q.id
         LIMIT ${limit}
         FOR UPDATE OF q SKIP LOCKED
@@ -223,6 +271,7 @@ export class DispatchRepository {
           recipientId: r.id,
           campaignId: r.campaignId,
           attempt: r.attempts,
+          provider,
           worker,
         })),
       });
@@ -274,6 +323,7 @@ export class DispatchRepository {
       nextAttemptAt?: Date;
       skipReason?: string;
       undoAttempt?: boolean;
+      providerMessageId?: string;
     },
     now: Date,
   ): Promise<boolean> {
@@ -289,6 +339,7 @@ export class DispatchRepository {
     if (result.nextAttemptAt) data.nextAttemptAt = result.nextAttemptAt;
     if (result.skipReason) data.skipReason = result.skipReason;
     if (result.undoAttempt) data.attempts = { decrement: 1 };
+    if (result.providerMessageId) data.providerMessageId = result.providerMessageId;
     const updated = await this.prisma.client.emailCampaignRecipient.updateMany({
       where: { id: recipient.id, status: 'SENDING', lockedBy: worker },
       data,
@@ -344,7 +395,11 @@ export class DispatchRepository {
 
   async pauseSending(reason: string, now: Date): Promise<number> {
     const result = await this.prisma.client.emailCampaign.updateMany({
-      where: { status: 'SENDING' },
+      // Broadcasts are paused (before hand-off) by the broadcast service itself.
+      where: {
+        status: 'SENDING',
+        OR: [{ deliveryChannel: null }, { deliveryChannel: { not: 'RESEND_BROADCAST' } }],
+      },
       data: { status: 'PAUSED', pausedAt: now, pauseReason: reason.slice(0, 300) },
     });
     return result.count;
@@ -353,7 +408,10 @@ export class DispatchRepository {
   /** SENDING campaigns with nothing left queued or in flight are complete. */
   async completeFinished(now: Date): Promise<number> {
     const sending = await this.prisma.client.emailCampaign.findMany({
-      where: { status: 'SENDING' },
+      where: {
+        status: 'SENDING',
+        OR: [{ deliveryChannel: null }, { deliveryChannel: { not: 'RESEND_BROADCAST' } }],
+      },
       select: { id: true },
     });
     let completed = 0;

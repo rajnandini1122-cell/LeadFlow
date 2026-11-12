@@ -17,6 +17,7 @@ import { TenantContextService } from '../src/common/tenancy/tenant-context.servi
 import { MailboxService } from '../src/modules/campaigns/mailbox/mailbox.service';
 import { EmailDispatcher } from '../src/modules/campaigns/dispatch/email-dispatcher.service';
 import { DispatchRepository } from '../src/modules/campaigns/dispatch/dispatch.repository';
+import { AppConfig } from '../src/common/config/config.module';
 
 /**
  * Campaigns, end to end, against a real SMTP server over TLS.
@@ -133,28 +134,22 @@ describe('Email campaigns: compose, confirm, deliver', () => {
     tls = generateTestCertificate();
     smtp = await startFakeSmtp(tls, { user: SENDER, pass: PASSWORD });
     imap = await startFakeImap(tls, { user: SENDER, pass: PASSWORD });
-    ctx.app
-      .get(MailboxService)
-      .useConnectionDeps({
-        resolveHost: async () => '127.0.0.1',
-        testPorts: { smtp: smtp.port, imap: imap.port },
-        testCa: tls.cert,
-      });
+    ctx.app.get(MailboxService).useConnectionDeps({
+      resolveHost: async () => '127.0.0.1',
+      testPorts: { smtp: smtp.port, imap: imap.port },
+      testCa: tls.cert,
+    });
 
-    const saved = await ctx
-      .http()
-      .put('/api/v1/email/mailbox')
-      .set(owner())
-      .send({
-        emailAddress: SENDER,
-        imapHost: TEST_MAIL_HOST,
-        imapPort: 993,
-        imapSecurity: 'SSL_TLS',
-        smtpHost: TEST_MAIL_HOST,
-        smtpPort: 465,
-        smtpSecurity: 'SSL_TLS',
-        password: PASSWORD,
-      });
+    const saved = await ctx.http().put('/api/v1/email/mailbox').set(owner()).send({
+      emailAddress: SENDER,
+      imapHost: TEST_MAIL_HOST,
+      imapPort: 993,
+      imapSecurity: 'SSL_TLS',
+      smtpHost: TEST_MAIL_HOST,
+      smtpPort: 465,
+      smtpSecurity: 'SSL_TLS',
+      password: PASSWORD,
+    });
     expect(saved.status).toBe(200);
     expect(
       (await ctx.http().post('/api/v1/email/mailbox/test/smtp').set(owner())).body.data.ok,
@@ -579,39 +574,107 @@ describe('Email campaigns: compose, confirm, deliver', () => {
     expect(view.pauseReason).toContain('refused the email account');
     expect((await recipients(id))[0]).toMatchObject({ status: 'QUEUED', attempts: 0 });
     // Restore the right password for the remaining tests.
-    await ctx
-      .http()
-      .put('/api/v1/email/mailbox')
-      .set(owner())
-      .send({
-        emailAddress: SENDER,
-        imapHost: TEST_MAIL_HOST,
-        imapPort: 993,
-        imapSecurity: 'SSL_TLS',
-        smtpHost: TEST_MAIL_HOST,
-        smtpPort: 465,
-        smtpSecurity: 'SSL_TLS',
-        password: PASSWORD,
-      });
+    await ctx.http().put('/api/v1/email/mailbox').set(owner()).send({
+      emailAddress: SENDER,
+      imapHost: TEST_MAIL_HOST,
+      imapPort: 993,
+      imapSecurity: 'SSL_TLS',
+      smtpHost: TEST_MAIL_HOST,
+      smtpPort: 465,
+      smtpSecurity: 'SSL_TLS',
+      password: PASSWORD,
+    });
     await ctx.http().post('/api/v1/email/mailbox/test/smtp').set(owner());
     await ctx.http().post('/api/v1/email/mailbox/test/imap').set(owner());
     await ctx.http().patch('/api/v1/email/mailbox/sending').set(owner()).send({ enabled: true });
     await ctx.http().post(`/api/v1/email/campaigns/${id}/cancel`).set(owner());
   });
 
-  it('test emails go only to the signed-in user, never to a typed address', async () => {
+  /**
+   * Runs `fn` with the two email switches as given. The suite boots with the
+   * dispatcher switch off (so its timer never starts); only what the service
+   * reads per request is changed here. `undefined` stands for "not set".
+   */
+  const withSwitches = async <T>(
+    dispatch: boolean | undefined,
+    sending: boolean | undefined,
+    fn: () => Promise<T>,
+  ): Promise<T> => {
+    const config = ctx.app.get(AppConfig);
+    const real = config.get.bind(config);
+    const spy = jest
+      .spyOn(config, 'get')
+      .mockImplementation(((key: string) =>
+        key === 'EMAIL_DISPATCH_ENABLED'
+          ? dispatch
+          : key === 'EMAIL_CAMPAIGNS_SENDING_ENABLED'
+            ? sending
+            : real(key as never)) as typeof config.get);
+    try {
+      return await fn();
+    } finally {
+      spy.mockRestore();
+    }
+  };
+  const testSend = (id: string, as = owner()) => {
+    ctx.redis.flush(); // the route allows 5 a minute; these tests are about the switches
+    return ctx.http().post(`/api/v1/email/campaigns/${id}/test`).set(as).send({});
+  };
+
+  it('test emails go only to the signed-in user, never to a typed address (both switches on)', async () => {
     const city = tag();
     const id = await draft(city);
-    const res = await ctx
-      .http()
-      .post(`/api/v1/email/campaigns/${id}/test`)
-      .set(owner())
-      .send({ to: 'stranger@elsewhere.example' });
+    const res = await withSwitches(true, true, () =>
+      ctx
+        .http()
+        .post(`/api/v1/email/campaigns/${id}/test`)
+        .set(owner())
+        .send({ to: 'stranger@elsewhere.example' }),
+    );
     expect(res.status).toBe(200);
     expect(res.body.data).toMatchObject({ sentTo: ctx.orgA.owner.email, accepted: true });
     expect(smtp.messages).toHaveLength(1);
     expect(smtp.messages[0]!.to).toEqual([ctx.orgA.owner.email.toLowerCase()]);
     expect(smtp.messages[0]!.raw).toContain('[TEST]');
+  });
+
+  it.each([
+    ['dispatch off, sending off', false, false],
+    ['dispatch on, sending off', true, false],
+    ['dispatch off, sending on', false, true],
+    ['both unset', undefined, undefined],
+    ['dispatch unset, sending on', undefined, true],
+    ['dispatch on, sending unset', true, undefined],
+  ])(
+    'test emails are refused with %s — before any SMTP connection',
+    async (_label, dispatch, sending) => {
+      const id = await draft(tag());
+      smtp.reset();
+      const res = await withSwitches(dispatch, sending, () => testSend(id));
+      expect(res.status).toBe(400);
+      expect(res.body.error.message).toContain('Test emails are switched off');
+      expect(smtp.connections).toBe(0);
+      expect(smtp.logins).toBe(0);
+      expect(smtp.messages).toHaveLength(0);
+      const audited = await asSystem(() =>
+        prisma().auditLog.count({ where: { entityId: id, action: 'email.campaign.test_sent' } }),
+      );
+      expect(audited).toBe(0);
+    },
+  );
+
+  it('with both switches on, test sends still require the permission and stay inside the organization', async () => {
+    const id = await draft(tag());
+    smtp.reset();
+    await withSwitches(true, true, async () => {
+      expect((await testSend(id, auth(ctx.orgA.rep.accessToken))).status).toBe(403);
+      expect((await testSend(id, auth(ctx.orgB.owner.accessToken))).status).toBe(404);
+      expect((await ctx.http().post(`/api/v1/email/campaigns/${id}/test`).send({})).status).toBe(
+        401,
+      );
+    });
+    expect(smtp.connections).toBe(0);
+    expect(smtp.messages).toHaveLength(0);
   });
 
   it('another organization can neither see nor send it; a sales rep cannot send', async () => {

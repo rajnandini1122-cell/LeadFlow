@@ -7,6 +7,9 @@ import {
   type EmailCampaignCounts,
   type EmailCampaignListItem,
   type EmailCampaignRecipientView,
+  type EmailBroadcastExposure,
+  type EmailBroadcastReviewView,
+  type EmailBroadcastView,
   type EmailCampaignView,
   type EmailRecipientFilter,
   type EmailRenderedPreview,
@@ -22,11 +25,27 @@ import {
 } from '../../../common/audit/mutation-actor';
 import { parseEncryptionKey } from '../../../common/crypto/secret-box';
 import type { TenantPrincipal } from '../../../common/tenancy/tenant-context.service';
-import type { EmailCampaign, EmailRecipientStatus } from '../../../generated/prisma/client';
+import type {
+  EmailCampaign,
+  EmailMailbox,
+  EmailRecipientStatus,
+} from '../../../generated/prisma/client';
 import { ConsentRepository } from '../consent/consent.repository';
 import { deriveUnsubscribeToken, unsubscribeKey } from '../consent/unsubscribe-token';
 import { MailboxService } from '../mailbox/mailbox.service';
-import { composeMessage, sendOnce } from '../mailbox/mail-connection';
+import { composeMessage, sendOnce, type SmtpOutcome } from '../mailbox/mail-connection';
+import { sendViaResend } from '../mailbox/resend-transport';
+import {
+  BROADCAST_MERGE_FIELDS,
+  HANDED_TO_PROVIDER,
+  type BroadcastState,
+} from '../broadcast/broadcast-state';
+import {
+  BroadcastService,
+  type ReviewAction,
+  type ReviewOutcome,
+} from '../broadcast/broadcast.service';
+import { BroadcastRepository } from '../broadcast/broadcast.repository';
 import { prepareContent, TemplatesService } from '../templates/templates.service';
 import { TemplatesRepository } from '../templates/templates.repository';
 import type { MergeValues } from '../content/email-content';
@@ -44,6 +63,8 @@ export const CAMPAIGN_AUDIT = {
   PAUSED: 'email.campaign.paused',
   RESUMED: 'email.campaign.resumed',
   CANCELLED: 'email.campaign.cancelled',
+  BROADCAST_RESOLVED: 'email.campaign.broadcast_resolved',
+  BROADCAST_RESOLVE_REFUSED: 'email.campaign.broadcast_resolve_refused',
 } as const;
 
 const MAX_TEST_SENDS_PER_DAY = 20;
@@ -62,6 +83,8 @@ export class CampaignsService {
     private readonly mailbox: MailboxService,
     private readonly audit: AuditRepository,
     private readonly config: AppConfig,
+    private readonly broadcasts: BroadcastService,
+    private readonly broadcastRows: BroadcastRepository,
   ) {}
 
   // --- reading ---------------------------------------------------------------
@@ -278,17 +301,29 @@ export class CampaignsService {
 
   /**
    * Sends ONE copy to the signed-in user's own address — never to an address
-   * typed in, so this can never be used to mail strangers. Works before
-   * customer sending is enabled: proving the mailbox is part of activating it.
+   * typed in, so this can never be used to mail strangers.
+   *
+   * It is still a real send, so it is switched off with the rest of email:
+   * both EMAIL_DISPATCH_ENABLED and EMAIL_CAMPAIGNS_SENDING_ENABLED must be on.
+   * The check comes first, before the campaign, the mailbox or any provider
+   * is touched; unset switches read as off.
    */
   async testSend(
     id: string,
     principal: TenantPrincipal,
   ): Promise<{ sentTo: string; accepted: boolean; message: string }> {
+    this.requireTestSending();
     const campaign = await this.require(id);
     const mailbox = await this.mailbox.require();
-    if (!mailbox.lastSmtpOkAt)
-      throw AppException.validation('Test the SMTP connection in Email settings first.');
+    const tested =
+      mailbox.sendingProvider === 'RESEND' ? mailbox.providerOkAt : mailbox.lastSmtpOkAt;
+    if (!tested) {
+      throw AppException.validation(
+        mailbox.sendingProvider === 'RESEND'
+          ? 'Test Resend in Email settings first.'
+          : 'Test the SMTP connection in Email settings first.',
+      );
+    }
     if ((await this.repository.testSendsToday()) >= MAX_TEST_SENDS_PER_DAY) {
       throw AppException.validation(`At most ${MAX_TEST_SENDS_PER_DAY} test emails per day.`);
     }
@@ -300,6 +335,7 @@ export class CampaignsService {
       campaign: { ...campaign, subject: `[TEST] ${campaign.subject}` },
       organizationName,
       mailboxAddress: mailbox.emailAddress,
+      fromAddress: mailbox.fromAddress,
       recipient: {
         email: user.email,
         displayName: user.name,
@@ -315,17 +351,44 @@ export class CampaignsService {
       webBaseUrl: this.config.get('WEB_BASE_URL'),
     });
 
-    const outcome = await sendOnce(
-      this.mailbox.account(mailbox),
-      { from: mailbox.emailAddress, to: [user.email] },
-      await composeMessage(options),
-      this.mailbox.deps,
-    );
+    const resend = mailbox.sendingProvider === 'RESEND';
+    const outcome: SmtpOutcome = resend
+      ? await sendViaResend(
+          this.mailbox.resendApiKey(mailbox),
+          {
+            from: `${organizationName.replace(/[\r\n"<>,;:@\\]/g, ' ').trim() || 'LeadFlow'} <${mailbox.fromAddress ?? mailbox.emailAddress}>`,
+            to: user.email,
+            replyTo: mailbox.emailAddress,
+            subject: String(options.subject),
+            html: String(options.html),
+            text: String(options.text),
+            headers: {},
+            attachments: assets.map((a) => ({
+              filename: a.fileName,
+              content: Buffer.from(a.data).toString('base64'),
+              contentType: a.mimeType,
+            })),
+            tags: [
+              { name: 'campaign_id', value: campaign.id },
+              { name: 'kind', value: 'test' },
+            ],
+            idempotencyKey: `leadflow-test-${randomUUID()}`,
+          },
+          this.mailbox.deps.fetchImpl,
+        )
+      : await sendOnce(
+          this.mailbox.account(mailbox),
+          { from: mailbox.fromAddress ?? mailbox.emailAddress, to: [user.email] },
+          await composeMessage(options),
+          this.mailbox.deps,
+        );
     const accepted = outcome.kind === 'ACCEPTED';
     const message = accepted
-      ? `Accepted by ${mailbox.smtpHost} for ${user.email}. Acceptance is not proof of inbox delivery — check the inbox.`
+      ? `Accepted by ${resend ? 'Resend' : mailbox.smtpHost} for ${user.email}. Acceptance is not proof of inbox delivery — check the inbox.`
       : outcome.kind === 'MAILBOX'
-        ? 'The SMTP server refused the email account. Check the password in Email settings.'
+        ? resend
+          ? 'Resend refused the API key or the sending domain. Check them in Email settings.'
+          : 'The SMTP server refused the email account. Check the password in Email settings.'
         : `The test email was not accepted (${outcome.code ?? 'no reply code'}: ${outcome.response}).`;
     await this.audit.record({
       action: CAMPAIGN_AUDIT.TEST_SENT,
@@ -364,6 +427,15 @@ export class CampaignsService {
     const mailbox = await this.mailbox.require();
     if (!mailbox.enabled)
       throw AppException.validation('Turn the email account on in Email settings before sending.');
+    // How it will be delivered is fixed now, so changing the provider later never
+    // changes a campaign already in flight.
+    const deliveryChannel =
+      mailbox.sendingProvider === 'SMTP'
+        ? 'SMTP'
+        : campaign.purpose === 'PROMOTIONAL'
+          ? 'RESEND_BROADCAST'
+          : 'RESEND_EMAIL';
+    if (deliveryChannel === 'RESEND_BROADCAST') this.requireBroadcastReady(campaign, mailbox);
     await this.templates.requireAssets(campaign.assetIds);
 
     const now = new Date();
@@ -418,6 +490,8 @@ export class CampaignsService {
             selectedCount: audience.selected,
             eligibleCount: audience.eligible.length,
             excluded: audience.excluded,
+            deliveryChannel,
+            broadcastState: deliveryChannel === 'RESEND_BROADCAST' ? 'PENDING' : null,
           },
           tx,
         );
@@ -452,6 +526,7 @@ export class CampaignsService {
   }
 
   async pause(id: string, actor: MutationActor): Promise<EmailCampaignView> {
+    await this.refuseIfHandedToResend(id, 'paused');
     const moved = await this.repository.transition(
       id,
       { in: ['SCHEDULED', 'SENDING'] },
@@ -481,6 +556,12 @@ export class CampaignsService {
     if (!mailbox.enabled)
       throw AppException.validation('Turn the email account on in Email settings before resuming.');
     const campaign = await this.require(id);
+    if (campaign.broadcastState === 'NEEDS_REVIEW') {
+      throw AppException.conflict(
+        ERROR_CODES.CONFLICT,
+        'This broadcast needs review: choose Send again or Abandon instead of resuming.',
+      );
+    }
     const later = campaign.scheduledAt !== null && campaign.scheduledAt.getTime() > Date.now();
     const moved = await this.repository.transition(id, 'PAUSED', {
       status: later ? 'SCHEDULED' : 'SENDING',
@@ -501,6 +582,28 @@ export class CampaignsService {
 
   /** Stops everything still queued. A message already being handed to the server finishes its one attempt. */
   async cancel(id: string, actor: MutationActor): Promise<EmailCampaignView> {
+    const campaign = await this.require(id);
+    if (campaign.deliveryChannel === 'RESEND_BROADCAST') {
+      const state = campaign.broadcastState as BroadcastState;
+      if (state === 'NEEDS_REVIEW') {
+        throw AppException.conflict(
+          ERROR_CODES.CONFLICT,
+          'This broadcast needs review: choose Send again or Abandon, with a reason.',
+        );
+      }
+      if (HANDED_TO_PROVIDER.includes(state)) {
+        // Resend is asked to cancel; the live status decides what LeadFlow records.
+        const result = await this.broadcasts.cancelAtProvider(campaign);
+        await this.audit.record({
+          action: CAMPAIGN_AUDIT.CANCELLED,
+          entityType: 'EmailCampaign',
+          entityId: id,
+          ...auditAttribution(actor),
+          after: { atProvider: true, ...result },
+        });
+        return this.get(id);
+      }
+    }
     let cancelledRecipients = 0;
     await this.repository.inTransaction(async (tx) => {
       const moved = await this.repository.transition(
@@ -526,12 +629,163 @@ export class CampaignsService {
     return this.get(id);
   }
 
+  /** A person's decision on a broadcast that LeadFlow would not decide on its own. */
+  /**
+   * The one recovery path for a broadcast in NEEDS_REVIEW (API and campaign
+   * page alike). Every attempt — decided or refused — is written to the
+   * append-only email_broadcast_reviews table and to the audit log, with the
+   * actor, the reason, and the state before and after.
+   */
+  async resolveBroadcast(
+    id: string,
+    action: ReviewAction,
+    reason: string,
+    expectedVersion: number,
+    actor: MutationActor,
+  ): Promise<EmailCampaignView> {
+    this.requireCustomerSending();
+    const campaign = await this.require(id);
+    if (campaign.deliveryChannel !== 'RESEND_BROADCAST') {
+      throw AppException.validation('Only a Resend broadcast can be resolved this way.');
+    }
+    let result: ReviewOutcome | null = null;
+    let refusal: string | null = null;
+    try {
+      result = await this.broadcasts.resolveReview(campaign, action, expectedVersion);
+    } catch (error) {
+      refusal = error instanceof AppException ? error.message : 'Unexpected error';
+      await this.recordReview(campaign, action, reason, null, refusal, actor);
+      throw error;
+    }
+    await this.recordReview(campaign, action, reason, result, null, actor);
+    return this.get(id);
+  }
+
+  private async recordReview(
+    before: EmailCampaign,
+    action: ReviewAction,
+    reason: string,
+    result: ReviewOutcome | null,
+    refusal: string | null,
+    actor: MutationActor,
+  ): Promise<void> {
+    const after = (await this.repository.find(before.id)) ?? before;
+    const attribution = auditAttribution(actor);
+    await this.broadcastRows.recordReview({
+      campaignId: before.id,
+      actorUserId: attribution.actorUserId,
+      action,
+      reason: reason.slice(0, 500),
+      outcome: result?.outcome ?? 'refused',
+      refusal: refusal?.slice(0, 500) ?? null,
+      previousState: before.broadcastState,
+      previousStatus: before.status,
+      resultingState: after.broadcastState,
+      resultingStatus: after.status,
+      providerStatus: result?.providerStatus ?? after.broadcastProviderStatus,
+      recipientsClosed: result?.recipientsClosed ?? 0,
+    });
+    await this.audit.record({
+      action: result ? CAMPAIGN_AUDIT.BROADCAST_RESOLVED : CAMPAIGN_AUDIT.BROADCAST_RESOLVE_REFUSED,
+      entityType: 'EmailCampaign',
+      entityId: before.id,
+      ...attribution,
+      before: {
+        broadcastState: before.broadcastState,
+        status: before.status,
+        broadcastVersion: before.broadcastVersion,
+        broadcastError: before.broadcastError,
+      },
+      after: {
+        action,
+        reason,
+        ...(result ?? { outcome: 'refused', refusal }),
+        broadcastState: after.broadcastState,
+        status: after.status,
+      },
+    });
+  }
+
   // --- helpers -------------------------------------------------------------------
+
+  /**
+   * A broadcast Resend has been asked to send cannot be recalled from LeadFlow.
+   * (Resend can cancel a queued broadcast, stopping only the emails not yet
+   * delivered; that is done in Resend, and LeadFlow does not pretend otherwise.)
+   */
+  private async refuseIfHandedToResend(id: string, verb: string): Promise<void> {
+    const campaign = await this.require(id);
+    if (
+      campaign.deliveryChannel === 'RESEND_BROADCAST' &&
+      HANDED_TO_PROVIDER.includes(campaign.broadcastState as BroadcastState)
+    ) {
+      throw AppException.conflict(
+        ERROR_CODES.CONFLICT,
+        `This broadcast has already been handed to Resend and cannot be ${verb}. Cancel asks Resend to stop a queued or scheduled broadcast; emails already sent cannot be recalled.`,
+      );
+    }
+  }
+
+  /** Promotional broadcasts: the safeguards that must all be in place before any audience leaves LeadFlow. */
+  private requireBroadcastReady(campaign: EmailCampaign, mailbox: EmailMailbox): void {
+    if (!this.config.get('EMAIL_RESEND_BROADCASTS_ENABLED')) {
+      throw AppException.validation(
+        'Resend Broadcasts are not enabled on this LeadFlow server yet.',
+      );
+    }
+    if (mailbox.apiKeyAccess !== 'full') {
+      throw AppException.validation(
+        'Broadcasts need a full-access API key for the dedicated Resend marketing account. Test Resend in Email settings.',
+      );
+    }
+    if (!mailbox.domainVerifiedAt) {
+      throw AppException.validation(
+        'Promotional email needs a verified sending domain (DKIM and return path). Test Resend in Email settings.',
+      );
+    }
+    if (!mailbox.encryptedWebhookSecret) {
+      throw AppException.validation(
+        'Promotional email needs the Resend webhook, so unsubscribes, bounces and complaints reach LeadFlow.',
+      );
+    }
+    if (campaign.assetIds.length > 0) {
+      throw AppException.validation(
+        'Broadcasts cannot carry attachments. Link to the catalogue instead.',
+      );
+    }
+    // One message for everyone: only fields Resend can fill per contact.
+    const used = [...`${campaign.html} ${campaign.text}`.matchAll(/\{\{\s*([a-z_]+)\s*\}\}/gi)].map(
+      (m) => m[1]!.toLowerCase(),
+    );
+    const unsupported = [...new Set(used)].filter(
+      (f) => !(f in BROADCAST_MERGE_FIELDS) && f !== 'organization' && f !== 'sender_name',
+    );
+    if (unsupported.length > 0) {
+      throw AppException.validation(
+        `A broadcast can only personalise first name and last name. Remove: ${unsupported.map((f) => `{{${f}}}`).join(', ')}.`,
+      );
+    }
+    if (/\{\{\s*(first_name|last_name|full_name)\s*\}\}/i.test(campaign.subject)) {
+      throw AppException.validation('A broadcast subject cannot be personalised per recipient.');
+    }
+  }
 
   private requireCustomerSending(): void {
     if (!this.config.get('EMAIL_CAMPAIGNS_SENDING_ENABLED')) {
       throw AppException.validation(
-        'Sending campaigns to customers is not enabled on this LeadFlow server yet. Drafts, previews and test emails work.',
+        'Sending campaigns to customers is not enabled on this LeadFlow server yet. Drafts and previews work.',
+      );
+    }
+  }
+
+  /** Test emails are real sends: both email switches must be on (strictly true). */
+  private requireTestSending(): void {
+    if (
+      this.config.get('EMAIL_DISPATCH_ENABLED') !== true ||
+      this.config.get('EMAIL_CAMPAIGNS_SENDING_ENABLED') !== true
+    ) {
+      throw AppException.validation(
+        'Test emails are switched off on this LeadFlow server: email sending has not been enabled yet. Drafts and previews work.',
       );
     }
   }
@@ -615,6 +869,53 @@ export class CampaignsService {
       createdAt: campaign.createdAt.toISOString(),
       updatedAt: campaign.updatedAt.toISOString(),
       counts,
+      broadcast:
+        campaign.deliveryChannel === 'RESEND_BROADCAST' ? await this.broadcastView(campaign) : null,
+    };
+  }
+
+  private async broadcastView(campaign: EmailCampaign): Promise<EmailBroadcastView> {
+    const rows = await this.broadcastRows.reviews(campaign.id);
+    const names = await this.repository.userNames(
+      rows.map((r) => r.actorUserId).filter((v): v is string => v !== null),
+    );
+    const handed =
+      campaign.broadcastState === 'HANDED_OFF' ||
+      ['queued', 'scheduled', 'sent'].includes(campaign.broadcastProviderStatus ?? '');
+    const exposure: EmailBroadcastExposure = handed
+      ? 'HANDED_TO_RESEND'
+      : campaign.broadcastSendRequestedAt
+        ? 'MAY_HAVE_BEEN_SENT'
+        : 'NOT_SENT';
+    return {
+      state: campaign.broadcastState,
+      stateAt: iso(campaign.broadcastStateAt),
+      version: campaign.broadcastVersion,
+      error: campaign.broadcastError,
+      providerBroadcastId: campaign.providerBroadcastId,
+      sendRequestedAt: iso(campaign.broadcastSendRequestedAt),
+      lastCheckedAt: iso(campaign.broadcastCheckedAt),
+      lastProviderStatus: campaign.broadcastProviderStatus,
+      exposure,
+      needsReview: campaign.broadcastState === 'NEEDS_REVIEW' && campaign.status === 'PAUSED',
+      reviews: rows.map(
+        (r): EmailBroadcastReviewView => ({
+          id: r.id,
+          actorUserId: r.actorUserId,
+          actorName: r.actorUserId ? (names.get(r.actorUserId) ?? null) : null,
+          action: r.action as EmailBroadcastReviewView['action'],
+          reason: r.reason,
+          outcome: r.outcome as EmailBroadcastReviewView['outcome'],
+          refusal: r.refusal,
+          previousState: r.previousState,
+          previousStatus: r.previousStatus as EmailBroadcastReviewView['previousStatus'],
+          resultingState: r.resultingState,
+          resultingStatus: r.resultingStatus as EmailBroadcastReviewView['resultingStatus'],
+          providerStatus: r.providerStatus,
+          recipientsClosed: r.recipientsClosed,
+          createdAt: r.createdAt.toISOString(),
+        }),
+      ),
     };
   }
 }
