@@ -96,6 +96,7 @@ export const NAV_ITEMS: NavItem[] = [
     permission: PERMISSIONS.REPORT_VIEW,
   },
   { to: '/follow-ups', label: 'Follow-ups', icon: '◷', badge: 'overdue' },
+  { to: '/campaigns', label: 'Email campaigns', icon: '✉', permission: PERMISSIONS.CAMPAIGN_VIEW },
   { to: '/team', label: 'Team', icon: '⚇', permission: PERMISSIONS.USER_VIEW },
   // "Sales teams", not "Teams": the entry above is the member directory, and
   // two things called Team would be one thing nobody can find.
@@ -143,6 +144,12 @@ export const NAV_ITEMS: NavItem[] = [
     label: 'Plan & billing',
     icon: '◫',
     permission: PERMISSIONS.SUBSCRIPTION_VIEW,
+  },
+  {
+    to: '/settings/email',
+    label: 'Email account',
+    icon: '@',
+    permission: PERMISSIONS.EMAIL_SETTINGS_MANAGE,
   },
   { to: '/settings/security', label: 'Security', icon: '⚿' },
 ];
@@ -233,8 +240,7 @@ export function AppShell(): React.JSX.Element {
 
   const visible = NAV_ITEMS.filter(
     (item) =>
-      (!item.permission || can(item.permission)) &&
-      (!item.requiresOmnichannel || omnichannel),
+      (!item.permission || can(item.permission)) && (!item.requiresOmnichannel || omnichannel),
   );
 
   return (
@@ -316,14 +322,14 @@ export function AppShell(): React.JSX.Element {
         </nav>
 
         {/*
-          * The Android app, in the menu.
-          *
-          * A plain download link rather than a route, and rendered only when an
-          * APK has actually been published — the same manifest the settings
-          * card and the marketing page read, so the three cannot disagree about
-          * what is on offer. Sitting inside the scrollable nav rather than the
-          * pinned footer keeps the user block where people expect it.
-          */}
+         * The Android app, in the menu.
+         *
+         * A plain download link rather than a route, and rendered only when an
+         * APK has actually been published — the same manifest the settings
+         * card and the marketing page read, so the three cannot disagree about
+         * what is on offer. Sitting inside the scrollable nav rather than the
+         * pinned footer keeps the user block where people expect it.
+         */}
         {apk && (
           <div className="shrink-0 border-t border-slate-100 p-3">
             <a
@@ -396,10 +402,10 @@ export function AppShell(): React.JSX.Element {
 
           <div className="flex items-center gap-2">
             {/*
-              * The overdue pill stays. It is the one thing urgent enough to
-              * name in the header rather than hide behind a click, and it has
-              * been there since before the bell existed.
-              */}
+             * The overdue pill stays. It is the one thing urgent enough to
+             * name in the header rather than hide behind a click, and it has
+             * been there since before the bell existed.
+             */}
             {overdueCount > 0 && (
               <NavLink
                 to="/follow-ups"

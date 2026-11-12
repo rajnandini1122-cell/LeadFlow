@@ -5,6 +5,7 @@ import { AppException } from '../../../common/errors/app.exception';
 import { AuditRepository } from '../../../common/audit/audit.repository';
 import { auditAttribution, type MutationActor } from '../../../common/audit/mutation-actor';
 import {
+  credentialHint,
   openSecret,
   parseEncryptionKey,
   sealSecret,
@@ -20,12 +21,14 @@ import {
   type MailAccount,
 } from './mail-connection';
 import { MailboxRepository } from './mailbox.repository';
-import type { MailboxSendingDto, SaveMailboxDto } from './dto/mailbox.dto';
+import { checkResendKey, checkSendingDomainDns } from './resend-transport';
+import type { MailboxSendingDto, SaveMailboxDto, SaveProviderDto } from './dto/mailbox.dto';
 
 export const MAILBOX_AUDIT = {
   SAVED: 'email.mailbox.saved',
   TESTED: 'email.mailbox.tested',
   SENDING_CHANGED: 'email.mailbox.sending_changed',
+  PROVIDER_SAVED: 'email.mailbox.provider_saved',
 } as const;
 
 /** Fields that decide WHERE and AS WHOM LeadFlow connects. Changing any of them invalidates past tests. */
@@ -165,6 +168,134 @@ export class MailboxService {
     return this.view();
   }
 
+  /**
+   * How campaign mail is sent: SMTP through the mailbox, or the Resend HTTPS
+   * API. The API key and webhook secret are sealed exactly like the password.
+   *
+   * Campaigns must not share the platform's transactional key: a bad campaign
+   * must never be able to take password resets and invitations down with it.
+   */
+  async saveProvider(dto: SaveProviderDto, actor: MutationActor): Promise<MailboxView> {
+    const mailbox = await this.require();
+    const fromAddress = dto.fromAddress ?? mailbox.fromAddress ?? mailbox.emailAddress;
+    if (dto.provider === 'RESEND') {
+      if (!dto.apiKey && !mailbox.encryptedApiKey) {
+        throw AppException.validation('Enter the Resend API key for campaigns.');
+      }
+      const transactional = this.config.get('RESEND_API_KEY');
+      if (dto.apiKey && transactional && dto.apiKey === transactional) {
+        throw AppException.validation(
+          'Use a separate Resend API key for campaigns, not the one LeadFlow uses for sign-in and invitation emails.',
+        );
+      }
+    }
+    const changed =
+      dto.provider !== mailbox.sendingProvider ||
+      fromAddress !== (mailbox.fromAddress ?? mailbox.emailAddress) ||
+      Boolean(dto.apiKey) ||
+      Boolean(dto.webhookSecret);
+    await this.repository.update(mailbox.id, {
+      sendingProvider: dto.provider,
+      fromAddress: fromAddress === mailbox.emailAddress ? null : fromAddress,
+      ...(dto.apiKey
+        ? {
+            encryptedApiKey: sealSecret(dto.apiKey, this.key()),
+            apiKeyHint: credentialHint(dto.apiKey),
+          }
+        : {}),
+      ...(dto.webhookSecret
+        ? {
+            encryptedWebhookSecret: sealSecret(dto.webhookSecret, this.key()),
+            // Rotation: events signed with the old secret are still accepted for 24 hours.
+            encryptedWebhookSecretPrevious: mailbox.encryptedWebhookSecret,
+            webhookSecretRotatedAt: mailbox.encryptedWebhookSecret ? new Date() : null,
+          }
+        : {}),
+      ...(dto.apiKey ? { apiKeyAccess: null } : {}),
+      // A different way of sending must be proven again before it is used.
+      ...(changed
+        ? { enabled: false, providerOkAt: null, providerError: null, domainVerifiedAt: null }
+        : {}),
+      updatedBy: actorUserId(actor),
+    });
+    await this.audit.record({
+      action: MAILBOX_AUDIT.PROVIDER_SAVED,
+      entityType: 'EmailMailbox',
+      entityId: mailbox.id,
+      ...auditAttribution(actor),
+      before: {
+        provider: mailbox.sendingProvider,
+        fromAddress: mailbox.fromAddress ?? mailbox.emailAddress,
+      },
+      after: {
+        provider: dto.provider,
+        fromAddress,
+        ...(dto.apiKey ? { apiKey: 'changed' } : {}),
+        ...(dto.webhookSecret ? { webhookSecret: 'changed' } : {}),
+        ...(changed && mailbox.enabled ? { enabled: false } : {}),
+      },
+    });
+    return this.view();
+  }
+
+  /**
+   * Resend: the key works (checked without sending) and the From domain has
+   * the DKIM and return-path records Resend requires, read from public DNS.
+   * Both must hold before the mailbox can be switched on.
+   */
+  async testProvider(actor: MutationActor): Promise<MailConnectionTestResult> {
+    const mailbox = await this.require();
+    if (mailbox.sendingProvider !== 'RESEND') return this.test('smtp', actor);
+    const apiKey = this.resendApiKey(mailbox);
+    const from = mailbox.fromAddress ?? mailbox.emailAddress;
+    const [key, dns] = await Promise.all([
+      checkResendKey(apiKey, from, this.connectionDeps.fetchImpl),
+      checkSendingDomainDns(from, this.connectionDeps.dns),
+    ]);
+    const missing = [
+      !dns.dkim && 'DKIM (resend._domainkey.' + dns.domain + ')',
+      !dns.returnPathMx && 'return-path MX (send.' + dns.domain + ')',
+      !dns.returnPathSpf && 'return-path SPF (send.' + dns.domain + ')',
+    ].filter(Boolean);
+    const ok = key.ok && dns.ok;
+    const message = [
+      key.message,
+      dns.ok
+        ? dns.domain +
+          ': DKIM and return-path records found' +
+          (dns.dmarc ? '.' : '; no DMARC record.')
+        : dns.domain + ': missing ' + missing.join(', ') + '.',
+      mailbox.encryptedWebhookSecret
+        ? ''
+        : 'Add the webhook signing secret so bounces and complaints are recorded.',
+    ]
+      .filter(Boolean)
+      .join(' ');
+    const checkedAt = new Date();
+    await this.repository.update(mailbox.id, {
+      providerCheckAt: checkedAt,
+      ...(ok
+        ? { providerOkAt: checkedAt, providerError: null }
+        : { providerError: message.slice(0, 300) }),
+      domainVerifiedAt: dns.ok ? checkedAt : null,
+      apiKeyAccess: key.access,
+    });
+    await this.audit.record({
+      action: MAILBOX_AUDIT.TESTED,
+      entityType: 'EmailMailbox',
+      entityId: mailbox.id,
+      ...auditAttribution(actor),
+      after: {
+        protocol: 'RESEND',
+        ok,
+        access: key.access,
+        dkim: dns.dkim,
+        returnPath: dns.returnPathMx && dns.returnPathSpf,
+      },
+    });
+    return { ok, message, checkedAt: checkedAt.toISOString() };
+  }
+
   async test(kind: 'smtp' | 'imap', actor: MutationActor): Promise<MailConnectionTestResult> {
     const mailbox = await this.require();
     const account = this.account(mailbox);
@@ -207,10 +338,25 @@ export class MailboxService {
     if (hourlyLimit > dailyLimit) {
       throw AppException.validation('The hourly limit cannot be higher than the daily limit.');
     }
-    if (dto.enabled === true && (!mailbox.lastSmtpOkAt || !mailbox.lastImapOkAt)) {
-      throw AppException.validation(
-        'Test both the SMTP and the IMAP connection successfully before turning the mailbox on.',
-      );
+    if (dto.enabled === true) {
+      if (!mailbox.lastImapOkAt) {
+        throw AppException.validation(
+          'Test the IMAP connection (replies) successfully before turning the mailbox on.',
+        );
+      }
+      if (mailbox.sendingProvider === 'SMTP' && !mailbox.lastSmtpOkAt) {
+        throw AppException.validation(
+          'Test the SMTP connection successfully before turning the mailbox on.',
+        );
+      }
+      if (
+        mailbox.sendingProvider === 'RESEND' &&
+        (!mailbox.providerOkAt || !mailbox.domainVerifiedAt)
+      ) {
+        throw AppException.validation(
+          'Test Resend successfully (API key and the sending domain’s DKIM and return-path records) before turning the mailbox on.',
+        );
+      }
     }
     const enabled = dto.enabled ?? mailbox.enabled;
     await this.repository.update(mailbox.id, {
@@ -253,6 +399,28 @@ export class MailboxService {
       smtp: { host: mailbox.smtpHost, port: mailbox.smtpPort, security: mailbox.smtpSecurity },
       imap: { host: mailbox.imapHost, port: mailbox.imapPort, security: mailbox.imapSecurity },
     };
+  }
+
+  /** The campaign API key. Callers must not log, return or persist it. */
+  resendApiKey(mailbox: EmailMailbox): string {
+    if (!mailbox.encryptedApiKey) {
+      throw AppException.validation('Enter the Resend API key for campaigns.');
+    }
+    return openSecret(mailbox.encryptedApiKey, this.key());
+  }
+
+  /** The webhook signing secret, or null when none is configured. */
+  resendWebhookSecret(mailbox: EmailMailbox): string | null {
+    return mailbox.encryptedWebhookSecret
+      ? openSecret(mailbox.encryptedWebhookSecret, this.key())
+      : null;
+  }
+
+  /** The secret before the last rotation, while it is still within its 24-hour overlap. */
+  resendPreviousWebhookSecret(mailbox: EmailMailbox, now = new Date()): string | null {
+    if (!mailbox.encryptedWebhookSecretPrevious || !mailbox.webhookSecretRotatedAt) return null;
+    if (now.getTime() - mailbox.webhookSecretRotatedAt.getTime() > 24 * 3_600_000) return null;
+    return openSecret(mailbox.encryptedWebhookSecretPrevious, this.key());
   }
 
   async find(): Promise<EmailMailbox | null> {
@@ -305,6 +473,17 @@ export class MailboxService {
         smtp: { checkedAt: null, okAt: null, error: null },
         imap: { checkedAt: null, okAt: null, error: null },
         sync: { at: null, error: null, count: null },
+        sendingProvider: 'SMTP',
+        fromAddress: null,
+        resend: {
+          apiKeySet: false,
+          apiKeyHint: null,
+          webhookSecretSet: false,
+          webhookUrl: null,
+          domainVerifiedAt: null,
+          lastWebhookAt: null,
+        },
+        provider: { checkedAt: null, okAt: null, error: null },
         platform,
       };
     }
@@ -338,6 +517,24 @@ export class MailboxService {
         at: iso(mailbox.lastSyncAt),
         error: mailbox.lastSyncError,
         count: mailbox.lastSyncCount,
+      },
+      sendingProvider: mailbox.sendingProvider,
+      fromAddress: mailbox.fromAddress ?? mailbox.emailAddress,
+      resend: {
+        apiKeySet: Boolean(mailbox.encryptedApiKey),
+        apiKeyHint: mailbox.apiKeyHint,
+        webhookSecretSet: Boolean(mailbox.encryptedWebhookSecret),
+        webhookUrl:
+          this.config.get('WEB_BASE_URL').replace(/\/$/, '') +
+          '/api/v1/webhooks/email/resend/' +
+          mailbox.id,
+        domainVerifiedAt: iso(mailbox.domainVerifiedAt),
+        lastWebhookAt: iso(mailbox.lastWebhookAt),
+      },
+      provider: {
+        checkedAt: iso(mailbox.providerCheckAt),
+        okAt: iso(mailbox.providerOkAt),
+        error: mailbox.providerError,
       },
       platform,
     };

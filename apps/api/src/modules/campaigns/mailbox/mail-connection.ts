@@ -1,6 +1,10 @@
 import { createTransport, type Transporter } from 'nodemailer';
+import type Mail from 'nodemailer/lib/mailer';
+import MailComposer from 'nodemailer/lib/mail-composer';
+import SMTPConnection from 'nodemailer/lib/smtp-connection';
 import { ImapFlow, type ImapFlowOptions } from 'imapflow';
 import { resolvePublicMailHost, MailHostError, type Lookup } from './mail-host';
+import type { DnsLookups, FetchLike } from './resend-transport';
 
 /**
  * Connections to an organization's own mail server.
@@ -32,9 +36,7 @@ const SOCKET_TIMEOUT_MS = 30_000;
 const EHLO_NAME = 'leadflow.cravionventures.com';
 
 export type TransportFactory = typeof createTransport;
-export type ImapFactory = (
-  options: ImapFlowOptions,
-) => Pick<ImapFlow, 'connect' | 'logout' | 'close' | 'mailboxOpen'> & Partial<ImapFlow>;
+export type ImapFactory = (options: ImapFlowOptions) => ImapFlow;
 
 export interface ConnectionDeps {
   lookup?: Lookup;
@@ -44,6 +46,11 @@ export interface ConnectionDeps {
    * own tests (mail-host.spec.ts).
    */
   resolveHost?: (host: string) => Promise<string>;
+  /** Tests only: a fake Resend API and fake DNS answers. */
+  fetchImpl?: FetchLike;
+  dns?: DnsLookups;
+  /** Tests only: spacing between Resend calls (production: 110 ms, under 10/second). */
+  resendMinIntervalMs?: number;
   /** Tests only: the fake servers listen on ephemeral ports, not 465/993. */
   testPorts?: { smtp?: number; imap?: number };
   transportFactory?: TransportFactory;
@@ -245,31 +252,31 @@ export type SmtpOutcome =
   /** The mailbox itself is broken (sign-in refused): stop the campaign, keep the recipient queued. */
   | { kind: 'MAILBOX'; code: number | null; response: string };
 
-/** Commands that complete before any part of the message body is sent. */
-const BEFORE_BODY = new Set([
-  'CONN',
-  'EHLO',
-  'HELO',
-  'LHLO',
-  'STARTTLS',
-  'AUTH PLAIN',
-  'AUTH LOGIN',
-  'AUTH CRAM-MD5',
-  'AUTH XOAUTH2',
-  'MAIL FROM',
-  'RCPT TO',
-]);
+/**
+ * How far the conversation got, tracked by LeadFlow itself.
+ *
+ * nodemailer's own `command` on an error is NOT a reliable guide: an idle
+ * socket timeout is reported as 'CONN' whatever was in flight, including the
+ * message body. Trusting it would retry a message the server may already have
+ * taken. So the conversation is driven step by step and the stage is known:
+ *
+ *   connect, login — nothing about the message has been sent: safe to retry;
+ *   send           — MAIL FROM, RCPT TO and the body: without an explicit
+ *                    reply code, the outcome is unknown.
+ */
+export type SmtpStage = 'connect' | 'login' | 'send';
 
-export function classifySmtpError(error: unknown): SmtpOutcome {
+export function classifySmtpError(error: unknown, stage: SmtpStage): SmtpOutcome {
   const e = (error ?? {}) as MailError;
   const code = typeof e.responseCode === 'number' ? e.responseCode : null;
   const response = scrubResponse(String(e.message ?? 'SMTP error'));
   const codes = errorCodes(error);
 
-  if (codes.includes('EAUTH') || code === 535 || code === 534 || code === 530) {
+  if (error instanceof MailHostError) return { kind: 'MAILBOX', code: null, response };
+  if (stage === 'login' && (codes.includes('EAUTH') || (code !== null && code >= 500))) {
     return { kind: 'MAILBOX', code, response };
   }
-  if (error instanceof MailHostError) return { kind: 'MAILBOX', code: null, response };
+  if (codes.some((c) => TLS_CERT_CODES.has(c))) return { kind: 'MAILBOX', code, response };
 
   if (code !== null && code >= 500 && code < 600) {
     // 550/551/553 at RCPT, or 5.1.x enhanced codes, mean the address itself is bad.
@@ -282,19 +289,92 @@ export function classifySmtpError(error: unknown): SmtpOutcome {
     // An explicit deferral is an explicit "not accepted", at any stage.
     return { kind: 'RETRY', code, response };
   }
-  // No reply code: the connection failed. Whether that was before the body
-  // decides whether a retry could duplicate the message.
-  if (e.command && BEFORE_BODY.has(e.command.toUpperCase())) {
-    return { kind: 'RETRY', code, response };
+  // No reply code: the connection failed or went silent.
+  return stage === 'send'
+    ? { kind: 'UNCERTAIN', code, response }
+    : { kind: 'RETRY', code, response };
+}
+
+/** The finished message, exactly as it will be transmitted. */
+export function composeMessage(options: Mail.Options): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    new MailComposer(options)
+      .compile()
+      .build((error, message) => (error ? reject(error) : resolve(message)));
+  });
+}
+
+/**
+ * One message, one connection: connect, sign in, send, quit — with the stage
+ * known at every failure (see SmtpStage).
+ */
+export async function sendOnce(
+  account: MailAccount,
+  envelope: { from: string; to: string[] },
+  raw: Buffer,
+  deps: ConnectionDeps = {},
+): Promise<SmtpOutcome> {
+  let stage: SmtpStage = 'connect';
+  let connection: SMTPConnection | undefined;
+  try {
+    const address = await resolveMailHost(account.smtp.host, deps);
+    connection = new SMTPConnection({
+      host: address,
+      port: deps.testPorts?.smtp ?? account.smtp.port,
+      secure: account.smtp.security === 'SSL_TLS',
+      requireTLS: account.smtp.security === 'STARTTLS',
+      ignoreTLS: false,
+      name: EHLO_NAME,
+      tls: {
+        servername: account.smtp.host,
+        rejectUnauthorized: true,
+        minVersion: 'TLSv1.2',
+        ...(deps.testCa ? { ca: deps.testCa } : {}),
+      },
+      connectionTimeout: CONNECTION_TIMEOUT_MS,
+      greetingTimeout: CONNECTION_TIMEOUT_MS,
+      socketTimeout: SOCKET_TIMEOUT_MS,
+      logger: false,
+      debug: false,
+    });
+    // Errors are also emitted as events; the callbacks below are what count.
+    connection.on('error', () => undefined);
+    const conn = connection;
+    await new Promise<void>((resolve, reject) =>
+      conn.connect((err) => (err ? reject(err) : resolve())),
+    );
+    stage = 'login';
+    await new Promise<void>((resolve, reject) =>
+      conn.login({ user: account.username, pass: account.password }, (err) =>
+        err ? reject(err) : resolve(),
+      ),
+    );
+    stage = 'send';
+    const info = await new Promise<SMTPConnection.SentMessageInfo>((resolve, reject) =>
+      conn.send(envelope, raw, (err, result) => (err ? reject(err) : resolve(result))),
+    );
+    conn.quit();
+    if ((info.accepted?.length ?? 0) === 0) {
+      return {
+        kind: 'PERMANENT',
+        code: 550,
+        response: 'The server accepted the message for no recipient.',
+        recipientUnknown: false,
+      };
+    }
+    return {
+      kind: 'ACCEPTED',
+      code: 250,
+      response: scrubResponse(String(info.response ?? '250 accepted')),
+    };
+  } catch (error) {
+    try {
+      connection?.close();
+    } catch {
+      // already closed
+    }
+    return classifySmtpError(error, stage);
   }
-  if (
-    codes.includes('ECONNREFUSED') ||
-    codes.includes('ENOTFOUND') ||
-    (e.command ?? '').toUpperCase() === 'CONN'
-  ) {
-    return { kind: 'RETRY', code, response };
-  }
-  return { kind: 'UNCERTAIN', code, response };
 }
 
 /** Server responses are stored for diagnosis; strip anything that looks like an address of ours or a credential. */

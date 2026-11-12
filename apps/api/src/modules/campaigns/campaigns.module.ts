@@ -8,6 +8,20 @@ import { ConsentRepository } from './consent/consent.repository';
 import { ConsentService } from './consent/consent.service';
 import { UnsubscribeController } from './consent/unsubscribe.controller';
 import { UnsubscribeRepository } from './consent/unsubscribe.repository';
+import { BillingModule } from '../billing/billing.module';
+import { AudienceRepository } from './campaigns/audience.repository';
+import { CampaignsController } from './campaigns/campaigns.controller';
+import { CampaignsRepository } from './campaigns/campaigns.repository';
+import { CampaignsService } from './campaigns/campaigns.service';
+import { DispatchRepository } from './dispatch/dispatch.repository';
+import { EmailDispatcher } from './dispatch/email-dispatcher.service';
+import { InboxRepository } from './inbox/inbox.repository';
+import { InboxSyncService } from './inbox/inbox-sync.service';
+import { ProviderEventsController } from './provider-events/provider-events.controller';
+import { ProviderEventsRepository } from './provider-events/provider-events.repository';
+import { ProviderEventsService } from './provider-events/provider-events.service';
+import { BroadcastRepository } from './broadcast/broadcast.repository';
+import { BroadcastService } from './broadcast/broadcast.service';
 import { TemplatesController } from './templates/templates.controller';
 import { TemplatesRepository } from './templates/templates.repository';
 import { TemplatesService } from './templates/templates.service';
@@ -18,7 +32,15 @@ import { TemplatesService } from './templates/templates.service';
  * See docs/email/LEADFLOW_EMAIL_ARCHITECTURE.md.
  */
 @Module({
-  controllers: [MailboxController, ConsentController, UnsubscribeController, TemplatesController],
+  imports: [BillingModule],
+  controllers: [
+    CampaignsController,
+    MailboxController,
+    ConsentController,
+    UnsubscribeController,
+    TemplatesController,
+    ProviderEventsController,
+  ],
   providers: [
     MailboxService,
     MailboxRepository,
@@ -27,8 +49,27 @@ import { TemplatesService } from './templates/templates.service';
     UnsubscribeRepository,
     TemplatesService,
     TemplatesRepository,
+    CampaignsService,
+    CampaignsRepository,
+    AudienceRepository,
+    DispatchRepository,
+    EmailDispatcher,
+    InboxRepository,
+    InboxSyncService,
+    ProviderEventsService,
+    ProviderEventsRepository,
+    BroadcastService,
+    BroadcastRepository,
     AuditRepository,
   ],
-  exports: [MailboxService, ConsentRepository, TemplatesService],
+  exports: [
+    MailboxService,
+    ConsentRepository,
+    TemplatesService,
+    EmailDispatcher,
+    InboxSyncService,
+    ProviderEventsService,
+    BroadcastService,
+  ],
 })
 export class CampaignsModule {}
