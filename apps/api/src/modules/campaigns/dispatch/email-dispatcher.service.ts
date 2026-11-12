@@ -15,6 +15,7 @@ import { deriveUnsubscribeToken, unsubscribeKey } from '../consent/unsubscribe-t
 import { MailboxService } from '../mailbox/mailbox.service';
 import { composeMessage, sendOnce } from '../mailbox/mail-connection';
 import { sendViaResend, type ResendOutcome } from '../mailbox/resend-transport';
+import { SendingAllowlist } from '../content/sending-allowlist';
 import { normalizeEmailAddress, type MergeValues } from '../content/email-content';
 import { buildCampaignMessage, type MessageAttachment } from '../campaigns/mail-message';
 import { DispatchRepository, type ClaimedRecipient } from './dispatch.repository';
@@ -203,21 +204,25 @@ export class EmailDispatcher implements OnApplicationBootstrap, OnModuleDestroy 
       const account = provider === 'SMTP' ? this.mailbox.account(mailbox) : null;
       const apiKey = provider === 'RESEND' ? this.mailbox.resendApiKey(mailbox) : null;
 
+      const allowlist = new SendingAllowlist(this.config);
       for (let index = 0; index < claimed.length; index++) {
         const recipient = claimed[index]!;
         const campaign = campaigns.get(recipient.campaignId)!;
         const attempt = { id: recipient.id, attempt: recipient.attempts };
 
         // Checked again now, not trusted from confirmation time: an unsubscribe
-        // or a withdrawn consent in the meantime wins.
+        // or a withdrawn consent in the meantime wins. The recipient allowlist
+        // is checked here too, so nothing unapproved reaches SMTP or Resend.
         const email = normalizeEmailAddress(recipient.email);
         const skip = !email
           ? 'INVALID'
-          : facts.suppressed.has(recipient.email)
-            ? 'SUPPRESSED'
-            : campaign.purpose === 'PROMOTIONAL' && !facts.consented.has(recipient.email)
-              ? 'NO_CONSENT'
-              : null;
+          : !allowlist.allows(organizationId, recipient.email)
+            ? 'NOT_ALLOWLISTED'
+            : facts.suppressed.has(recipient.email)
+              ? 'SUPPRESSED'
+              : campaign.purpose === 'PROMOTIONAL' && !facts.consented.has(recipient.email)
+                ? 'NO_CONSENT'
+                : null;
         if (skip) {
           await this.repository.finish(
             attempt,

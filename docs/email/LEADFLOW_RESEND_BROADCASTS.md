@@ -29,6 +29,28 @@ copy to the signed-in user) is a real send too: it needs **both** `EMAIL_DISPATC
 is touched. Only the literal value `true` counts; unset or anything else is off. Connection tests in
 Email settings (SMTP sign-in, IMAP sign-in, Resend key and DNS checks) never send a message.
 
+### Recipient allowlist (fails closed)
+
+While sending is on, campaign email goes **only** to addresses on a server-side allowlist, in one
+organization, unless the owner deliberately lifts the restriction:
+
+| Variable                        | Meaning                                                                                        |
+| ------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `EMAIL_RECIPIENT_ALLOWLIST`     | Comma-separated addresses that may receive campaign email (case-insensitive).                  |
+| `EMAIL_ALLOWED_ORGANIZATION_ID` | The one organization allowed to send.                                                          |
+| `EMAIL_SENDING_UNRESTRICTED`    | `true` lifts the allowlist — the real activation, a separate decision. Anything else keeps it. |
+
+Either of the first two unset means **nobody** may receive campaign email. It is enforced on the
+server at every send path:
+
+- **Confirmation** (promotional and service messages): refused unless every eligible recipient is
+  approved and the organization matches. Nothing is queued.
+- **Dispatcher, at send time:** a recipient no longer approved is skipped (`NOT_ALLOWLISTED`) with
+  no SMTP or Resend call.
+- **Broadcasts:** an unapproved address is skipped before contact sync, so it is never sent to Resend
+  or placed in the segment.
+- **Test emails:** the signed-in user's own address must be approved.
+
 ## Resend API — what this relies on
 
 Checked against Resend's documentation on 2026-11-11 (re-checked for the PR #37 review). "Doc" means

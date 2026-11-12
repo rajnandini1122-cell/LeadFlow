@@ -6,6 +6,7 @@ import { TenantContextService } from '../../../common/tenancy/tenant-context.ser
 import type { EmailCampaign, EmailMailbox } from '../../../generated/prisma/client';
 import { normalizeEmailAddress, renderEmail, type MergeValues } from '../content/email-content';
 import { MailboxService } from '../mailbox/mailbox.service';
+import { SendingAllowlist } from '../content/sending-allowlist';
 import { BroadcastRepository } from './broadcast.repository';
 import {
   BROADCAST_MERGE_FIELDS,
@@ -703,20 +704,28 @@ export class BroadcastService {
     report.completed++;
   }
 
-  /** QUEUED recipients still eligible by LeadFlow's own records; the rest are skipped now. */
+  /**
+   * QUEUED recipients still eligible by LeadFlow's own records — and on the
+   * recipient allowlist — the rest are skipped now. Nobody skipped here is ever
+   * synced to Resend or left in the segment.
+   */
   private async eligibleRecipients(campaign: EmailCampaign) {
     const recipients = await this.repository.pendingRecipients(campaign.id);
     const facts = await this.repository.eligibility(recipients.map((r) => r.email));
+    const allowlist = new SendingAllowlist(this.config);
+    const organizationId = this.tenantContext.requireOrganizationId();
     const skip = new Map<string, string[]>();
     const keep: typeof recipients = [];
     for (const r of recipients) {
       const reason = !normalizeEmailAddress(r.email)
         ? 'INVALID'
-        : facts.suppressed.has(r.email)
-          ? 'SUPPRESSED'
-          : !facts.consented.has(r.email)
-            ? 'NO_CONSENT'
-            : null;
+        : !allowlist.allows(organizationId, r.email)
+          ? 'NOT_ALLOWLISTED'
+          : facts.suppressed.has(r.email)
+            ? 'SUPPRESSED'
+            : !facts.consented.has(r.email)
+              ? 'NO_CONSENT'
+              : null;
       if (reason) skip.set(reason, [...(skip.get(reason) ?? []), r.id]);
       else keep.push(r);
     }

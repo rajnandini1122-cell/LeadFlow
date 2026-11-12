@@ -7,6 +7,8 @@
 export const EMAIL_CAMPAIGNS_ENV = {
   EMAIL_CAMPAIGNS_SENDING_ENABLED: 'true',
   EMAIL_DISPATCH_ENABLED: 'false',
+  // The recipient allowlist is exercised by its own tests, which turn it back on.
+  EMAIL_SENDING_UNRESTRICTED: 'true',
 } as const;
 
 const previous: Record<string, string | undefined> = {};

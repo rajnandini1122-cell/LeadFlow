@@ -50,6 +50,7 @@ import { prepareContent, TemplatesService } from '../templates/templates.service
 import { TemplatesRepository } from '../templates/templates.repository';
 import type { MergeValues } from '../content/email-content';
 import { AudienceRepository, MAX_AUDIENCE } from './audience.repository';
+import { SendingAllowlist } from '../content/sending-allowlist';
 import { evaluateAudience, type AudienceResult } from './audience';
 import { CampaignsRepository } from './campaigns.repository';
 import { buildCampaignMessage, newMessageId } from './mail-message';
@@ -329,6 +330,12 @@ export class CampaignsService {
     }
     const user = await this.repository.userEmail(principal.userId);
     if (!user) throw AppException.forbidden();
+    const allowlist = new SendingAllowlist(this.config);
+    if (!allowlist.allows(principal.organizationId, user.email)) {
+      throw AppException.validation(
+        `${allowlist.refusal(principal.organizationId)} Your address is not approved for test emails.`,
+      );
+    }
     const organizationName = await this.repository.organizationName();
     const assets = await this.templateRows.loadAssets(campaign.assetIds);
     const { options } = buildCampaignMessage({
@@ -457,6 +464,17 @@ export class CampaignsService {
       throw AppException.conflict(
         ERROR_CODES.CONFLICT,
         `The audience changed: ${audience.eligible.length} recipients are eligible now, not ${dto.eligibleCount}. Review and confirm again.`,
+      );
+    }
+    // Every recipient must be on the server's recipient allowlist (unless
+    // sending is explicitly unrestricted): nothing unapproved is ever queued.
+    const allowlist = new SendingAllowlist(this.config);
+    const unapproved = audience.eligible.filter(
+      (member) => !allowlist.allows(principal.organizationId, member.email),
+    ).length;
+    if (unapproved > 0) {
+      throw AppException.validation(
+        `${allowlist.refusal(principal.organizationId)} ${unapproved} of ${audience.eligible.length} recipients are not approved, so this campaign cannot be confirmed.`,
       );
     }
 
