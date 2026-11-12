@@ -132,23 +132,18 @@ export async function registerVerifiedOrganization(
  * user with this email belongs to. Through the running app's client, for the
  * PGlite single-connection reason given on markMailboxProven below.
  */
-export async function disableLeadQualification(
-  app: INestApplication,
-  email: string,
-): Promise<void> {
+export async function disableLeadQualification(app: INestApplication, email: string): Promise<void> {
   const prisma = app.get(PrismaService).client;
-  await app
-    .get(TenantContextService)
-    .runAsSystem('e2e: qualification off for a registered org', async () => {
-      const memberships = await prisma.organizationUser.findMany({
-        where: { user: { email: email.toLowerCase() } },
-        select: { organizationId: true },
-      });
-      await prisma.organizationSettings.updateMany({
-        where: { organizationId: { in: memberships.map((m) => m.organizationId) } },
-        data: { leadQualificationEnabled: false },
-      });
+  await app.get(TenantContextService).runAsSystem('e2e: qualification off for a registered org', async () => {
+    const memberships = await prisma.organizationUser.findMany({
+      where: { user: { email: email.toLowerCase() } },
+      select: { organizationId: true },
     });
+    await prisma.organizationSettings.updateMany({
+      where: { organizationId: { in: memberships.map((m) => m.organizationId) } },
+      data: { leadQualificationEnabled: false },
+    });
+  });
 }
 
 export async function markMailboxProven(app: INestApplication, email: string): Promise<void> {

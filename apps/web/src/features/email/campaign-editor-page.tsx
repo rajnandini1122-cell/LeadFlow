@@ -404,6 +404,9 @@ function AudienceCard({
           <RecipientChecklist
             recipients={shown.recipients}
             truncated={shown.recipientsTruncated}
+            eligible={shown.eligible}
+            total={shown.recipientsTotal}
+            undisplayedEligible={shown.undisplayedEligible}
             excluded={filter.excludeEmails ?? []}
             onChange={onExcludeChange}
           />
@@ -418,14 +421,26 @@ function AudienceCard({
  * out of this campaign, tick again to put them back. Only shown to people who
  * may see every lead; the server applies the same list when it confirms.
  */
+export const TRUNCATION_WARNING =
+  'Only the first 1,000 addresses are displayed. Additional matching recipients are still included unless excluded by other filters.';
+
 export function RecipientChecklist({
   recipients,
   truncated,
+  eligible,
+  total,
+  undisplayedEligible,
   excluded,
   onChange,
 }: {
   recipients: EmailAudiencePreview['recipients'];
   truncated: boolean;
+  /** Everyone who will receive it, displayed or not. */
+  eligible: number;
+  /** Everyone the list could show (eligible + taken out by hand). */
+  total: number;
+  /** Eligible people outside the displayed list: they still receive it. */
+  undisplayedEligible: number;
   excluded: string[];
   onChange: (excludeEmails: string[]) => void;
 }): React.JSX.Element {
@@ -455,22 +470,56 @@ export function RecipientChecklist({
     onChange([...next]);
   };
   const included = recipients.filter((r) => !out.has(r.email)).length;
+  const notDisplayed = Math.max(0, total - recipients.length);
   return (
     <fieldset className="mt-4 border-t border-slate-100 pt-3">
       <legend className="sr-only">Recipients</legend>
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs">
         <span className="font-medium text-slate-700">
-          {included} of {recipients.length} ticked
+          {included} of {recipients.length} displayed selected
         </span>
         <span className="flex gap-2">
           <button type="button" className="underline" onClick={() => setAll(true)}>
-            Tick {q ? 'shown' : 'all'}
+            Select all displayed
           </button>
           <button type="button" className="underline" onClick={() => setAll(false)}>
-            Untick {q ? 'shown' : 'all'}
+            Deselect all displayed
           </button>
         </span>
       </div>
+      {truncated && (
+        <div
+          role="alert"
+          className="mb-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900"
+        >
+          <p className="font-medium">{TRUNCATION_WARNING}</p>
+          <dl className="mt-1 grid grid-cols-3 gap-2">
+            <div>
+              <dt>Total eligible audience</dt>
+              <dd className="font-semibold tabular-nums" data-testid="total-eligible">
+                {eligible}
+              </dd>
+            </div>
+            <div>
+              <dt>Displayed</dt>
+              <dd className="font-semibold tabular-nums">{recipients.length}</dd>
+            </div>
+            <div>
+              <dt>Not displayed</dt>
+              <dd className="font-semibold tabular-nums" data-testid="not-displayed">
+                {notDisplayed}
+              </dd>
+            </div>
+          </dl>
+          {undisplayedEligible > 0 && (
+            <p className="mt-1">
+              <strong>{undisplayedEligible}</strong> recipients who are not displayed{' '}
+              <strong>will still receive</strong> this campaign. Deselecting all displayed addresses
+              does not reach them; narrow the filters to leave them out.
+            </p>
+          )}
+        </div>
+      )}
       <input
         type="search"
         aria-label="Search recipients"
@@ -501,11 +550,6 @@ export function RecipientChecklist({
         ))}
         {visible.length === 0 && <li className="text-slate-500">No match.</li>}
       </ul>
-      {truncated && (
-        <p className="mt-2 text-xs text-amber-700">
-          Showing the first {recipients.length}. Narrow the filters to see everyone.
-        </p>
-      )}
     </fieldset>
   );
 }
@@ -660,7 +704,7 @@ function SendCard({
   );
 }
 
-function ConfirmDialog({
+export function ConfirmDialog({
   campaignId,
   purpose,
   filter,
@@ -682,6 +726,11 @@ function ConfirmDialog({
     audience.mutate({ purpose, filter: clean(filter) });
   }, []);
   const count = audience.data?.eligible ?? 0;
+  const undisplayed = audience.data?.undisplayedEligible ?? 0;
+  // Anyone who will receive it without having been shown in the list must be
+  // acknowledged explicitly: "Deselect all displayed" is never "send to nobody".
+  const [acknowledged, setAcknowledged] = useState(false);
+  const needsAck = audience.data?.recipientsListed === true && undisplayed > 0;
   const send = () =>
     action.mutate(
       {
@@ -716,6 +765,53 @@ function ConfirmDialog({
             handed to the mail server; queued messages can still be paused or cancelled.
           </p>
         )}
+        {audience.data?.recipientsListed && (
+          <dl
+            aria-label="Audience breakdown"
+            className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-700"
+          >
+            <dt>Total eligible recipients</dt>
+            <dd className="text-right font-semibold tabular-nums">{count}</dd>
+            <dt>Displayed in the list</dt>
+            <dd className="text-right font-semibold tabular-nums">
+              {audience.data.recipients.length}
+            </dd>
+            <dt>Not displayed</dt>
+            <dd className="text-right font-semibold tabular-nums">
+              {Math.max(0, audience.data.recipientsTotal - audience.data.recipients.length)}
+            </dd>
+            <dt>Excluded by hand</dt>
+            <dd className="text-right font-semibold tabular-nums">
+              {audience.data.excluded.EXCLUDED ?? 0}
+            </dd>
+          </dl>
+        )}
+        {audience.data && !audience.data.recipientsListed && (
+          <p className="mt-3 text-xs text-slate-600">
+            The address list is not available to your role; all {count} eligible recipients will
+            receive it.
+          </p>
+        )}
+        {needsAck && (
+          <div
+            role="alert"
+            className="mt-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900"
+          >
+            <p>
+              <strong>{undisplayed}</strong> {undisplayed === 1 ? 'recipient' : 'recipients'} not
+              displayed in the list <strong>will receive this campaign</strong>.
+            </p>
+            <label className="mt-2 flex items-start gap-2 text-xs">
+              <input
+                type="checkbox"
+                checked={acknowledged}
+                onChange={(e) => setAcknowledged(e.target.checked)}
+              />
+              I understand that {undisplayed} recipients I have not seen in the list will receive
+              it.
+            </label>
+          </div>
+        )}
         <div className="mt-4 space-y-2 text-sm">
           <label className="flex items-center gap-2">
             <input type="radio" checked={when === 'now'} onChange={() => setWhen('now')} /> Send now
@@ -748,7 +844,11 @@ function ConfirmDialog({
           <button
             type="button"
             disabled={
-              action.isPending || audience.isPending || count === 0 || (when === 'later' && !at)
+              action.isPending ||
+              audience.isPending ||
+              count === 0 ||
+              (when === 'later' && !at) ||
+              (needsAck && !acknowledged)
             }
             onClick={send}
             className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"

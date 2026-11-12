@@ -735,6 +735,43 @@ describe('Email campaigns: compose, confirm, deliver', () => {
       expect((await recipients(id)).map((r) => r.email)).toEqual([emails[0], emails[2]].sort());
     });
 
+    it('the preview reports exact listing counts; an audience that changes after the preview is refused at confirmation', async () => {
+      const city = tag();
+      const emails = ['m0', 'm1', 'm2'].map((p) => `${p}.${city}@cust.example`.toLowerCase());
+      for (const e of emails) await lead(city, e);
+      await grant(emails);
+      const id = await draft(city, { filter: { cities: [city], excludeEmails: [emails[2]] } });
+      const seen = await preview({ cities: [city], excludeEmails: [emails[2]] });
+      expect(seen).toMatchObject({
+        eligible: 2,
+        recipientsListed: true,
+        recipientsTotal: 3,
+        recipientsTruncated: false,
+        undisplayedEligible: 0,
+      });
+      // After the preview, one of the two loses eligibility.
+      expect(
+        (
+          await ctx
+            .http()
+            .post('/api/v1/email/eligibility/withdraw')
+            .set(owner())
+            .send({ emails: [emails[0]] })
+        ).status,
+      ).toBe(200);
+      const stale = await confirm(id, seen.eligible);
+      expect(stale.status).toBe(409);
+      expect(stale.body.error.message).toContain(
+        'The audience changed: 1 recipients are eligible now, not 2',
+      );
+      expect(
+        await asSystem(() => prisma().emailCampaignRecipient.count({ where: { campaignId: id } })),
+      ).toBe(0);
+      // Confirming the new count queues only the one still eligible — never the hand-excluded one.
+      expect((await confirm(id, 1)).status).toBe(200);
+      expect((await recipients(id)).map((r) => r.email)).toEqual([emails[1]]);
+    });
+
     it('contact history: not contacted yet versus contacted before', async () => {
       const city = tag();
       const fresh = `fresh.${city}@cust.example`.toLowerCase();

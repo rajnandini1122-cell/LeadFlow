@@ -132,6 +132,15 @@ export interface EmailAudiencePreview {
    */
   recipients: { email: string; name: string | null; company: string | null; excluded: boolean }[];
   recipientsTruncated: boolean;
+  /** Whether this user may see the address list at all (false: recipients is empty by design). */
+  recipientsListed: boolean;
+  /** Everyone the list could show: eligible plus taken out by hand. */
+  recipientsTotal: number;
+  /**
+   * Eligible people NOT in the displayed list. They WILL receive the campaign:
+   * "Deselect all displayed" does not reach them.
+   */
+  undisplayedEligible: number;
 }
 
 /** The most addresses the preview lists for ticking (the audience itself may be larger). */

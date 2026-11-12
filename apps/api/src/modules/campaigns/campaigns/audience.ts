@@ -97,3 +97,50 @@ export function evaluateAudience(
   excluded.EXCLUDED = handExcluded.length;
   return { selected: candidates.length, eligible, excluded, handExcluded };
 }
+
+export interface RecipientListing {
+  recipients: { email: string; name: string | null; company: string | null; excluded: boolean }[];
+  recipientsTruncated: boolean;
+  recipientsListed: boolean;
+  recipientsTotal: number;
+  undisplayedEligible: number;
+}
+
+/**
+ * The addresses the editor shows for ticking: eligible and hand-excluded
+ * together, sorted by address, at most `limit`. Says exactly how many eligible
+ * people fall outside the displayed list, because they still receive it.
+ */
+export function listRecipients(
+  result: Pick<AudienceResult, 'eligible' | 'handExcluded'>,
+  mayList: boolean,
+  limit: number,
+): RecipientListing {
+  const total = result.eligible.length + result.handExcluded.length;
+  if (!mayList) {
+    return {
+      recipients: [],
+      recipientsTruncated: false,
+      recipientsListed: false,
+      recipientsTotal: total,
+      undisplayedEligible: result.eligible.length,
+    };
+  }
+  const all = [
+    ...result.eligible.map((m) => ({ m, excluded: false })),
+    ...result.handExcluded.map((m) => ({ m, excluded: true })),
+  ].sort((a, b) => a.m.email.localeCompare(b.m.email));
+  const shown = all.slice(0, limit);
+  return {
+    recipients: shown.map(({ m, excluded }) => ({
+      email: m.email,
+      name: m.displayName,
+      company: m.merge.company ?? null,
+      excluded,
+    })),
+    recipientsTruncated: all.length > limit,
+    recipientsListed: true,
+    recipientsTotal: total,
+    undisplayedEligible: all.slice(limit).filter((r) => !r.excluded).length,
+  };
+}

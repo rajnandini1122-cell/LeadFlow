@@ -53,7 +53,7 @@ import { TemplatesRepository } from '../templates/templates.repository';
 import type { MergeValues } from '../content/email-content';
 import { AudienceRepository, MAX_AUDIENCE } from './audience.repository';
 import { SendingAllowlist } from '../content/sending-allowlist';
-import { evaluateAudience, type AudienceResult } from './audience';
+import { evaluateAudience, listRecipients, type AudienceResult } from './audience';
 import { CampaignsRepository } from './campaigns.repository';
 import { buildCampaignMessage, newMessageId } from './mail-message';
 import type { AudiencePreviewDto, ConfirmCampaignDto, SaveCampaignDto } from './dto/campaigns.dto';
@@ -252,7 +252,7 @@ export class CampaignsService {
             .slice(0, 20)
             .map((m) => ({ email: m.email, name: m.displayName, company: m.merge.company ?? null }))
         : [],
-      ...recipientList(result, mayList),
+      ...listRecipients(result, mayList, RECIPIENT_LIST_LIMIT),
     };
   }
 
@@ -959,27 +959,6 @@ function iso(value: Date | null | undefined): string | null {
 }
 
 /** Drops empty lists so a stored filter says only what was chosen. */
-/** Everyone who could receive it, with the hand-excluded marked, for ticking in the editor. */
-function recipientList(
-  result: AudienceResult,
-  mayList: boolean,
-): Pick<EmailAudiencePreview, 'recipients' | 'recipientsTruncated'> {
-  if (!mayList) return { recipients: [], recipientsTruncated: false };
-  const all = [
-    ...result.eligible.map((m) => ({ m, excluded: false })),
-    ...result.handExcluded.map((m) => ({ m, excluded: true })),
-  ].sort((a, b) => a.m.email.localeCompare(b.m.email));
-  return {
-    recipients: all.slice(0, RECIPIENT_LIST_LIMIT).map(({ m, excluded }) => ({
-      email: m.email,
-      name: m.displayName,
-      company: m.merge.company ?? null,
-      excluded,
-    })),
-    recipientsTruncated: all.length > RECIPIENT_LIST_LIMIT,
-  };
-}
-
 function cleanFilter(filter: EmailRecipientFilter): EmailRecipientFilter {
   const out: EmailRecipientFilter = {};
   for (const [key, value] of Object.entries(filter ?? {})) {
