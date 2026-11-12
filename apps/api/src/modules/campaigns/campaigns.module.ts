@@ -15,6 +15,13 @@ import { CampaignsRepository } from './campaigns/campaigns.repository';
 import { CampaignsService } from './campaigns/campaigns.service';
 import { DispatchRepository } from './dispatch/dispatch.repository';
 import { EmailDispatcher } from './dispatch/email-dispatcher.service';
+import { InboxRepository } from './inbox/inbox.repository';
+import { InboxSyncService } from './inbox/inbox-sync.service';
+import { ProviderEventsController } from './provider-events/provider-events.controller';
+import { ProviderEventsRepository } from './provider-events/provider-events.repository';
+import { ProviderEventsService } from './provider-events/provider-events.service';
+import { BroadcastRepository } from './broadcast/broadcast.repository';
+import { BroadcastService } from './broadcast/broadcast.service';
 import { TemplatesController } from './templates/templates.controller';
 import { TemplatesRepository } from './templates/templates.repository';
 import { TemplatesService } from './templates/templates.service';
@@ -32,6 +39,7 @@ import { TemplatesService } from './templates/templates.service';
     ConsentController,
     UnsubscribeController,
     TemplatesController,
+    ProviderEventsController,
   ],
   providers: [
     MailboxService,
@@ -46,8 +54,22 @@ import { TemplatesService } from './templates/templates.service';
     AudienceRepository,
     DispatchRepository,
     EmailDispatcher,
+    InboxRepository,
+    InboxSyncService,
+    ProviderEventsService,
+    ProviderEventsRepository,
+    BroadcastService,
+    BroadcastRepository,
     AuditRepository,
   ],
-  exports: [MailboxService, ConsentRepository, TemplatesService, EmailDispatcher],
+  exports: [
+    MailboxService,
+    ConsentRepository,
+    TemplatesService,
+    EmailDispatcher,
+    InboxSyncService,
+    ProviderEventsService,
+    BroadcastService,
+  ],
 })
 export class CampaignsModule {}

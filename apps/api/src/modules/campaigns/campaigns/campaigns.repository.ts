@@ -49,6 +49,16 @@ export class CampaignsRepository {
     return this.prisma.client.emailCampaign.findMany({ orderBy: { createdAt: 'desc' }, take });
   }
 
+  /** Display names of the people who acted (users are not tenant data; ids come from this tenant's rows). */
+  async userNames(ids: string[]): Promise<Map<string, string>> {
+    if (ids.length === 0) return new Map();
+    const rows = await this.prisma.client.user.findMany({
+      where: { id: { in: [...new Set(ids)] } },
+      select: { id: true, fullName: true },
+    });
+    return new Map(rows.map((r) => [r.id, r.fullName]));
+  }
+
   async find(id: string, tx?: PrismaTransaction) {
     return this.db(tx).emailCampaign.findFirst({ where: { id } });
   }

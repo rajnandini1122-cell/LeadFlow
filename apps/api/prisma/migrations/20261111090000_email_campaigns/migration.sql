@@ -4,8 +4,8 @@
 -- attempt log and processed inbound mail.
 -- =============================================================================
 --
--- ADDITIVE ONLY. Nine new tables, nine new enums and two new activity_type
--- values. No existing row or column changes. NOTHING is marketing-eligible
+-- ADDITIVE ONLY. Eleven new tables, ten new enums, three new activity_type
+-- values and one new notification_type value. No existing row or column changes. NOTHING is marketing-eligible
 -- after this migration: marketing_consents starts empty, and absence means
 -- "not eligible".
 --
@@ -46,6 +46,7 @@ CREATE TYPE "email_inbound_kind" AS ENUM ('REPLY', 'BOUNCE', 'OTHER');
 ALTER TYPE "activity_type" ADD VALUE 'EMAIL_SENT';
 ALTER TYPE "activity_type" ADD VALUE 'EMAIL_FAILED';
 ALTER TYPE "activity_type" ADD VALUE 'EMAIL_REPLY_RECEIVED';
+ALTER TYPE "notification_type" ADD VALUE 'EMAIL_REPLY_RECEIVED';
 
 BEGIN;
 SET LOCAL lock_timeout = '5s';
@@ -385,6 +386,112 @@ ALTER TABLE "email_inbound_messages" ADD CONSTRAINT "email_inbound_messages_reci
 ALTER TABLE "email_inbound_messages" ADD CONSTRAINT "email_inbound_messages_lead_id_fkey" FOREIGN KEY ("lead_id") REFERENCES "leads"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 
+-- --- campaign sending providers (SMTP or the Resend HTTPS API) and provider events
+-- CreateEnum
+CREATE TYPE "email_sending_provider" AS ENUM ('SMTP', 'RESEND');
+
+-- AlterTable
+ALTER TABLE "email_mailboxes" ADD COLUMN     "api_key_hint" VARCHAR(16),
+ADD COLUMN     "domain_verified_at" TIMESTAMPTZ(6),
+ADD COLUMN     "encrypted_api_key" TEXT,
+ADD COLUMN     "encrypted_webhook_secret" TEXT,
+ADD COLUMN     "from_address" VARCHAR(320),
+ADD COLUMN     "last_webhook_at" TIMESTAMPTZ(6),
+ADD COLUMN     "provider_check_at" TIMESTAMPTZ(6),
+ADD COLUMN     "provider_error" VARCHAR(300),
+ADD COLUMN     "provider_ok_at" TIMESTAMPTZ(6),
+ADD COLUMN     "sending_provider" "email_sending_provider" NOT NULL DEFAULT 'SMTP';
+
+-- AlterTable
+ALTER TABLE "email_campaign_recipients" ADD COLUMN     "complained_at" TIMESTAMPTZ(6),
+ADD COLUMN     "delivered_at" TIMESTAMPTZ(6),
+ADD COLUMN     "provider_message_id" VARCHAR(100);
+
+-- AlterTable
+ALTER TABLE "email_delivery_attempts" ADD COLUMN     "provider" "email_sending_provider" NOT NULL DEFAULT 'SMTP';
+
+-- CreateTable
+CREATE TABLE "email_provider_events" (
+    "id" UUID NOT NULL DEFAULT uuidv7(),
+    "organization_id" UUID NOT NULL,
+    "mailbox_id" UUID NOT NULL,
+    "provider" "email_sending_provider" NOT NULL,
+    "event_id" VARCHAR(100) NOT NULL,
+    "type" VARCHAR(40) NOT NULL,
+    "provider_message_id" VARCHAR(100),
+    "recipient_id" UUID,
+    "received_at" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "email_provider_events_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateIndex
+CREATE INDEX "email_provider_events_organization_id_received_at_idx" ON "email_provider_events"("organization_id", "received_at");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "email_provider_events_mailbox_id_event_id_key" ON "email_provider_events"("mailbox_id", "event_id");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "email_campaign_recipients_provider_message_id_key" ON "email_campaign_recipients"("provider_message_id");
+
+-- AddForeignKey
+ALTER TABLE "email_provider_events" ADD CONSTRAINT "email_provider_events_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "organizations"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "email_provider_events" ADD CONSTRAINT "email_provider_events_mailbox_id_organization_id_fkey" FOREIGN KEY ("mailbox_id", "organization_id") REFERENCES "email_mailboxes"("id", "organization_id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- --- Resend Broadcasts: delivery channel, broadcast state machine, contact ledger
+-- AlterTable
+ALTER TABLE "email_mailboxes" ADD COLUMN     "api_key_access" VARCHAR(10),
+ADD COLUMN     "encrypted_webhook_secret_previous" TEXT,
+ADD COLUMN     "webhook_secret_rotated_at" TIMESTAMPTZ(6);
+
+-- AlterTable
+ALTER TABLE "email_campaigns" ADD COLUMN     "broadcast_error" VARCHAR(500),
+ADD COLUMN     "broadcast_send_requested_at" TIMESTAMPTZ(6),
+ADD COLUMN     "broadcast_retry_since" TIMESTAMPTZ(6),
+ADD COLUMN     "broadcast_checked_at" TIMESTAMPTZ(6),
+ADD COLUMN     "broadcast_provider_status" VARCHAR(20),
+ADD COLUMN     "broadcast_version" INTEGER NOT NULL DEFAULT 0,
+ADD COLUMN     "broadcast_state" VARCHAR(30),
+ADD COLUMN     "broadcast_state_at" TIMESTAMPTZ(6),
+ADD COLUMN     "delivery_channel" VARCHAR(20),
+ADD COLUMN     "provider_broadcast_id" VARCHAR(100),
+ADD COLUMN     "provider_segment_id" VARCHAR(100);
+
+-- CreateTable
+CREATE TABLE "email_provider_contacts" (
+    "id" UUID NOT NULL DEFAULT uuidv7(),
+    "organization_id" UUID NOT NULL,
+    "mailbox_id" UUID NOT NULL,
+    "email" VARCHAR(320) NOT NULL,
+    "provider_contact_id" VARCHAR(100),
+    "unsubscribed" BOOLEAN NOT NULL DEFAULT false,
+    "unsubscribed_at" TIMESTAMPTZ(6),
+    "unsubscribe_pending" BOOLEAN NOT NULL DEFAULT false,
+    "unsubscribe_pushed_at" TIMESTAMPTZ(6),
+    "last_synced_at" TIMESTAMPTZ(6),
+    "created_at" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updated_at" TIMESTAMPTZ(6) NOT NULL,
+
+    CONSTRAINT "email_provider_contacts_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateIndex
+CREATE INDEX "email_provider_contacts_organization_id_unsubscribe_pending_idx" ON "email_provider_contacts"("organization_id", "unsubscribe_pending");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "email_provider_contacts_organization_id_email_key" ON "email_provider_contacts"("organization_id", "email");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "email_campaigns_provider_broadcast_id_key" ON "email_campaigns"("provider_broadcast_id");
+
+-- AddForeignKey
+ALTER TABLE "email_provider_contacts" ADD CONSTRAINT "email_provider_contacts_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "organizations"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "email_provider_contacts" ADD CONSTRAINT "email_provider_contacts_mailbox_id_organization_id_fkey" FOREIGN KEY ("mailbox_id", "organization_id") REFERENCES "email_mailboxes"("id", "organization_id") ON DELETE CASCADE ON UPDATE CASCADE;
+
 -- --- invariants the application relies on, enforced where they cannot be skipped
 ALTER TABLE "email_mailboxes"
     ADD CONSTRAINT "email_mailboxes_smtp_port_check" CHECK ("smtp_port" IN (465, 587)),
@@ -417,5 +524,80 @@ END;
 $$;
 CREATE TRIGGER "email_delivery_attempts_guard" BEFORE UPDATE OR DELETE ON "email_delivery_attempts"
   FOR EACH ROW EXECUTE FUNCTION "email_delivery_attempts_guard"();
+
+
+ALTER TABLE "email_campaigns"
+    ADD CONSTRAINT "email_campaigns_delivery_channel_check"
+        CHECK ("delivery_channel" IS NULL OR "delivery_channel" IN ('SMTP', 'RESEND_EMAIL', 'RESEND_BROADCAST')),
+    ADD CONSTRAINT "email_campaigns_broadcast_state_check"
+        CHECK ("broadcast_state" IS NULL OR "broadcast_state" IN (
+            'PENDING', 'CONTACTS_SYNCED', 'SEGMENT_READY', 'DRAFT_CREATED',
+            'SEND_REQUESTED', 'HANDED_OFF', 'CANCELLED_AT_PROVIDER', 'BLOCKED', 'NEEDS_REVIEW'));
+ALTER TABLE "email_mailboxes"
+    ADD CONSTRAINT "email_mailboxes_api_key_access_check"
+        CHECK ("api_key_access" IS NULL OR "api_key_access" IN ('full', 'sending'));
+ALTER TABLE "email_provider_contacts"
+    ADD CONSTRAINT "email_provider_contacts_email_lower_check" CHECK ("email" = lower("email"));
+
+-- --- an unsubscribe recorded in the provider ledger is permanent
+CREATE FUNCTION "email_provider_contacts_guard"() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'email_provider_contacts keeps unsubscribe history; rows are never deleted';
+  END IF;
+  IF OLD."unsubscribed_at" IS NOT NULL AND (NEW."unsubscribed_at" IS NULL OR NEW."unsubscribed" = false) THEN
+    RAISE EXCEPTION 'an unsubscribed contact cannot be resubscribed by LeadFlow';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+CREATE TRIGGER "email_provider_contacts_guard" BEFORE UPDATE OR DELETE ON "email_provider_contacts"
+  FOR EACH ROW EXECUTE FUNCTION "email_provider_contacts_guard"();
+
+-- --- NEEDS_REVIEW decisions: an append-only record of every attempt
+CREATE TABLE "email_broadcast_reviews" (
+    "id" UUID NOT NULL DEFAULT uuidv7(),
+    "organization_id" UUID NOT NULL,
+    "campaign_id" UUID NOT NULL,
+    "actor_user_id" UUID,
+    "action" VARCHAR(10) NOT NULL,
+    "reason" VARCHAR(500) NOT NULL,
+    "outcome" VARCHAR(30) NOT NULL,
+    "refusal" VARCHAR(500),
+    "previous_state" VARCHAR(30),
+    "previous_status" VARCHAR(20) NOT NULL,
+    "resulting_state" VARCHAR(30),
+    "resulting_status" VARCHAR(20) NOT NULL,
+    "provider_status" VARCHAR(20),
+    "recipients_closed" INTEGER NOT NULL DEFAULT 0,
+    "created_at" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "email_broadcast_reviews_pkey" PRIMARY KEY ("id"),
+    CONSTRAINT "email_broadcast_reviews_action_check" CHECK ("action" IN ('retry', 'abandon')),
+    CONSTRAINT "email_broadcast_reviews_outcome_check" CHECK ("outcome" IN (
+        'retrying', 'abandoned', 'already_handed_off', 'cancelled_at_provider', 'refused'))
+);
+CREATE INDEX "email_broadcast_reviews_organization_id_campaign_id_created_at_idx"
+    ON "email_broadcast_reviews"("organization_id", "campaign_id", "created_at");
+ALTER TABLE "email_broadcast_reviews" ADD CONSTRAINT "email_broadcast_reviews_organization_id_fkey"
+    FOREIGN KEY ("organization_id") REFERENCES "organizations"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "email_broadcast_reviews" ADD CONSTRAINT "email_broadcast_reviews_campaign_id_organization_id_fkey"
+    FOREIGN KEY ("campaign_id", "organization_id") REFERENCES "email_campaigns"("id", "organization_id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- Rows are never changed, and never deleted directly. Only a cascade from the
+-- organization or campaign being removed (trigger depth > 1) takes them away.
+CREATE FUNCTION "email_broadcast_reviews_guard"() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP = 'UPDATE' THEN
+    RAISE EXCEPTION 'email_broadcast_reviews is append-only; rows cannot be changed';
+  END IF;
+  IF pg_trigger_depth() < 2 THEN
+    RAISE EXCEPTION 'email_broadcast_reviews is append-only; rows are not deleted directly';
+  END IF;
+  RETURN OLD;
+END;
+$$;
+CREATE TRIGGER "email_broadcast_reviews_guard" BEFORE UPDATE OR DELETE ON "email_broadcast_reviews"
+  FOR EACH ROW EXECUTE FUNCTION "email_broadcast_reviews_guard"();
 
 COMMIT;

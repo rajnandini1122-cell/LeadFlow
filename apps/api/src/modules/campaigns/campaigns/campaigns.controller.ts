@@ -28,7 +28,12 @@ import { userActor } from '../../../common/audit/mutation-actor';
 import { AppException } from '../../../common/errors/app.exception';
 import type { TenantPrincipal } from '../../../common/tenancy/tenant-context.service';
 import { CampaignsService } from './campaigns.service';
-import { AudiencePreviewDto, ConfirmCampaignDto, SaveCampaignDto } from './dto/campaigns.dto';
+import {
+  AudiencePreviewDto,
+  ConfirmCampaignDto,
+  ResolveBroadcastDto,
+  SaveCampaignDto,
+} from './dto/campaigns.dto';
 
 const RECIPIENT_STATUSES: EmailRecipientStatus[] = [
   'QUEUED',
@@ -150,6 +155,27 @@ export class CampaignsController {
   @RequirePermissions(PERMISSIONS.CAMPAIGN_SEND)
   async cancel(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() principal: TenantPrincipal) {
     return this.campaigns.cancel(id, userActor(principal));
+  }
+
+  @Post(':id/broadcast/resolve')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSIONS.CAMPAIGN_SEND)
+  @ApiOperation({
+    summary:
+      'Decide on a broadcast in NEEDS_REVIEW: retry (only from a confirmed draft) or abandon. Audited.',
+  })
+  async resolveBroadcast(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ResolveBroadcastDto,
+    @CurrentUser() principal: TenantPrincipal,
+  ) {
+    return this.campaigns.resolveBroadcast(
+      id,
+      dto.action,
+      dto.reason,
+      dto.expectedVersion,
+      userActor(principal),
+    );
   }
 
   @Get(':id/recipients')

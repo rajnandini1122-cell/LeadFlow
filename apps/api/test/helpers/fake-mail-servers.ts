@@ -73,6 +73,8 @@ export interface FakeSmtp {
   port: number;
   messages: ReceivedMail[];
   logins: number;
+  /** Every connection opened, signed in or not. */
+  connections: number;
   onRcpt: (address: string) => RcptDecision;
   onData: (mail: ReceivedMail) => DataDecision;
   reset: () => void;
@@ -87,11 +89,13 @@ export async function startFakeSmtp(
     port: 0,
     messages: [],
     logins: 0,
+    connections: 0,
     onRcpt: () => 'accept',
     onData: () => 'accept',
     reset: () => {
       state.messages.length = 0;
       state.logins = 0;
+      state.connections = 0;
       state.onRcpt = () => 'accept';
       state.onData = () => 'accept';
     },
@@ -108,6 +112,10 @@ export async function startFakeSmtp(
     authMethods: ['PLAIN', 'LOGIN'],
     size: 25 * 1024 * 1024,
     logger: false,
+    onConnect(_session, callback) {
+      state.connections++;
+      callback();
+    },
     onAuth(auth, _session, callback) {
       if (auth.username === credentials.user && auth.password === credentials.pass) {
         state.logins++;
