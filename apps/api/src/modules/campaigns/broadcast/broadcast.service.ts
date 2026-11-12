@@ -628,8 +628,14 @@ export class BroadcastService {
     }
 
     let corrected = 0;
-    // Everyone LeadFlow may have added (the whole campaign), checked one by one.
-    for (const email of await this.repository.campaignEmails(campaign.id)) {
+    // Everyone LeadFlow may have added, checked one by one: the expected set,
+    // plus any campaign address LeadFlow has ever placed at Resend (its ledger).
+    // An address that was never synced (e.g. not on the allowlist) is never
+    // looked up, so it never leaves LeadFlow.
+    const campaignEmails = await this.repository.campaignEmails(campaign.id);
+    const placed = await this.repository.ledger(campaignEmails);
+    const toVerify = campaignEmails.filter((e) => expected.has(e) || placed.has(e));
+    for (const email of toVerify) {
       const segments = await client.contactSegments(email);
       if (segments.kind !== 'ok') {
         if (!expected.has(email) && segments.kind === 'http' && segments.status === 404) continue;
