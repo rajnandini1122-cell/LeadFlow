@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { EmailRecipientFilter } from '@leadflow/api-types';
+import type { EmailAudienceOptions, EmailRecipientFilter } from '@leadflow/api-types';
 import { PrismaService } from '../../../common/prisma/prisma.service';
 import type {
   LeadPriority,
@@ -35,6 +35,40 @@ const insensitiveIn = (values: string[]) => ({
 export class AudienceRepository {
   constructor(private readonly prisma: PrismaService) {}
 
+  /** Cities (with how many leads that have an email) and contact history, for filter checkboxes. */
+  async options(): Promise<EmailAudienceOptions> {
+    const base: Prisma.LeadWhereInput = {
+      deletedAt: null,
+      deactivatedAt: null,
+      email: { not: null },
+    };
+    const [byCity, never, total] = await Promise.all([
+      this.prisma.client.lead.groupBy({
+        by: ['city'],
+        where: { ...base, city: { not: null } },
+        _count: { _all: true },
+      }),
+      this.prisma.client.lead.count({ where: { ...base, lastContactedAt: null } }),
+      this.prisma.client.lead.count({ where: base }),
+    ]);
+    // Same city typed differently ("Pune", "pune ") counts as one.
+    const merged = new Map<string, { name: string; count: number }>();
+    for (const row of byCity) {
+      const name = (row.city ?? '').trim();
+      if (!name) continue;
+      const key = name.toLowerCase();
+      const entry = merged.get(key) ?? { name, count: 0 };
+      entry.count += row._count._all;
+      merged.set(key, entry);
+    }
+    return {
+      cities: [...merged.values()]
+        .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+        .slice(0, 300),
+      contacted: { never, contacted: total - never },
+    };
+  }
+
   async candidates(filter: EmailRecipientFilter): Promise<AudienceCandidate[]> {
     const where: Prisma.LeadWhereInput = {
       deletedAt: null,
@@ -48,6 +82,10 @@ export class AudienceRepository {
     }
     if (filter.sources?.length) where.source = insensitiveIn(filter.sources);
     if (filter.cities?.length) where.city = insensitiveIn(filter.cities);
+    const contacted = new Set(filter.contacted ?? []);
+    if (contacted.size === 1) {
+      where.lastContactedAt = contacted.has('NEVER') ? null : { not: null };
+    }
     if (filter.states?.length) where.state = insensitiveIn(filter.states);
     if (filter.countries?.length)
       where.country = { in: filter.countries.map((c) => c.toUpperCase()) };

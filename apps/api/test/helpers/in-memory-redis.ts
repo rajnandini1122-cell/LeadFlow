@@ -88,8 +88,7 @@ export class InMemoryRedis {
 
     this.store.set(key, {
       value: String(current),
-      expiresAt:
-        existing && existing.expiresAt > Date.now() ? existing.expiresAt : Number.MAX_SAFE_INTEGER,
+      expiresAt: existing && existing.expiresAt > Date.now() ? existing.expiresAt : Number.MAX_SAFE_INTEGER,
     });
 
     return current;

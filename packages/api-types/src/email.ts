@@ -86,7 +86,14 @@ export const EMAIL_MERGE_FIELDS = [
 export type EmailMergeField = (typeof EMAIL_MERGE_FIELDS)[number];
 
 /** Why an address the filter matched will not be sent to. */
-export const EMAIL_EXCLUSION_REASONS = ['INVALID', 'SUPPRESSED', 'NO_CONSENT', 'DUPLICATE'] as const;
+/** EXCLUDED: matched the filters but taken out by hand in the recipient list. */
+export const EMAIL_EXCLUSION_REASONS = [
+  'INVALID',
+  'SUPPRESSED',
+  'NO_CONSENT',
+  'DUPLICATE',
+  'EXCLUDED',
+] as const;
 export type EmailExclusionReason = (typeof EMAIL_EXCLUSION_REASONS)[number];
 
 export interface EmailRecipientFilter {
@@ -101,6 +108,16 @@ export interface EmailRecipientFilter {
   industries?: string[];
   qualifications?: string[];
   includeContacts?: boolean;
+  /** Addresses taken out by hand from the matching list (lowercase). */
+  excludeEmails?: string[];
+  /** NEVER: no call or message logged yet; CONTACTED: reached at least once. Both or neither: everyone. */
+  contacted?: ('NEVER' | 'CONTACTED')[];
+}
+
+/** Values the recipient filter can offer as checkboxes, from this organization's own leads. */
+export interface EmailAudienceOptions {
+  cities: { name: string; count: number }[];
+  contacted: { never: number; contacted: number };
 }
 
 export interface EmailAudiencePreview {
@@ -108,7 +125,26 @@ export interface EmailAudiencePreview {
   eligible: number;
   excluded: Record<EmailExclusionReason, number>;
   sample: { email: string; name: string | null; company: string | null }[];
+  /**
+   * Everyone the filters match who could receive it, plus the ones taken out by
+   * hand (excluded: true) so they can be put back. Only for someone who may see
+   * every lead; empty otherwise. Capped at RECIPIENT_LIST_LIMIT.
+   */
+  recipients: { email: string; name: string | null; company: string | null; excluded: boolean }[];
+  recipientsTruncated: boolean;
+  /** Whether this user may see the address list at all (false: recipients is empty by design). */
+  recipientsListed: boolean;
+  /** Everyone the list could show: eligible plus taken out by hand. */
+  recipientsTotal: number;
+  /**
+   * Eligible people NOT in the displayed list. They WILL receive the campaign:
+   * "Deselect all displayed" does not reach them.
+   */
+  undisplayedEligible: number;
 }
+
+/** The most addresses the preview lists for ticking (the audience itself may be larger). */
+export const RECIPIENT_LIST_LIMIT = 1000;
 
 export interface EmailTemplateView {
   id: string;

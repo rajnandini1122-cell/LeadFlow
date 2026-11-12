@@ -3,6 +3,8 @@ import { Injectable, Logger } from '@nestjs/common';
 import {
   ERROR_CODES,
   PERMISSIONS,
+  RECIPIENT_LIST_LIMIT,
+  type EmailAudienceOptions,
   type EmailAudiencePreview,
   type EmailCampaignCounts,
   type EmailCampaignListItem,
@@ -51,7 +53,7 @@ import { TemplatesRepository } from '../templates/templates.repository';
 import type { MergeValues } from '../content/email-content';
 import { AudienceRepository, MAX_AUDIENCE } from './audience.repository';
 import { SendingAllowlist } from '../content/sending-allowlist';
-import { evaluateAudience, type AudienceResult } from './audience';
+import { evaluateAudience, listRecipients, type AudienceResult } from './audience';
 import { CampaignsRepository } from './campaigns.repository';
 import { buildCampaignMessage, newMessageId } from './mail-message';
 import type { AudiencePreviewDto, ConfirmCampaignDto, SaveCampaignDto } from './dto/campaigns.dto';
@@ -226,6 +228,10 @@ export class CampaignsService {
     return this.get(id);
   }
 
+  async audienceOptions(): Promise<EmailAudienceOptions> {
+    return this.audience.options();
+  }
+
   /**
    * Who the filter would reach, and why some would not. Counts for everyone with
    * campaign access; the sample of addresses only for someone who may see every
@@ -246,6 +252,7 @@ export class CampaignsService {
             .slice(0, 20)
             .map((m) => ({ email: m.email, name: m.displayName, company: m.merge.company ?? null }))
         : [],
+      ...listRecipients(result, mayList, RECIPIENT_LIST_LIMIT),
     };
   }
 
@@ -835,6 +842,7 @@ export class CampaignsService {
       purpose,
       { consented, suppressed: new Set(suppressions.keys()) },
       await this.repository.organizationName(),
+      new Set((filter.excludeEmails ?? []).map((e) => e.trim().toLowerCase())),
     );
   }
 
