@@ -1064,6 +1064,152 @@ describe('Email campaigns: compose, confirm, deliver', () => {
       );
     });
 
+    describe('eligibility added by hand (an address that is no lead or contact)', () => {
+      const listed = async (email: string, as = owner()) => {
+        const res = await ctx
+          .http()
+          .get('/api/v1/email/eligibility')
+          .query({ search: email })
+          .set(as);
+        expect(res.status).toBe(200);
+        return (res.body.data as { email: string }[]).filter((r) => r.email === email);
+      };
+      const withdrawOne = (email: string, note: string, as = owner()) =>
+        ctx
+          .http()
+          .post('/api/v1/email/eligibility/withdraw')
+          .set(as)
+          .send({ emails: [email], note });
+      const grantOne = (email: string, as = owner()) =>
+        ctx
+          .http()
+          .post('/api/v1/email/eligibility/grant')
+          .set(as)
+          .send({
+            emails: [email],
+            basis: 'CONSENT',
+            note: 'Given 2026-11-13 via signed enquiry form',
+          });
+      const rows = (email: string) =>
+        asSystem(() =>
+          prisma().marketingConsent.findMany({
+            where: { email: email.toLowerCase() },
+            select: { organizationId: true, status: true },
+          }),
+        );
+
+      it('is never eligible by itself; "not eligible" then a recorded grant; a custom-list campaign then reaches it', async () => {
+        const city = tag();
+        const email = `manual.${city}@inbox.example`.toLowerCase();
+        const custom = { source: 'CUSTOM', customEmails: [email] };
+
+        // Nothing is created just because an address is typed into a campaign.
+        expect(await listed(email)).toEqual([]);
+        expect(await preview(custom)).toMatchObject({ selected: 1, eligible: 0 });
+        expect(await rows(email)).toEqual([]);
+
+        // Recorded as not eligible: listed, still not eligible.
+        expect((await withdrawOne(email, 'Permission not established')).status).toBe(200);
+        expect(await listed(email)).toEqual([
+          expect.objectContaining({
+            email,
+            sources: ['MANUAL'],
+            status: 'WITHDRAWN',
+            note: 'Permission not established',
+          }),
+        ]);
+        expect(await preview(custom)).toMatchObject({ eligible: 0, excluded: { NO_CONSENT: 1 } });
+
+        // A recorded grant, with its evidence, makes it eligible.
+        expect((await grantOne(email)).body.data).toEqual({ granted: [email], refused: [] });
+        expect(await listed(email)).toEqual([
+          expect.objectContaining({
+            sources: ['MANUAL'],
+            status: 'GRANTED',
+            basis: 'CONSENT',
+            note: 'Given 2026-11-13 via signed enquiry form',
+          }),
+        ]);
+        expect(await preview(custom)).toMatchObject({ selected: 1, eligible: 1 });
+
+        // The same address in other casing never makes a second record.
+        expect((await grantOne(email.toUpperCase())).status).toBe(200);
+        expect(await rows(email)).toEqual([{ organizationId: ctx.orgA.id, status: 'GRANTED' }]);
+
+        // The existing custom-list flow queues it.
+        const id = await draft(city, { filter: custom });
+        expect((await confirm(id, 1)).status).toBe(200);
+        expect((await recipients(id)).map((r) => [r.email, r.leadId])).toEqual([[email, null]]);
+      });
+
+      it('stays inside the organization and needs the consent permission', async () => {
+        const email = `iso.${tag()}@inbox.example`.toLowerCase();
+        expect((await grantOne(email, auth(ctx.orgA.rep.accessToken))).status).toBe(403);
+        expect((await withdrawOne(email, 'x', auth(ctx.orgA.rep.accessToken))).status).toBe(403);
+        expect(await rows(email)).toEqual([]);
+
+        expect((await grantOne(email)).status).toBe(200);
+        // Another organization neither sees it nor gains eligibility from it.
+        expect(await listed(email, auth(ctx.orgB.owner.accessToken))).toEqual([]);
+        ctx.redis.flush();
+        const other = await ctx
+          .http()
+          .post('/api/v1/email/campaigns/audience')
+          .set(auth(ctx.orgB.owner.accessToken))
+          .send({ purpose: 'PROMOTIONAL', filter: { source: 'CUSTOM', customEmails: [email] } });
+        expect(other.body.data).toMatchObject({ selected: 1, eligible: 0 });
+        expect(await rows(email)).toEqual([{ organizationId: ctx.orgA.id, status: 'GRANTED' }]);
+      });
+
+      it('suppression still wins: an unsubscribe cannot be granted; a manual suppression keeps it out', async () => {
+        const unsubscribed = `unsub.${tag()}@inbox.example`.toLowerCase();
+        await asSystem(() =>
+          prisma().emailSuppression.create({
+            data: {
+              organizationId: ctx.orgA.id,
+              email: unsubscribed,
+              reason: 'UNSUBSCRIBED',
+              source: 'e2e',
+            },
+          }),
+        );
+        expect((await grantOne(unsubscribed)).body.data).toEqual({
+          granted: [],
+          refused: [{ email: unsubscribed, reason: 'unsubscribed' }],
+        });
+        expect(await rows(unsubscribed)).toEqual([]);
+
+        const blocked = `blocked.${tag()}@inbox.example`.toLowerCase();
+        expect((await grantOne(blocked)).status).toBe(200);
+        expect(
+          (
+            await ctx
+              .http()
+              .post('/api/v1/email/suppressions')
+              .set(owner())
+              .send({ emails: [blocked], note: 'Asked to stop' })
+          ).status,
+        ).toBe(200);
+        expect(await listed(blocked)).toEqual([
+          expect.objectContaining({ sources: ['MANUAL'], status: 'GRANTED', suppressed: 'MANUAL' }),
+        ]);
+        expect(await preview({ source: 'CUSTOM', customEmails: [blocked] })).toMatchObject({
+          eligible: 0,
+          excluded: { SUPPRESSED: 1 },
+        });
+      });
+
+      it('rejects an invalid address and records nothing', async () => {
+        const res = await ctx
+          .http()
+          .post('/api/v1/email/eligibility/grant')
+          .set(owner())
+          .send({ emails: ['not-an-email'], basis: 'CONSENT', note: 'Given today via form' });
+        expect(res.status).toBe(400);
+        expect(await rows('not-an-email')).toEqual([]);
+      });
+    });
+
     it('a custom list over 1,000 addresses, or with non-text entries, is refused', async () => {
       ctx.redis.flush();
       const many = Array.from({ length: 1001 }, (_, i) => `p${i}@x.example`);

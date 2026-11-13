@@ -64,13 +64,35 @@ export type EmailCampaignCategory = (typeof EMAIL_CAMPAIGN_CATEGORIES)[number];
 export const EMAIL_CAMPAIGN_PURPOSES = ['PROMOTIONAL', 'TRANSACTIONAL'] as const;
 export type EmailCampaignPurpose = (typeof EMAIL_CAMPAIGN_PURPOSES)[number];
 
-export type EmailCampaignStatus = 'DRAFT' | 'SCHEDULED' | 'SENDING' | 'PAUSED' | 'COMPLETED' | 'CANCELLED';
-export type EmailRecipientStatus = 'QUEUED' | 'SENDING' | 'ACCEPTED' | 'FAILED' | 'UNCERTAIN' | 'CANCELLED' | 'SKIPPED';
+export type EmailCampaignStatus =
+  | 'DRAFT'
+  | 'SCHEDULED'
+  | 'SENDING'
+  | 'PAUSED'
+  | 'COMPLETED'
+  | 'CANCELLED';
+export type EmailRecipientStatus =
+  | 'QUEUED'
+  | 'SENDING'
+  | 'ACCEPTED'
+  | 'FAILED'
+  | 'UNCERTAIN'
+  | 'CANCELLED'
+  | 'SKIPPED';
 
-export const MARKETING_CONSENT_BASES = ['CONSENT', 'EXISTING_CUSTOMER', 'LEGITIMATE_INTEREST_REVIEWED'] as const;
+export const MARKETING_CONSENT_BASES = [
+  'CONSENT',
+  'EXISTING_CUSTOMER',
+  'LEGITIMATE_INTEREST_REVIEWED',
+] as const;
 export type MarketingConsentBasis = (typeof MARKETING_CONSENT_BASES)[number];
 
-export const EMAIL_SUPPRESSION_REASONS = ['UNSUBSCRIBED', 'BOUNCED', 'COMPLAINT', 'MANUAL'] as const;
+export const EMAIL_SUPPRESSION_REASONS = [
+  'UNSUBSCRIBED',
+  'BOUNCED',
+  'COMPLAINT',
+  'MANUAL',
+] as const;
 export type EmailSuppressionReason = (typeof EMAIL_SUPPRESSION_REASONS)[number];
 
 /** Merge fields a template may use. Anything else is refused when saving. */
@@ -279,7 +301,10 @@ export interface EmailCampaignListItem {
   scheduledAt: string | null;
   confirmedAt: string | null;
   createdAt: string;
-  counts: Pick<EmailCampaignCounts, 'eligible' | 'accepted' | 'failed' | 'replies' | 'unsubscribes'>;
+  counts: Pick<
+    EmailCampaignCounts,
+    'eligible' | 'accepted' | 'failed' | 'replies' | 'unsubscribes'
+  >;
 }
 
 export interface EmailCampaignRecipientView {
@@ -321,8 +346,11 @@ export interface MarketingEligibilityView {
   email: string;
   name: string | null;
   company: string | null;
-  /** Where LeadFlow knows the address from. */
-  sources: ('LEAD' | 'CONTACT')[];
+  /**
+   * Where LeadFlow knows the address from. MANUAL: only from an eligibility
+   * record someone added by hand (not a lead or contact).
+   */
+  sources: ('LEAD' | 'CONTACT' | 'MANUAL')[];
   status: 'GRANTED' | 'WITHDRAWN' | 'UNKNOWN';
   basis: MarketingConsentBasis | null;
   source: string | null;

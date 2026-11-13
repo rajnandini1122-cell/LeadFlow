@@ -32,13 +32,17 @@ export class ConsentService {
   ) {}
 
   async eligibility(search: string | null): Promise<MarketingEligibilityView[]> {
-    const { leads, contacts } = await this.repository.knownAddresses(search?.trim() || null, 2000);
+    const term = search?.trim() || null;
+    const [{ leads, contacts }, recorded] = await Promise.all([
+      this.repository.knownAddresses(term, 2000),
+      this.repository.recordedAddresses(term, 2000),
+    ]);
     const byEmail = new Map<string, MarketingEligibilityView>();
     const add = (
       raw: string | null,
       name: string | null,
       company: string | null,
-      source: 'LEAD' | 'CONTACT',
+      source: MarketingEligibilityView['sources'][number],
     ) => {
       const email = normalizeEmailAddress(raw);
       if (!email) return;
@@ -71,6 +75,8 @@ export class ConsentService {
         contact.companyName,
         'CONTACT',
       );
+    // Added by hand: listed only when no lead or contact already shows it.
+    for (const email of recorded) if (!byEmail.has(email)) add(email, null, null, 'MANUAL');
 
     const emails = [...byEmail.keys()];
     const [consents, suppressions] = await Promise.all([
