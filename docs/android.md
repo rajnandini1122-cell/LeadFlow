@@ -121,7 +121,9 @@ npm run android:sync
 # 2. Build a debug APK.
 npm run android:build
 
-# 3. Publish it to the web app's download page.
+# 3. Publish to the web app's download page: RELEASE builds only, signed with
+#    LeadFlow's release certificate (see "Release signing"). A debug APK is
+#    refused unless `-- --debug --allow-debug` is given, for a local server only.
 npm run android:publish
 ```
 
@@ -155,6 +157,15 @@ address compiled in**. It installed and opened, then failed every request.
   changes. It travels inside the APK. Check it with
   `apkanalyzer files cat --file /assets/public/build-info.json app-debug.apk`.
 - **`android:publish`** copies nothing unless:
+  - it is a **release** APK (debug needs `--debug --allow-debug`, local only);
+  - `apksigner verify` passes with exactly one signer whose certificate SHA-256 is
+    LeadFlow's release certificate
+    `9a0ec3ed97dd17f4e2955532429f7433ee581cfda48655f565351e9b00dda6a1` (the one
+    1.3.0 was signed with) — an unsigned or wrongly signed APK is refused;
+  - the package, `versionName` and `versionCode` read from the APK file itself
+    (`aapt2`) are `app.leadflow.crm` and newer than the published one, and match
+    Gradle's last build (so a stale file is refused);
+  - a release APK was built from committed source;
   - the build info names an API;
   - that API is not this machine (override with `--allow-local`);
   - the assets predate the APK;
@@ -276,7 +287,8 @@ There is **no Play Store listing**, and this does not add one.
 
 `npm run android:publish` copies the APK into `apps/web/public/downloads/` and writes
 `leadflow-apk.json` beside it containing the real file size, SHA-256, `versionName`,
-`versionCode` and build time — all **read from the Gradle output**, none typed in.
+`versionCode` and build time — all **read from the APK file**, none typed in.
+`--dry-run` runs every check and copies nothing; `--apk <path>` checks a given file.
 
 The home page reads that manifest and renders a download card. If the manifest is
 missing, it renders **nothing** — a deployment without a published APK shows no button
