@@ -122,12 +122,22 @@ export function EligibilityPage(): React.JSX.Element {
                   </option>
                 ))}
               </select>
-              <input
-                value={note}
-                onChange={(e) => setNote(e.target.value)}
-                placeholder="How was this obtained? (required)"
-                className="min-w-64 flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm"
-              />
+              <label className="flex min-w-64 flex-1 flex-col gap-1 text-xs text-slate-600">
+                <input
+                  value={note}
+                  onChange={(e) => setNote(e.target.value)}
+                  placeholder="How was this obtained? (required)"
+                  aria-label="How was this obtained?"
+                  aria-describedby="eligibility-note-hint"
+                  className="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900"
+                />
+                {note.trim().length < 5 && (
+                  <span id="eligibility-note-hint">
+                    Describe how permission was given — at least 5 characters ({note.trim().length}
+                    /5).
+                  </span>
+                )}
+              </label>
               <button
                 type="button"
                 disabled={note.trim().length < 5 || grant.isPending}

@@ -127,3 +127,37 @@ describe('Marketing eligibility — Add email', () => {
     expect(screen.queryByRole('button', { name: 'Add email' })).not.toBeInTheDocument();
   });
 });
+
+describe('Marketing eligibility — reason for selected rows', () => {
+  it('says why "Mark eligible" is disabled until the reason has 5 characters', async () => {
+    vi.spyOn(apiClient, 'apiGet').mockResolvedValue([
+      {
+        email: 'shvbhosale@gmail.com',
+        name: 'Shivaji Bhosale',
+        company: null,
+        sources: ['LEAD'],
+        status: 'UNKNOWN',
+        basis: null,
+        source: null,
+        note: null,
+        recordedAt: null,
+        suppressed: null,
+      },
+    ] as never);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <EligibilityPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    await userEvent.click(await screen.findByLabelText('Select shvbhosale@gmail.com'));
+    await userEvent.type(screen.getByLabelText('How was this obtained?'), 'bbb');
+    expect(screen.getByText(/at least 5 characters/)).toHaveTextContent('(3/5)');
+    expect(screen.getByRole('button', { name: 'Mark 1 eligible' })).toBeDisabled();
+    await userEvent.type(screen.getByLabelText('How was this obtained?'), ' ok');
+    expect(screen.queryByText(/at least 5 characters/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Mark 1 eligible' })).toBeEnabled();
+  });
+});
