@@ -35,6 +35,85 @@ const insensitiveIn = (values: string[]) => ({
 export class AudienceRepository {
   constructor(private readonly prisma: PrismaService) {}
 
+  /**
+   * A custom list: exactly these addresses, in the order given. Each is linked
+   * to this organization's own lead (or else contact) with that address, so
+   * the email still lands in that lead's history; an address nobody here has
+   * is sent to as-is, with no lead. Matching runs through the tenant-scoped
+   * client, so another organization's leads are never linked.
+   */
+  private async customCandidates(emails: string[]): Promise<AudienceCandidate[]> {
+    const list = [...new Set(emails.map((e) => e.trim().toLowerCase()).filter(Boolean))].slice(
+      0,
+      MAX_AUDIENCE + 1,
+    );
+    if (list.length === 0) return [];
+    const [leads, contacts] = await Promise.all([
+      this.prisma.client.lead.findMany({
+        where: {
+          deletedAt: null,
+          deactivatedAt: null,
+          email: { in: list, mode: 'insensitive' },
+        },
+        select: {
+          id: true,
+          email: true,
+          firstName: true,
+          lastName: true,
+          companyName: true,
+          city: true,
+        },
+        orderBy: { createdAt: 'asc' },
+      }),
+      this.prisma.client.contact.findMany({
+        where: { deletedAt: null, mergedIntoId: null, email: { in: list, mode: 'insensitive' } },
+        select: {
+          id: true,
+          email: true,
+          firstName: true,
+          lastName: true,
+          companyName: true,
+          city: true,
+        },
+        orderBy: { createdAt: 'asc' },
+      }),
+    ]);
+    const byLead = new Map<string, (typeof leads)[number]>();
+    for (const l of leads) {
+      const key = (l.email ?? '').toLowerCase();
+      if (key && !byLead.has(key)) byLead.set(key, l);
+    }
+    const byContact = new Map<string, (typeof contacts)[number]>();
+    for (const c of contacts) {
+      const key = (c.email ?? '').toLowerCase();
+      if (key && !byContact.has(key)) byContact.set(key, c);
+    }
+    return list.map((email): AudienceCandidate => {
+      const lead = byLead.get(email);
+      if (lead) {
+        return {
+          email,
+          leadId: lead.id,
+          contactId: null,
+          firstName: lead.firstName,
+          lastName: lead.lastName,
+          company: lead.companyName,
+          city: lead.city,
+        };
+      }
+      const contact = byContact.get(email);
+      return {
+        email,
+        leadId: null,
+        contactId: contact?.id ?? null,
+        firstName: contact?.firstName ?? null,
+        lastName: contact?.lastName ?? null,
+        company: contact?.companyName ?? null,
+        city: contact?.city ?? null,
+      };
+    });
+  }
+
   /** Cities (with how many leads that have an email) and contact history, for filter checkboxes. */
   async options(): Promise<EmailAudienceOptions> {
     const base: Prisma.LeadWhereInput = {
@@ -70,6 +149,7 @@ export class AudienceRepository {
   }
 
   async candidates(filter: EmailRecipientFilter): Promise<AudienceCandidate[]> {
+    if (filter.source === 'CUSTOM') return this.customCandidates(filter.customEmails ?? []);
     const where: Prisma.LeadWhereInput = {
       deletedAt: null,
       deactivatedAt: null,

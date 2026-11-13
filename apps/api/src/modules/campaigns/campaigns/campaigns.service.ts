@@ -964,6 +964,7 @@ function cleanFilter(filter: EmailRecipientFilter): EmailRecipientFilter {
   for (const [key, value] of Object.entries(filter ?? {})) {
     if (Array.isArray(value) && value.length > 0) (out as Record<string, unknown>)[key] = value;
     if (key === 'includeContacts' && value === true) out.includeContacts = true;
+    if (key === 'source' && value === 'CUSTOM') out.source = 'CUSTOM';
   }
   return out;
 }
