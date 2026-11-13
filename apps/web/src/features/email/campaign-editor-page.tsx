@@ -30,6 +30,7 @@ import {
   useUploadAsset,
   type CampaignInput,
 } from './use-email';
+import { sendingReadiness } from './sending-readiness';
 
 const inputClass =
   'w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:border-slate-900 focus:ring-1 focus:ring-slate-900 focus:outline-none';
@@ -740,10 +741,8 @@ function SendCard({
   const preview = useRenderedPreview(campaignId);
   const test = useTestSend();
   const mailbox = useMailbox();
-  // Mirrors the server, which refuses test sends unless both switches are on.
-  const testsAllowed =
-    mailbox.data?.platform.sendingEnabled === true &&
-    mailbox.data?.platform.dispatcherEnabled === true;
+  // Enabled exactly when the server would accept a test send (see sending-readiness.ts).
+  const ready = sendingReadiness(mailbox.data).testSend;
   const [confirming, setConfirming] = useState(false);
   return (
     <Card>
@@ -777,20 +776,21 @@ function SendCard({
         )}
         <button
           type="button"
-          disabled={dirty || test.isPending || !mailbox.data?.smtp.okAt || !testsAllowed}
+          disabled={dirty || test.isPending || !mailbox.data || !ready.ok}
           onClick={() => test.mutate(campaignId)}
           className="w-full rounded-lg border border-slate-300 px-3 py-2 hover:bg-slate-50 disabled:opacity-50"
         >
           {test.isPending ? 'Sending test…' : 'Send me a test email'}
         </button>
-        {!testsAllowed ? (
-          <p className="text-xs text-slate-500">
-            Test emails are switched off on this server until email sending is enabled.
-          </p>
-        ) : (
-          !mailbox.data?.smtp.okAt && (
-            <p className="text-xs text-slate-500">Connect and test the email account first.</p>
-          )
+        {mailbox.data && !ready.ok && (
+          <ul
+            aria-label="Why test emails are unavailable"
+            className="list-disc space-y-0.5 pl-5 text-xs text-slate-500"
+          >
+            {ready.reasons.map((r) => (
+              <li key={r}>{r}</li>
+            ))}
+          </ul>
         )}
         {test.data && (
           <p

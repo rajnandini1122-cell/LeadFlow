@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import type { MailboxView, MailSecurity } from '@leadflow/api-types';
+import { sendingReadiness } from './sending-readiness';
 import { ApiError } from '../../lib/api-client';
 import { formatDateTime } from '../../lib/format';
 import { Card, CardHeader, ErrorNotice, PageHeader, SkeletonRows } from '../../components/ui';
@@ -372,7 +373,8 @@ function SendingCard({ view }: { view: MailboxView }): React.JSX.Element {
     setHourly(view.hourlyLimit);
     setDaily(view.dailyLimit);
   }, [view.hourlyLimit, view.dailyLimit]);
-  const { tested, missing } = campaignReadiness(view);
+  const readiness = sendingReadiness(view).campaigns;
+  const tested = readiness.ok;
   return (
     <Card>
       <CardHeader title="Sending" subtitle="Keep limits below your mail provider’s" />
@@ -393,7 +395,16 @@ function SendingCard({ view }: { view: MailboxView }): React.JSX.Element {
           />
           <span>Use this account for campaigns</span>
         </label>
-        {!tested && <p className="text-xs text-slate-500">Available after {missing}.</p>}
+        {!tested && (
+          <ul
+            aria-label="Before turning this on"
+            className="list-disc space-y-0.5 pl-5 text-xs text-slate-500"
+          >
+            {readiness.reasons.map((r) => (
+              <li key={r}>{r}</li>
+            ))}
+          </ul>
+        )}
         <div className="grid grid-cols-2 gap-3">
           <Labelled id="hourly" label="Per hour">
             <input
@@ -490,21 +501,4 @@ function fromView(view: MailboxView): MailboxInput {
     smtpPort: view.smtpPort ?? 465,
     smtpSecurity: view.smtpSecurity ?? 'SSL_TLS',
   };
-}
-
-/**
- * Mirrors the server (MailboxService.setSending): replies always need IMAP;
- * sending needs the SMTP test for SMTP, or the Resend test with a verified
- * sending domain for Resend. SMTP is not required when Resend sends.
- */
-export function campaignReadiness(view: MailboxView): { tested: boolean; missing: string } {
-  const needs: string[] = [];
-  if (!view.imap.okAt) needs.push('the IMAP (replies) test succeeds');
-  if (view.sendingProvider === 'RESEND') {
-    if (!view.provider.okAt) needs.push('the Resend test succeeds');
-    if (!view.resend.domainVerifiedAt) needs.push('the sending domain is verified in Resend');
-  } else if (!view.smtp.okAt) {
-    needs.push('the SMTP (sending) test succeeds');
-  }
-  return { tested: needs.length === 0, missing: needs.join(' and ') };
 }
