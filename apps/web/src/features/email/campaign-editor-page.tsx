@@ -68,6 +68,9 @@ export function CampaignEditorPage(): React.JSX.Element {
   const templates = useTemplates();
   const [form, setForm] = useState<CampaignInput>(EMPTY);
   const [loadedId, setLoadedId] = useState<string | null>(null);
+  // Every hook runs before the loading return below: a hook after it changes
+  // the hook count between renders and React blanks the page.
+  const options = useAudienceOptions();
 
   useEffect(() => {
     if (existing.data && loadedId !== existing.data.id) {
@@ -93,7 +96,6 @@ export function CampaignEditorPage(): React.JSX.Element {
 
   const set = <K extends keyof CampaignInput>(key: K, value: CampaignInput[K]) =>
     setForm((f) => ({ ...f, [key]: value }));
-  const options = useAudienceOptions();
   const setFilter = (patch: Partial<EmailRecipientFilter>) =>
     setForm((f) => ({ ...f, filter: { ...f.filter, ...patch } }));
 
