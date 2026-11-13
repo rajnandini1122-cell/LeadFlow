@@ -193,6 +193,17 @@ describe('ConfirmDialog states who receives it', { timeout: 20_000 }, () => {
     return post;
   };
 
+  it('says plainly, before the Send button, that this is the real campaign and NOT a test email', async () => {
+    open(preview({ selected: 2, eligible: 2, recipientsTotal: 2 }));
+    const note = await screen.findByRole('note');
+    expect(note).toHaveTextContent(
+      'This sends the actual campaign to the selected recipients. It is NOT a test email. To send a test, cancel and use the Test email section.',
+    );
+    const send = await screen.findByRole('button', { name: /^Send to 2$/ });
+    // The warning comes first in the dialog, ahead of the button.
+    expect(note.compareDocumentPosition(send) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it('after "Deselect all displayed" with 1,500 matching: shows 500 will still receive it and requires an explicit acknowledgement', async () => {
     const user = userEvent.setup();
     const post = open(

@@ -9,10 +9,10 @@ import * as apiClient from '../lib/api-client';
 import { ApiError } from '../lib/api-client';
 
 /**
- * The two test-email controls on an existing draft: "Send test to me (<your
- * address>)" and "Send test to another approved email". Each is enabled
- * exactly when the server would accept a test send, and each submits only its
- * own recipient — never the campaign's recipient list. A Resend account must
+ * The one test-email control on an existing draft: a "Send test to" address
+ * (your own, until you change it) and one button that names it. It is enabled
+ * exactly when the server would accept a test send, and submits only that
+ * address — never the campaign recipient list. A Resend account must
  * not be held back by SMTP (which Railway blocks); nothing is sent by these tests.
  */
 
@@ -101,13 +101,12 @@ function open(mb: unknown) {
   return post;
 }
 
-const button = () => screen.findByRole('button', { name: `Send test to me (${ME})` });
-/** The other-address button; its name becomes "Send test to <address>" once one is typed. */
-const otherButton = () => screen.getByRole('button', { name: /^Send test to (?!me\b)/ });
+const button = () => screen.findByRole('button', { name: `Send test to ${ME}` });
+const field_ = () => screen.findByLabelText('Send test to');
 const testCalls = (post: ReturnType<typeof open>) =>
   post.mock.calls.filter(([url]) => String(url).endsWith('/test'));
 
-describe('Send test to me', () => {
+describe('Test email readiness', () => {
   it('Resend tested + domain verified + switches on: ENABLED although SMTP timed out', async () => {
     const post = open(mailbox());
     expect(await button()).toBeEnabled();
@@ -155,135 +154,6 @@ describe('Send test to me', () => {
     expect(await button()).toBeEnabled();
   });
 
-  it('names your own address and posts no recipient — the server sends to the signed-in user', async () => {
-    const post = open(mailbox());
-    await userEvent.click(await button());
-    expect(testCalls(post)).toEqual([['/email/campaigns/c1/test', {}]]);
-  });
-
-  it('posts no recipient even when the other-address field is filled in', async () => {
-    const post = open(mailbox());
-    await userEvent.type(
-      await screen.findByLabelText('Approved email address'),
-      'rajnandini1122@gmail.com',
-    );
-    await userEvent.click(await button());
-    expect(testCalls(post)).toEqual([['/email/campaigns/c1/test', {}]]);
-  });
-
-  it('test emails are kept apart from the campaign recipients, which they never post', async () => {
-    const post = open(mailbox());
-    expect(await screen.findByText(/never to this campaign’s recipients/)).toBeInTheDocument();
-    expect(screen.getByText(/Test emails never go to them/)).toBeInTheDocument();
-    await userEvent.click(await button());
-    await userEvent.type(
-      screen.getByLabelText('Approved email address'),
-      'rajnandini1122@gmail.com',
-    );
-    await userEvent.click(otherButton());
-    // The draft's own recipient list (buyer@cust.example) is never part of a test.
-    expect(JSON.stringify(testCalls(post))).not.toContain('buyer@cust.example');
-    expect(testCalls(post)).toEqual([
-      ['/email/campaigns/c1/test', {}],
-      ['/email/campaigns/c1/test', { to: 'rajnandini1122@gmail.com' }],
-    ]);
-  });
-
-  describe('Send test to another approved email', () => {
-    // Shown open — no click needed to find the field and its own button.
-    const openOther = async () => ({
-      input: await screen.findByLabelText('Approved email address'),
-      send: otherButton(),
-    });
-
-    it('is visible without expanding anything, with its own clearly labelled button', async () => {
-      open(mailbox());
-      expect(
-        await screen.findByRole('heading', { name: 'Send test to another approved email' }),
-      ).toBeVisible();
-      expect(screen.getByLabelText('Approved email address')).toBeVisible();
-      expect(screen.getByRole('button', { name: 'Send test to this address' })).toBeVisible();
-      expect(screen.queryByText('Send me a test email')).not.toBeInTheDocument();
-    });
-
-    it('the button names the typed address once it is valid', async () => {
-      open(mailbox());
-      const { input } = await openOther();
-      await userEvent.type(input, 'Rajnandini1122@Gmail.com');
-      expect(
-        screen.getByRole('button', { name: 'Send test to rajnandini1122@gmail.com' }),
-      ).toBeEnabled();
-    });
-
-    it('needs a valid address, then posts exactly that address (trimmed, lowercased)', async () => {
-      const post = open(mailbox());
-      const { input, send } = await openOther();
-      expect(send).toBeDisabled();
-      await userEvent.type(input, 'not-an-email');
-      expect(otherButton()).toBeDisabled();
-      await userEvent.clear(input);
-      await userEvent.type(input, ' Rajnandini1122@Gmail.com ');
-      expect(otherButton()).toBeEnabled();
-      await userEvent.click(otherButton());
-      // Only the typed address — never your own.
-      expect(testCalls(post)).toEqual([
-        ['/email/campaigns/c1/test', { to: 'rajnandini1122@gmail.com' }],
-      ]);
-      expect(JSON.stringify(testCalls(post))).not.toContain(ME);
-    });
-
-    it('shows the server refusal; it never falls back to your own address', async () => {
-      const post = open(mailbox());
-      post.mockImplementation(((url: string) =>
-        String(url).endsWith('/test')
-          ? Promise.reject(
-              new ApiError(
-                'VALIDATION_ERROR' as never,
-                'stranger@elsewhere.example is not approved for test emails on this server. Only addresses an administrator has approved can receive them — ask for this one to be approved, or send the test to yourself.',
-                400,
-              ),
-            )
-          : Promise.resolve({
-              selected: 0,
-              eligible: 0,
-              excluded: {},
-              sample: [],
-              recipients: [],
-              recipientsTruncated: false,
-              recipientsListed: true,
-              recipientsTotal: 0,
-              undisplayedEligible: 0,
-            })) as never);
-      const { input } = await openOther();
-      await userEvent.type(input, 'stranger@elsewhere.example');
-      await userEvent.click(otherButton());
-      expect(await screen.findByRole('alert')).toHaveTextContent(
-        'stranger@elsewhere.example is not approved for test emails',
-      );
-      expect(testCalls(post)).toEqual([
-        ['/email/campaigns/c1/test', { to: 'stranger@elsewhere.example' }],
-      ]);
-    });
-
-    it('is unavailable whenever "Send test to me" is (switches off)', async () => {
-      open(mailbox({ platform: { sendingEnabled: false, dispatcherEnabled: false } }));
-      const { input } = await openOther();
-      await userEvent.type(input, 'rajnandini1122@gmail.com');
-      expect(otherButton()).toBeDisabled();
-      expect(await button()).toBeDisabled();
-    });
-
-    it('never shows which addresses are approved', async () => {
-      open(mailbox());
-      await openOther();
-      const part = screen
-        .getByRole('heading', { name: 'Send test to another approved email' })
-        .closest('div')!;
-      expect(within(part).queryByText(/@/)).not.toBeInTheDocument();
-      expect(within(part).getByLabelText('Approved email address')).toHaveValue('');
-    });
-  });
-
   it('SMTP account with SMTP not tested: disabled, asks for the SMTP test', async () => {
     open(
       mailbox({ sendingProvider: 'SMTP', provider: { checkedAt: null, okAt: null, error: null } }),
@@ -292,5 +162,103 @@ describe('Send test to me', () => {
     expect(
       await screen.findByText('Test the SMTP (sending) connection in Email settings.'),
     ).toBeInTheDocument();
+  });
+});
+
+describe('One test control', () => {
+  it('there is exactly one test field and one test button, prefilled with your own address', async () => {
+    open(mailbox());
+    expect(await button()).toBeEnabled();
+    expect(screen.getByLabelText('Send test to')).toHaveValue(ME);
+    expect(screen.getAllByRole('button', { name: /^Send test/ })).toHaveLength(1);
+    expect(screen.queryByText('Send me a test email')).not.toBeInTheDocument();
+    expect(screen.queryByText(/another approved email/)).not.toBeInTheDocument();
+  });
+
+  it('your own address goes as a self test: no recipient is posted', async () => {
+    const post = open(mailbox());
+    await userEvent.click(await button());
+    expect(testCalls(post)).toEqual([['/email/campaigns/c1/test', {}]]);
+  });
+
+  it('your own address in other casing is still a self test', async () => {
+    const post = open(mailbox());
+    const field = await field_();
+    await userEvent.clear(field);
+    await userEvent.type(field, ME.toUpperCase());
+    await userEvent.click(screen.getByRole('button', { name: `Send test to ${ME}` }));
+    expect(testCalls(post)).toEqual([['/email/campaigns/c1/test', {}]]);
+  });
+
+  it('another address: the button names it and posts exactly it (trimmed, lowercased), never yours', async () => {
+    const post = open(mailbox());
+    const field = await field_();
+    await userEvent.clear(field);
+    expect(screen.getByRole('button', { name: 'Send test' })).toBeDisabled();
+    await userEvent.type(field, 'not-an-email');
+    expect(screen.getByRole('button', { name: 'Send test' })).toBeDisabled();
+    await userEvent.clear(field);
+    await userEvent.type(field, ' Rajnandini1122@Gmail.com ');
+    const send = screen.getByRole('button', { name: 'Send test to rajnandini1122@gmail.com' });
+    expect(send).toBeEnabled();
+    await userEvent.click(send);
+    expect(testCalls(post)).toEqual([
+      ['/email/campaigns/c1/test', { to: 'rajnandini1122@gmail.com' }],
+    ]);
+    expect(JSON.stringify(testCalls(post))).not.toContain(ME);
+  });
+
+  it('never posts the campaign recipients, and says so on both cards', async () => {
+    const post = open(mailbox());
+    expect(await screen.findByText(/never to the campaign’s recipients/)).toBeInTheDocument();
+    expect(screen.getByText(/Test emails never go to them/)).toBeInTheDocument();
+    await userEvent.click(await button());
+    // The draft's own recipient list (buyer@cust.example) is never part of a test.
+    expect(JSON.stringify(testCalls(post))).not.toContain('buyer@cust.example');
+  });
+
+  it('shows the server refusal naming the address; it never falls back to your own', async () => {
+    const post = open(mailbox());
+    post.mockImplementation(((url: string) =>
+      String(url).endsWith('/test')
+        ? Promise.reject(
+            new ApiError(
+              'VALIDATION_ERROR' as never,
+              'stranger@elsewhere.example is not approved for test emails on this server. Only addresses an administrator has approved can receive them — ask for this one to be approved, or send the test to yourself.',
+              400,
+            ),
+          )
+        : Promise.resolve({
+            selected: 0,
+            eligible: 0,
+            excluded: {},
+            sample: [],
+            recipients: [],
+            recipientsTruncated: false,
+            recipientsListed: true,
+            recipientsTotal: 0,
+            undisplayedEligible: 0,
+          })) as never);
+    const field = await field_();
+    await userEvent.clear(field);
+    await userEvent.type(field, 'stranger@elsewhere.example');
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Send test to stranger@elsewhere.example' }),
+    );
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'stranger@elsewhere.example is not approved for test emails',
+    );
+    expect(testCalls(post)).toEqual([
+      ['/email/campaigns/c1/test', { to: 'stranger@elsewhere.example' }],
+    ]);
+  });
+
+  it('never shows which addresses are approved', async () => {
+    open(mailbox());
+    const section = (await screen.findByRole('heading', { name: 'Test email' })).closest(
+      'section',
+    )!;
+    // The only address on the card is your own, in the field and on the button.
+    expect(within(section).queryByText(/@/, { ignore: 'button' })).not.toBeInTheDocument();
   });
 });

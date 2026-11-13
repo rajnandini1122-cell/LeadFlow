@@ -811,7 +811,7 @@ describe('Email campaigns: compose, confirm, deliver', () => {
       expect(res.status).toBe(400);
       const message = String(res.body.error.message);
       expect(message).toContain(`Your address (${ctx.orgA.owner.email}) is not approved`);
-      expect(message).toContain('Send test to another approved email');
+      expect(message).toContain('enter it under "Test email"');
       expect(message).not.toContain(APPROVED);
       expect(message).not.toContain(ctx.orgA.id);
       expect(smtp.connections).toBe(0);

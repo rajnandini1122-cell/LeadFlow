@@ -338,7 +338,7 @@ export class CampaignsService {
     if (recipientType === 'SELF') {
       if (!allowlist.allows(principal.organizationId, user.email)) {
         throw AppException.validation(
-          `${allowlist.refusal(principal.organizationId)} Your address (${user.email}) is not approved for test emails. To test another address, use "Send test to another approved email".`,
+          `${allowlist.refusal(principal.organizationId)} Your address (${user.email}) is not approved for test emails. To test another address, enter it under "Test email".`,
         );
       }
     } else {
