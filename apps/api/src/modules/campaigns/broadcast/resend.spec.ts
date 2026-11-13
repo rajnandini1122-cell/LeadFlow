@@ -146,7 +146,7 @@ describe('broadcast content', () => {
     expect(out.subject).toBe('From Acme');
     expect(out.html).toContain('Dear {{{contact.first_name}}} {{{contact.last_name}}}');
     expect(out.html).toContain('href="{{{RESEND_UNSUBSCRIBE_URL}}}"');
-    expect(out.text).toContain('Unsubscribe: {{{RESEND_UNSUBSCRIBE_URL}}}');
+    expect(out.text).toContain('marketing emails: {{{RESEND_UNSUBSCRIBE_URL}}}');
   });
 });
 

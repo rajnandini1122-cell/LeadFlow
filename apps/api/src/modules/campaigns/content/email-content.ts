@@ -158,28 +158,45 @@ export interface FooterInput {
   senderAddress: string;
   purpose: 'PROMOTIONAL' | 'TRANSACTIONAL';
   unsubscribeUrl: string | null;
+  /**
+   * The sender's postal address, only when the organization has recorded one.
+   * Never made up: without it the line is simply left out.
+   */
+  postalAddress?: string | null | undefined;
 }
 
 /**
  * The footer LeadFlow adds to every campaign message. Promotional mail always
  * carries the unsubscribe link; it is not part of the editable body, so it
  * cannot be deleted by editing the template.
+ *
+ * The wording states only facts LeadFlow knows: who sent it, and (when
+ * recorded) where they are. It does not claim a relationship or consent —
+ * "because you are in contact with us" was untrue for never-contacted leads.
+ * HTML and plain text are built from the same lines, so they always agree.
  */
 export function campaignFooter(input: FooterInput): { html: string; text: string } {
-  const org = escapeHtml(input.organizationName);
-  const why =
+  const org = input.organizationName.trim();
+  const address = (input.postalAddress ?? '').replace(/\s+/g, ' ').trim();
+  const lines: { text: string; html: string }[] = [];
+  const sentence =
     input.purpose === 'PROMOTIONAL'
-      ? `You are receiving this email from ${org} because you are in contact with us.`
+      ? `This email was sent by ${org}.`
       : `This is a service message from ${org}.`;
-  const unsubscribeHtml = input.unsubscribeUrl
-    ? ` <a href="${escapeHtml(input.unsubscribeUrl)}" style="color:#6b7280">Unsubscribe</a> from ${org} marketing emails.`
-    : '';
+  lines.push({ text: sentence, html: escapeHtml(sentence) });
+  if (address) lines.push({ text: address, html: escapeHtml(address) });
+  if (input.unsubscribeUrl) {
+    lines.push({
+      text: `Unsubscribe from ${org} marketing emails: ${input.unsubscribeUrl}`,
+      html: `<a href="${escapeHtml(input.unsubscribeUrl)}" style="color:#6b7280">Unsubscribe</a> from ${escapeHtml(org)} marketing emails.`,
+    });
+  }
   const html =
     `<hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0 12px">` +
-    `<p style="font-size:12px;color:#6b7280;margin:0">${why}${unsubscribeHtml}</p>`;
-  const text =
-    `\n\n--\n${input.purpose === 'PROMOTIONAL' ? `You are receiving this email from ${input.organizationName} because you are in contact with us.` : `This is a service message from ${input.organizationName}.`}` +
-    (input.unsubscribeUrl ? `\nUnsubscribe: ${input.unsubscribeUrl}` : '');
+    lines
+      .map((l) => `<p style="font-size:12px;color:#6b7280;margin:0 0 4px">${l.html}</p>`)
+      .join('');
+  const text = `\n\n--\n${lines.map((l) => l.text).join('\n')}`;
   return { html, text };
 }
 

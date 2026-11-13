@@ -130,7 +130,17 @@ export interface EmailAudiencePreview {
    * hand (excluded: true) so they can be put back. Only for someone who may see
    * every lead; empty otherwise. Capped at RECIPIENT_LIST_LIMIT.
    */
-  recipients: { email: string; name: string | null; company: string | null; excluded: boolean }[];
+  recipients: {
+    email: string;
+    name: string | null;
+    company: string | null;
+    excluded: boolean;
+    /**
+     * Why this matched person cannot receive it yet (null = can). Listed anyway
+     * so they can be taken out of the group by hand.
+     */
+    ineligible: 'NO_CONSENT' | 'SUPPRESSED' | null;
+  }[];
   recipientsTruncated: boolean;
   /** Whether this user may see the address list at all (false: recipients is empty by design). */
   recipientsListed: boolean;

@@ -105,6 +105,80 @@ describe('Email account settings', () => {
     expect(await screen.findByLabelText('Use this account for campaigns')).toBeDisabled();
     expect(screen.getByText(/not enabled on this LeadFlow server yet/)).toBeInTheDocument();
   });
+
+  it('with Resend sending, the toggle needs IMAP + the Resend test + a verified domain — not SMTP (which may time out)', async () => {
+    vi.spyOn(apiClient, 'apiGet').mockResolvedValue(
+      mailbox({
+        sendingProvider: 'RESEND',
+        fromAddress: 'news@news.cravionventures.com',
+        smtp: {
+          checkedAt: '2026-11-12T12:36:00.000Z',
+          okAt: null,
+          error: 'The connection timed out.',
+        },
+        imap: {
+          checkedAt: '2026-11-12T12:35:54.000Z',
+          okAt: '2026-11-12T12:35:54.000Z',
+          error: null,
+        },
+        provider: {
+          checkedAt: '2026-11-12T13:25:28.000Z',
+          okAt: '2026-11-12T13:25:28.000Z',
+          error: null,
+        },
+        resend: {
+          apiKeySet: true,
+          apiKeyHint: null,
+          webhookSecretSet: true,
+          webhookUrl: null,
+          domainVerifiedAt: '2026-11-12T13:25:28.000Z',
+          lastWebhookAt: null,
+        },
+      }) as never,
+    );
+    renderAt('/settings/email', <EmailSettingsPage />, '/settings/email');
+    expect(await screen.findByLabelText('Use this account for campaigns')).toBeEnabled();
+    expect(screen.queryByText(/Available after/)).not.toBeInTheDocument();
+  });
+
+  it('with Resend but no verified domain, says exactly what is missing', async () => {
+    vi.spyOn(apiClient, 'apiGet').mockResolvedValue(
+      mailbox({
+        sendingProvider: 'RESEND',
+        imap: { checkedAt: null, okAt: '2026-11-12T12:35:54.000Z', error: null },
+        provider: { checkedAt: null, okAt: '2026-11-12T13:25:28.000Z', error: null },
+      }) as never,
+    );
+    renderAt('/settings/email', <EmailSettingsPage />, '/settings/email');
+    expect(await screen.findByLabelText('Use this account for campaigns')).toBeDisabled();
+    expect(
+      screen.getByText('Available after the sending domain is verified in Resend.'),
+    ).toBeInTheDocument();
+  });
+
+  it('with SMTP sending, the SMTP test is still required', async () => {
+    vi.spyOn(apiClient, 'apiGet').mockResolvedValue(
+      mailbox({
+        imap: { checkedAt: null, okAt: '2026-11-12T12:35:54.000Z', error: null },
+      }) as never,
+    );
+    renderAt('/settings/email', <EmailSettingsPage />, '/settings/email');
+    expect(await screen.findByLabelText('Use this account for campaigns')).toBeDisabled();
+    expect(
+      screen.getByText('Available after the SMTP (sending) test succeeds.'),
+    ).toBeInTheDocument();
+  });
+
+  it('the banner says test emails need the platform sending switches', async () => {
+    vi.spyOn(apiClient, 'apiGet').mockResolvedValue(mailbox() as never);
+    renderAt('/settings/email', <EmailSettingsPage />, '/settings/email');
+    expect(
+      await screen.findByText(
+        /Test emails and customer campaigns need the platform sending\s+switches/,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/send test emails to yourself/)).not.toBeInTheDocument();
+  });
 });
 
 describe('HostingRaja preset', () => {

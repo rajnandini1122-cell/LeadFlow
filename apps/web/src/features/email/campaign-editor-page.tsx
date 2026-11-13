@@ -421,6 +421,12 @@ function AudienceCard({
  * out of this campaign, tick again to put them back. Only shown to people who
  * may see every lead; the server applies the same list when it confirms.
  */
+/** Why a listed lead cannot receive the campaign yet. */
+export const INELIGIBLE_LABELS: Record<'NO_CONSENT' | 'SUPPRESSED', string> = {
+  NO_CONSENT: 'Cannot receive yet: no recorded marketing eligibility',
+  SUPPRESSED: 'Cannot receive: unsubscribed, bounced or suppressed',
+};
+
 export const TRUNCATION_WARNING =
   'Only the first 1,000 addresses are displayed. Additional matching recipients are still included unless excluded by other filters.';
 
@@ -437,7 +443,7 @@ export function RecipientChecklist({
   truncated: boolean;
   /** Everyone who will receive it, displayed or not. */
   eligible: number;
-  /** Everyone the list could show (eligible + taken out by hand). */
+  /** Everyone the list could show (eligible, taken out by hand, and not yet able to receive). */
   total: number;
   /** Eligible people outside the displayed list: they still receive it. */
   undisplayedEligible: number;
@@ -471,6 +477,7 @@ export function RecipientChecklist({
   };
   const included = recipients.filter((r) => !out.has(r.email)).length;
   const notDisplayed = Math.max(0, total - recipients.length);
+  const tickedButBlocked = recipients.filter((r) => r.ineligible && !out.has(r.email)).length;
   return (
     <fieldset className="mt-4 border-t border-slate-100 pt-3">
       <legend className="sr-only">Recipients</legend>
@@ -520,6 +527,13 @@ export function RecipientChecklist({
           )}
         </div>
       )}
+      {tickedButBlocked > 0 && (
+        <p className="mb-2 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600">
+          {tickedButBlocked} ticked {tickedButBlocked === 1 ? 'lead' : 'leads'} cannot receive this
+          campaign yet (see the note under each). They stay in the group but are skipped until that
+          changes; untick to leave them out for good.
+        </p>
+      )}
       <input
         type="search"
         aria-label="Search recipients"
@@ -544,6 +558,9 @@ export function RecipientChecklist({
                   {r.name ? r.email : ''}
                   {r.company ? `${r.name ? ' · ' : ''}${r.company}` : ''}
                 </span>
+                {r.ineligible && (
+                  <span className="block text-amber-700">{INELIGIBLE_LABELS[r.ineligible]}</span>
+                )}
               </span>
             </label>
           </li>
