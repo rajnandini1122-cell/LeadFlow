@@ -16,7 +16,14 @@ export interface AudienceResult {
   excluded: Record<EmailExclusionReason, number>;
   /** Would be eligible, but taken out by hand in the recipient list. */
   handExcluded: AudienceMember[];
+  /**
+   * Matched the filters but cannot receive it (yet): listed so a person can
+   * still see them and take them out of the group by hand.
+   */
+  ineligible: { member: AudienceMember; reason: IneligibleReason; excludedByHand: boolean }[];
 }
+
+export type IneligibleReason = 'NO_CONSENT' | 'SUPPRESSED';
 
 export interface EligibilityFacts {
   /** Addresses with a GRANTED marketing consent. */
@@ -54,7 +61,9 @@ export function evaluateAudience(
     EXCLUDED: 0,
   };
   const handExcluded: AudienceMember[] = [];
+  const ineligible: AudienceResult['ineligible'] = [];
   const seen = new Set<string>();
+  const seenIneligible = new Set<string>();
   const eligible: AudienceMember[] = [];
 
   for (const candidate of candidates) {
@@ -63,22 +72,9 @@ export function evaluateAudience(
       excluded.INVALID++;
       continue;
     }
-    if (facts.suppressed.has(email)) {
-      excluded.SUPPRESSED++;
-      continue;
-    }
-    if (purpose === 'PROMOTIONAL' && !facts.consented.has(email)) {
-      excluded.NO_CONSENT++;
-      continue;
-    }
-    if (seen.has(email)) {
-      excluded.DUPLICATE++;
-      continue;
-    }
-    seen.add(email);
     const fullName =
       [candidate.firstName, candidate.lastName].filter(Boolean).join(' ').trim() || null;
-    (excludeEmails.has(email) ? handExcluded : eligible).push({
+    const member: AudienceMember = {
       email,
       leadId: candidate.leadId,
       contactId: candidate.contactId,
@@ -91,15 +87,40 @@ export function evaluateAudience(
         city: candidate.city,
         organization: organizationName,
       },
-    });
+    };
+    const notReceiving: IneligibleReason | null = facts.suppressed.has(email)
+      ? 'SUPPRESSED'
+      : purpose === 'PROMOTIONAL' && !facts.consented.has(email)
+        ? 'NO_CONSENT'
+        : null;
+    if (notReceiving) {
+      excluded[notReceiving]++;
+      if (!seenIneligible.has(email)) {
+        seenIneligible.add(email);
+        ineligible.push({ member, reason: notReceiving, excludedByHand: excludeEmails.has(email) });
+      }
+      continue;
+    }
+    if (seen.has(email)) {
+      excluded.DUPLICATE++;
+      continue;
+    }
+    seen.add(email);
+    (excludeEmails.has(email) ? handExcluded : eligible).push(member);
   }
 
   excluded.EXCLUDED = handExcluded.length;
-  return { selected: candidates.length, eligible, excluded, handExcluded };
+  return { selected: candidates.length, eligible, excluded, handExcluded, ineligible };
 }
 
 export interface RecipientListing {
-  recipients: { email: string; name: string | null; company: string | null; excluded: boolean }[];
+  recipients: {
+    email: string;
+    name: string | null;
+    company: string | null;
+    excluded: boolean;
+    ineligible: IneligibleReason | null;
+  }[];
   recipientsTruncated: boolean;
   recipientsListed: boolean;
   recipientsTotal: number;
@@ -112,11 +133,13 @@ export interface RecipientListing {
  * people fall outside the displayed list, because they still receive it.
  */
 export function listRecipients(
-  result: Pick<AudienceResult, 'eligible' | 'handExcluded'>,
+  result: Pick<AudienceResult, 'eligible' | 'handExcluded'> &
+    Partial<Pick<AudienceResult, 'ineligible'>>,
   mayList: boolean,
   limit: number,
 ): RecipientListing {
-  const total = result.eligible.length + result.handExcluded.length;
+  const ineligible = result.ineligible ?? [];
+  const total = result.eligible.length + result.handExcluded.length + ineligible.length;
   if (!mayList) {
     return {
       recipients: [],
@@ -127,20 +150,30 @@ export function listRecipients(
     };
   }
   const all = [
-    ...result.eligible.map((m) => ({ m, excluded: false })),
-    ...result.handExcluded.map((m) => ({ m, excluded: true })),
+    ...result.eligible.map((m) => ({
+      m,
+      excluded: false,
+      reason: null as IneligibleReason | null,
+    })),
+    ...result.handExcluded.map((m) => ({
+      m,
+      excluded: true,
+      reason: null as IneligibleReason | null,
+    })),
+    ...ineligible.map((i) => ({ m: i.member, excluded: i.excludedByHand, reason: i.reason })),
   ].sort((a, b) => a.m.email.localeCompare(b.m.email));
   const shown = all.slice(0, limit);
   return {
-    recipients: shown.map(({ m, excluded }) => ({
+    recipients: shown.map(({ m, excluded, reason }) => ({
       email: m.email,
       name: m.displayName,
       company: m.merge.company ?? null,
       excluded,
+      ineligible: reason,
     })),
     recipientsTruncated: all.length > limit,
     recipientsListed: true,
     recipientsTotal: total,
-    undisplayedEligible: all.slice(limit).filter((r) => !r.excluded).length,
+    undisplayedEligible: all.slice(limit).filter((r) => !r.excluded && r.reason === null).length,
   };
 }

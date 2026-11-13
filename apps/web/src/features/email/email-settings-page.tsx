@@ -372,15 +372,16 @@ function SendingCard({ view }: { view: MailboxView }): React.JSX.Element {
     setHourly(view.hourlyLimit);
     setDaily(view.dailyLimit);
   }, [view.hourlyLimit, view.dailyLimit]);
-  const tested = Boolean(view.smtp.okAt && view.imap.okAt);
+  const { tested, missing } = campaignReadiness(view);
   return (
     <Card>
       <CardHeader title="Sending" subtitle="Keep limits below your mail provider’s" />
       <div className="space-y-3 p-5 text-sm">
         {!view.platform.sendingEnabled && (
           <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
-            Customer campaigns are not enabled on this LeadFlow server yet. You can set up the
-            account, draft campaigns and send test emails to yourself.
+            Email sending is not enabled on this LeadFlow server yet. You can set up the account and
+            draft campaigns. Test emails and customer campaigns need the platform sending switches
+            to be turned on (and your address approved for sending).
           </p>
         )}
         <label className="flex items-center gap-2">
@@ -392,9 +393,7 @@ function SendingCard({ view }: { view: MailboxView }): React.JSX.Element {
           />
           <span>Use this account for campaigns</span>
         </label>
-        {!tested && (
-          <p className="text-xs text-slate-500">Available after both connection tests succeed.</p>
-        )}
+        {!tested && <p className="text-xs text-slate-500">Available after {missing}.</p>}
         <div className="grid grid-cols-2 gap-3">
           <Labelled id="hourly" label="Per hour">
             <input
@@ -491,4 +490,21 @@ function fromView(view: MailboxView): MailboxInput {
     smtpPort: view.smtpPort ?? 465,
     smtpSecurity: view.smtpSecurity ?? 'SSL_TLS',
   };
+}
+
+/**
+ * Mirrors the server (MailboxService.setSending): replies always need IMAP;
+ * sending needs the SMTP test for SMTP, or the Resend test with a verified
+ * sending domain for Resend. SMTP is not required when Resend sends.
+ */
+export function campaignReadiness(view: MailboxView): { tested: boolean; missing: string } {
+  const needs: string[] = [];
+  if (!view.imap.okAt) needs.push('the IMAP (replies) test succeeds');
+  if (view.sendingProvider === 'RESEND') {
+    if (!view.provider.okAt) needs.push('the Resend test succeeds');
+    if (!view.resend.domainVerifiedAt) needs.push('the sending domain is verified in Resend');
+  } else if (!view.smtp.okAt) {
+    needs.push('the SMTP (sending) test succeeds');
+  }
+  return { tested: needs.length === 0, missing: needs.join(' and ') };
 }

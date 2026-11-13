@@ -21,11 +21,16 @@ import * as apiClient from '../lib/api-client';
 
 afterEach(() => vi.restoreAllMocks());
 
-const person = (i: number, excluded = false) => ({
+const person = (
+  i: number,
+  excluded = false,
+  ineligible: 'NO_CONSENT' | 'SUPPRESSED' | null = null,
+) => ({
   email: `a${String(i).padStart(4, '0')}@cust.example`,
   name: `Person ${i}`,
   company: null,
   excluded,
+  ineligible,
 });
 /** Cheap count: role queries over 1,000 inputs are slow under a parallel run. */
 const boxCount = () => document.querySelectorAll('input[type="checkbox"]').length;
@@ -109,6 +114,50 @@ describe('RecipientChecklist at the 1,000-address boundary', { timeout: 20_000 }
     await user.type(screen.getByRole('searchbox', { name: 'Search recipients' }), 'Person 2');
     await user.click(screen.getByRole('button', { name: 'Select all displayed' }));
     expect(onChange).toHaveBeenLastCalledWith([person(3).email]);
+  });
+});
+
+describe('every matching lead is listed, ticked by default', () => {
+  it('new leads without recorded eligibility still appear, ticked, with the reason; unticking excludes one', async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(
+      <RecipientChecklist
+        recipients={[person(1, false, 'NO_CONSENT'), person(2, false, 'NO_CONSENT'), person(3)]}
+        truncated={false}
+        eligible={1}
+        total={3}
+        undisplayedEligible={0}
+        excluded={[]}
+        onChange={onChange}
+      />,
+    );
+    const boxes = screen.getAllByRole('checkbox');
+    expect(boxes).toHaveLength(3);
+    expect(boxes.every((b) => (b as HTMLInputElement).checked)).toBe(true);
+    expect(
+      screen.getAllByText('Cannot receive yet: no recorded marketing eligibility'),
+    ).toHaveLength(2);
+    expect(screen.getByText(/2 ticked leads cannot receive this campaign yet/)).toBeInTheDocument();
+    await user.click(boxes[1]!);
+    expect(onChange).toHaveBeenLastCalledWith([person(2).email]);
+  });
+
+  it('a suppressed lead is labelled as such', () => {
+    render(
+      <RecipientChecklist
+        recipients={[person(1, false, 'SUPPRESSED')]}
+        truncated={false}
+        eligible={0}
+        total={1}
+        undisplayedEligible={0}
+        excluded={[]}
+        onChange={() => {}}
+      />,
+    );
+    expect(
+      screen.getByText('Cannot receive: unsubscribed, bounced or suppressed'),
+    ).toBeInTheDocument();
   });
 });
 

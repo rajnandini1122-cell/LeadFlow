@@ -772,6 +772,33 @@ describe('Email campaigns: compose, confirm, deliver', () => {
       expect((await recipients(id)).map((r) => r.email)).toEqual([emails[1]]);
     });
 
+    it('every matching lead is listed — ticked by default — even before it may receive; unticking excludes it', async () => {
+      const city = tag();
+      const emails = ['n0', 'n1', 'n2'].map((p) => `${p}.${city}@cust.example`.toLowerCase());
+      for (const e of emails) await lead(city, e);
+      await grant([emails[2]!]); // only one has recorded eligibility
+      const all = await preview({ cities: [city], statuses: ['NEW'] });
+      expect(all.eligible).toBe(1);
+      expect(all.recipientsTotal).toBe(3);
+      expect(
+        all.recipients.map((r: { email: string; excluded: boolean; ineligible: string | null }) => [
+          r.email,
+          r.excluded,
+          r.ineligible,
+        ]),
+      ).toEqual([
+        [emails[0], false, 'NO_CONSENT'],
+        [emails[1], false, 'NO_CONSENT'],
+        [emails[2], false, null],
+      ]);
+      const some = await preview({ cities: [city], statuses: ['NEW'], excludeEmails: [emails[0]] });
+      expect(some.recipients.find((r: { email: string }) => r.email === emails[0])).toMatchObject({
+        excluded: true,
+        ineligible: 'NO_CONSENT',
+      });
+      expect(some.eligible).toBe(1); // the one who may receive it is unaffected
+    });
+
     it('contact history: not contacted yet versus contacted before', async () => {
       const city = tag();
       const fresh = `fresh.${city}@cust.example`.toLowerCase();

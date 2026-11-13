@@ -1275,6 +1275,10 @@ describe('Email broadcasts (Resend Marketing)', () => {
       const sent = resend.emails[resend.emails.length - 1]!;
       expect(sent.to.toLowerCase()).toBe(ctx.orgA.owner.email.toLowerCase());
       expect(String(sent.body['subject'])).toContain('[TEST]');
+      // Replies come back to the mailbox (sales@), not to the sending subdomain.
+      expect(sent.body['reply_to']).toBe(SENDER);
+      expect(String(sent.body['html'])).not.toContain('in contact with us');
+      expect(String(sent.body['html'])).toContain('This email was sent by');
       expect(resend.log[resend.log.length - 1]!.auth).toBe(`Bearer ${MARKETING_KEY}`);
     });
   });

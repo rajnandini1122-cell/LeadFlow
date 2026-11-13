@@ -89,7 +89,9 @@ describe('rendering one message', () => {
     expect(out.subject).toBe('Hello Asha');
     expect(out.html).toContain('href="https://lf.example/unsubscribe/TOKEN"');
     expect(out.html).toContain('Acme &amp; Co');
-    expect(out.text).toContain('Unsubscribe: https://lf.example/unsubscribe/TOKEN');
+    expect(out.text).toContain(
+      'Unsubscribe from Acme & Co marketing emails: https://lf.example/unsubscribe/TOKEN',
+    );
     expect(out.text).toContain('Dear Asha Rao, see our catalogue (https://x.example).');
   });
 
@@ -102,6 +104,75 @@ describe('rendering one message', () => {
     });
     expect(footer.html).toContain('service message');
     expect(footer.html).not.toContain('Unsubscribe');
+  });
+
+  describe('promotional footer wording', () => {
+    const promo = (over: Partial<Parameters<typeof campaignFooter>[0]> = {}) =>
+      campaignFooter({
+        organizationName: 'CRAVION VENTURES (OPC) PRIVATE LIMITED',
+        senderAddress: 'sales@cravionventures.com',
+        purpose: 'PROMOTIONAL',
+        unsubscribeUrl: 'https://lf.example/unsubscribe/TOKEN',
+        ...over,
+      });
+
+    it('claims no relationship or consent, in HTML or plain text', () => {
+      const f = promo();
+      for (const out of [f.html, f.text]) {
+        expect(out).not.toMatch(
+          /in contact with us|because you|you agreed|you signed up|you subscribed/i,
+        );
+        expect(out).toContain('This email was sent by CRAVION VENTURES (OPC) PRIVATE LIMITED.');
+      }
+    });
+
+    it('always carries a working unsubscribe link, the same in HTML and plain text', () => {
+      const f = promo();
+      expect(f.html).toContain('<a href="https://lf.example/unsubscribe/TOKEN"');
+      expect(f.html).toContain(
+        '>Unsubscribe</a> from CRAVION VENTURES (OPC) PRIVATE LIMITED marketing emails.',
+      );
+      expect(f.text).toContain(
+        'Unsubscribe from CRAVION VENTURES (OPC) PRIVATE LIMITED marketing emails: https://lf.example/unsubscribe/TOKEN',
+      );
+    });
+
+    it('keeps Resend’s per-recipient unsubscribe placeholder intact', () => {
+      const f = promo({ unsubscribeUrl: '{{{RESEND_UNSUBSCRIBE_URL}}}' });
+      expect(f.html).toContain('href="{{{RESEND_UNSUBSCRIBE_URL}}}"');
+      expect(f.text).toContain('marketing emails: {{{RESEND_UNSUBSCRIBE_URL}}}');
+    });
+
+    it('shows a recorded postal address (escaped, on one line), in both forms', () => {
+      const f = promo({ postalAddress: ' Office 4, <Main> Road,\n Pune 411001 ' });
+      expect(f.html).toContain('Office 4, &lt;Main&gt; Road, Pune 411001');
+      expect(f.text).toContain('\nOffice 4, <Main> Road, Pune 411001\n');
+    });
+
+    it.each([[undefined], [null], ['   ']])(
+      'with no recorded address (%j) prints none — never an invented one',
+      (postalAddress) => {
+        const f = promo({ postalAddress });
+        const lines = f.text.trim().split('\n');
+        expect(lines).toEqual([
+          '--',
+          'This email was sent by CRAVION VENTURES (OPC) PRIVATE LIMITED.',
+          'Unsubscribe from CRAVION VENTURES (OPC) PRIVATE LIMITED marketing emails: https://lf.example/unsubscribe/TOKEN',
+        ]);
+        expect(f.html.match(/<p /g)).toHaveLength(2);
+      },
+    );
+
+    it('HTML and plain text carry the same lines in the same order', () => {
+      const f = promo({ postalAddress: 'Pune 411001' });
+      const fromHtml = [...f.html.matchAll(/<p[^>]*>(.*?)<\/p>/g)].map((m) =>
+        m[1]!.replace(/<[^>]+>/g, '').replace(/&amp;/g, '&'),
+      );
+      const fromText = f.text.trim().split('\n').slice(1);
+      expect(fromHtml.map((l) => l.split(' marketing emails')[0])).toEqual(
+        fromText.map((l) => l.split(' marketing emails')[0]),
+      );
+    });
   });
 
   it('plain text is derived from HTML when none is given', () => {
