@@ -338,7 +338,7 @@ export class CampaignsService {
     if (recipientType === 'SELF') {
       if (!allowlist.allows(principal.organizationId, user.email)) {
         throw AppException.validation(
-          `${allowlist.refusal(principal.organizationId)} Your address is not approved for test emails.`,
+          `${allowlist.refusal(principal.organizationId)} Your address (${user.email}) is not approved for test emails. To test another address, use "Send test to another approved email".`,
         );
       }
     } else {
@@ -357,8 +357,8 @@ export class CampaignsService {
         });
         throw AppException.validation(
           reason === 'SUPPRESSED'
-            ? 'This address is suppressed (unsubscribed, bounced or blocked), so it cannot receive test emails.'
-            : 'This address is not approved for test emails on this server. Only approved internal addresses can receive them.',
+            ? `${recipient} is suppressed (unsubscribed, bounced or blocked), so it cannot receive test emails.`
+            : `${recipient} is not approved for test emails on this server. Only addresses an administrator has approved can receive them — ask for this one to be approved, or send the test to yourself.`,
         );
       }
     }

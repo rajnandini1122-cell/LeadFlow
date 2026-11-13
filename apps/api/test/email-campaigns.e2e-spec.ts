@@ -783,10 +783,15 @@ describe('Email campaigns: compose, confirm, deliver', () => {
         const id = await draft(tag());
         const res = await withConfig(restricted(over), () => sendTo(id, to));
         expect(res.status).toBe(400);
-        expect(res.body.error.message).toContain('not approved for test emails');
-        // The refusal names no approved address or organization.
-        expect(res.body.error.message).not.toContain(APPROVED);
-        expect(res.body.error.message).not.toContain(ctx.orgA.id);
+        const message = String(res.body.error.message);
+        const attempted = String(to).trim().toLowerCase();
+        // It names the address that was tried, and says what to do instead…
+        expect(message).toContain(`${attempted} is not approved for test emails`);
+        expect(message).toContain('send the test to yourself');
+        // …but never the approved list or the organization restriction.
+        expect(message.replace(attempted, '')).not.toContain(APPROVED);
+        expect(message).not.toContain(ctx.orgA.id);
+        expect(message).not.toContain('01a0d17f-0000-7000-8000-000000000000');
         expect(smtp.connections).toBe(0);
         expect(smtp.messages).toHaveLength(0);
         expect(await audits(id, SENT)).toHaveLength(0);
@@ -799,6 +804,19 @@ describe('Email campaigns: compose, confirm, deliver', () => {
         });
       },
     );
+
+    it('a self test refused by the allowlist names your address and points to the approved-address option', async () => {
+      const id = await draft(tag());
+      const res = await withConfig(restricted(), () => sendTo(id, undefined));
+      expect(res.status).toBe(400);
+      const message = String(res.body.error.message);
+      expect(message).toContain(`Your address (${ctx.orgA.owner.email}) is not approved`);
+      expect(message).toContain('Send test to another approved email');
+      expect(message).not.toContain(APPROVED);
+      expect(message).not.toContain(ctx.orgA.id);
+      expect(smtp.connections).toBe(0);
+      expect(await audits(id, SENT)).toHaveLength(0);
+    });
 
     it('a suppressed approved address is refused and audited as SUPPRESSED', async () => {
       const id = await draft(tag());
@@ -813,7 +831,7 @@ describe('Email campaigns: compose, confirm, deliver', () => {
         sendTo(id, suppressed),
       );
       expect(res.status).toBe(400);
-      expect(res.body.error.message).toContain('suppressed');
+      expect(res.body.error.message).toContain(`${suppressed} is suppressed`);
       expect(smtp.messages).toHaveLength(0);
       expect((await audits(id, REFUSED))[0]!.after).toEqual({
         recipient: suppressed,

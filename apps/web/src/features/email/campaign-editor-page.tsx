@@ -248,13 +248,17 @@ export function CampaignEditorPage(): React.JSX.Element {
 
           <Card>
             <CardHeader
-              title="Recipients"
+              title="Campaign recipients"
               subtitle={
                 isCustom
                   ? 'Exactly the addresses you enter. The same eligibility and unsubscribe rules apply.'
                   : 'Leads with an email address. Filters combine (all must match).'
               }
             />
+            <p className="px-5 pt-3 text-xs text-slate-500">
+              They receive the campaign only after “Review and send…”. Test emails never go to them
+              — a test goes only to the address on the test button you click.
+            </p>
             <fieldset className="flex flex-wrap gap-4 px-5 pt-4 text-sm">
               <legend className="sr-only">Who receives it</legend>
               <label className="flex items-center gap-2">
@@ -747,6 +751,8 @@ function SendCard({
   const [otherAddress, setOtherAddress] = useState('');
   const other = otherAddress.trim().toLowerCase();
   const testBlocked = dirty || test.isPending || !mailbox.data || !ready.ok;
+  const { user } = useAuth();
+  const sendingTo = test.isPending ? (test.variables?.to ? 'other' : 'me') : null;
   return (
     <Card>
       <CardHeader title="Preview and send" />
@@ -777,21 +783,37 @@ function SendCard({
             </details>
           </>
         )}
-        <button
-          type="button"
-          disabled={testBlocked}
-          onClick={() => test.mutate({ id: campaignId })}
-          className="w-full rounded-lg border border-slate-300 px-3 py-2 hover:bg-slate-50 disabled:opacity-50"
+        <section
+          aria-labelledby="test-email-heading"
+          className="space-y-3 rounded-lg border border-slate-200 p-3"
         >
-          {test.isPending ? 'Sending test…' : 'Send me a test email'}
-        </button>
-        <details className="text-xs">
-          <summary className="cursor-pointer text-slate-600">
-            Send test to another approved email
-          </summary>
-          <div className="mt-2 space-y-2">
+          <div>
+            <h3 id="test-email-heading" className="text-sm font-medium text-slate-900">
+              Test email
+            </h3>
+            <p className="text-xs text-slate-500">
+              One [TEST] copy goes only to the address on the button you click — never to this
+              campaign’s recipients.
+            </p>
+          </div>
+          <button
+            type="button"
+            disabled={testBlocked}
+            onClick={() => test.mutate({ id: campaignId })}
+            className="w-full rounded-lg border border-slate-300 px-3 py-2 hover:bg-slate-50 disabled:opacity-50"
+          >
+            {sendingTo === 'me'
+              ? 'Sending test…'
+              : user?.email
+                ? `Send test to me (${user.email})`
+                : 'Send test to me'}
+          </button>
+          <div className="space-y-2 border-t border-slate-200 pt-3 text-xs">
+            <h4 className="text-sm font-medium text-slate-900">
+              Send test to another approved email
+            </h4>
             <label className="block text-slate-600">
-              Email address
+              Approved email address
               <input
                 type="email"
                 value={otherAddress}
@@ -811,10 +833,14 @@ function SendCard({
               onClick={() => test.mutate({ id: campaignId, to: other })}
               className="w-full rounded-lg border border-slate-300 px-3 py-2 hover:bg-slate-50 disabled:opacity-50"
             >
-              Send test to this address
+              {sendingTo === 'other'
+                ? 'Sending test…'
+                : EMAIL_SHAPE.test(other)
+                  ? `Send test to ${other}`
+                  : 'Send test to this address'}
             </button>
           </div>
-        </details>
+        </section>
         {mailbox.data && !ready.ok && (
           <ul
             aria-label="Why test emails are unavailable"
