@@ -248,13 +248,16 @@ export function CampaignEditorPage(): React.JSX.Element {
 
           <Card>
             <CardHeader
-              title="Recipients"
+              title="Campaign recipients"
               subtitle={
                 isCustom
                   ? 'Exactly the addresses you enter. The same eligibility and unsubscribe rules apply.'
                   : 'Leads with an email address. Filters combine (all must match).'
               }
             />
+            <p className="px-5 pt-3 text-xs text-slate-500">
+              They receive the campaign only after “Review and send…”. Test emails never go to them.
+            </p>
             <fieldset className="flex flex-wrap gap-4 px-5 pt-4 text-sm">
               <legend className="sr-only">Who receives it</legend>
               <label className="flex items-center gap-2">
@@ -744,9 +747,13 @@ function SendCard({
   // Enabled exactly when the server would accept a test send (see sending-readiness.ts).
   const ready = sendingReadiness(mailbox.data).testSend;
   const [confirming, setConfirming] = useState(false);
-  const [otherAddress, setOtherAddress] = useState('');
-  const other = otherAddress.trim().toLowerCase();
   const testBlocked = dirty || test.isPending || !mailbox.data || !ready.ok;
+  const { user } = useAuth();
+  const own = (user?.email ?? '').trim().toLowerCase();
+  // One test address, starting as your own; edited means "send it there instead".
+  const [edited, setTestAddress] = useState<string | null>(null);
+  const testAddress = edited ?? user?.email ?? '';
+  const address = testAddress.trim().toLowerCase();
   return (
     <Card>
       <CardHeader title="Preview and send" />
@@ -777,44 +784,45 @@ function SendCard({
             </details>
           </>
         )}
-        <button
-          type="button"
-          disabled={testBlocked}
-          onClick={() => test.mutate({ id: campaignId })}
-          className="w-full rounded-lg border border-slate-300 px-3 py-2 hover:bg-slate-50 disabled:opacity-50"
+        <section
+          aria-labelledby="test-email-heading"
+          className="space-y-3 rounded-lg border border-slate-200 p-3"
         >
-          {test.isPending ? 'Sending test…' : 'Send me a test email'}
-        </button>
-        <details className="text-xs">
-          <summary className="cursor-pointer text-slate-600">
-            Send test to another approved email
-          </summary>
-          <div className="mt-2 space-y-2">
-            <label className="block text-slate-600">
-              Email address
-              <input
-                type="email"
-                value={otherAddress}
-                onChange={(e) => setOtherAddress(e.target.value)}
-                maxLength={254}
-                autoComplete="off"
-                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-              />
-            </label>
-            <p className="text-slate-500">
-              Only addresses approved on this server can receive test emails. Any other address is
-              refused — it is never replaced by yours.
+          <div>
+            <h3 id="test-email-heading" className="text-sm font-medium text-slate-900">
+              Test email
+            </h3>
+            <p className="text-xs text-slate-500">
+              One [TEST] copy to this address only — never to the campaign’s recipients.
             </p>
-            <button
-              type="button"
-              disabled={testBlocked || !EMAIL_SHAPE.test(other)}
-              onClick={() => test.mutate({ id: campaignId, to: other })}
-              className="w-full rounded-lg border border-slate-300 px-3 py-2 hover:bg-slate-50 disabled:opacity-50"
-            >
-              Send test to this address
-            </button>
           </div>
-        </details>
+          <label className="block text-xs text-slate-600">
+            Send test to
+            <input
+              type="email"
+              value={testAddress}
+              onChange={(e) => setTestAddress(e.target.value)}
+              maxLength={254}
+              autoComplete="off"
+              className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+            />
+          </label>
+          <button
+            type="button"
+            disabled={testBlocked || !EMAIL_SHAPE.test(address)}
+            // Your own address goes as a self test; any other must be approved on the server.
+            onClick={() =>
+              test.mutate(address === own ? { id: campaignId } : { id: campaignId, to: address })
+            }
+            className="w-full rounded-lg border border-slate-300 px-3 py-2 hover:bg-slate-50 disabled:opacity-50"
+          >
+            {test.isPending
+              ? 'Sending test…'
+              : EMAIL_SHAPE.test(address)
+                ? `Send test to ${address}`
+                : 'Send test'}
+          </button>
+        </section>
         {mailbox.data && !ready.ok && (
           <ul
             aria-label="Why test emails are unavailable"
@@ -917,6 +925,13 @@ export function ConfirmDialog({
         {audience.isPending && (
           <p className="mt-3 text-sm text-slate-500">Checking the audience…</p>
         )}
+        <p
+          role="note"
+          className="mt-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-900"
+        >
+          This sends the actual campaign to the selected recipients. It is NOT a test email. To send
+          a test, cancel and use the Test email section.
+        </p>
         {audience.data && (
           <p className="mt-3 text-sm text-slate-700">
             It will be sent to <strong>{count}</strong> {count === 1 ? 'person' : 'people'}, one

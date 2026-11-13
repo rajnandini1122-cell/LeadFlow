@@ -14,7 +14,7 @@ export interface Readiness {
  *   campaigns  "Use this account for campaigns" (MailboxService.setSending):
  *              replies need IMAP; sending needs the SMTP test for SMTP, or the
  *              Resend test with a verified sending domain for Resend.
- *   testSend   "Send me a test email" (CampaignsService.testSend): the
+ *   testSend   the test-email buttons (CampaignsService.testSend): the
  *              platform's two sending switches, and the sending provider's own
  *              test — the Resend test (with a verified domain) for Resend, the
  *              SMTP test for SMTP. SMTP is never required when Resend sends.
