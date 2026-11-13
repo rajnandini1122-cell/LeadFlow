@@ -138,7 +138,7 @@ describe('Email account settings', () => {
     );
     renderAt('/settings/email', <EmailSettingsPage />, '/settings/email');
     expect(await screen.findByLabelText('Use this account for campaigns')).toBeEnabled();
-    expect(screen.queryByText(/Available after/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Before turning this on')).not.toBeInTheDocument();
   });
 
   it('with Resend but no verified domain, says exactly what is missing', async () => {
@@ -152,7 +152,7 @@ describe('Email account settings', () => {
     renderAt('/settings/email', <EmailSettingsPage />, '/settings/email');
     expect(await screen.findByLabelText('Use this account for campaigns')).toBeDisabled();
     expect(
-      screen.getByText('Available after the sending domain is verified in Resend.'),
+      screen.getByText('Verify the sending domain in Resend, then test Resend again.'),
     ).toBeInTheDocument();
   });
 
@@ -165,7 +165,7 @@ describe('Email account settings', () => {
     renderAt('/settings/email', <EmailSettingsPage />, '/settings/email');
     expect(await screen.findByLabelText('Use this account for campaigns')).toBeDisabled();
     expect(
-      screen.getByText('Available after the SMTP (sending) test succeeds.'),
+      screen.getByText('Test the SMTP (sending) connection in Email settings.'),
     ).toBeInTheDocument();
   });
 
