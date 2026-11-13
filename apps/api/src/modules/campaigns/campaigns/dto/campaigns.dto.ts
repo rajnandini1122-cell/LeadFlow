@@ -4,6 +4,7 @@ import {
   IsArray,
   IsBoolean,
   IsDateString,
+  IsEmail,
   IsIn,
   IsInt,
   IsOptional,
@@ -215,4 +216,20 @@ export class ResolveBroadcastDto {
   @IsInt()
   @Min(0)
   expectedVersion!: number;
+}
+
+/**
+ * A test email. Without `to` it goes to the signed-in user's own address; with
+ * `to` it goes only to an address the server has approved (checked by the
+ * service, never silently replaced).
+ */
+export class TestSendDto {
+  @IsOptional()
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim().toLowerCase() || undefined : value,
+  )
+  @IsString()
+  @MaxLength(254)
+  @IsEmail({}, { message: 'must be a valid email address' })
+  to?: string;
 }

@@ -282,9 +282,11 @@ export function useRenderedPreview(id: string | undefined) {
 
 export function useTestSend() {
   return useMutation({
-    mutationFn: (id: string) =>
+    /** Without `to`, the server sends to the signed-in user; with it, only to an approved address. */
+    mutationFn: ({ id, to }: { id: string; to?: string }) =>
       apiPost<{ sentTo: string; accepted: boolean; message: string }>(
         `/email/campaigns/${id}/test`,
+        to ? { to } : {},
       ),
   });
 }

@@ -34,6 +34,7 @@ import {
   ConfirmCampaignDto,
   ResolveBroadcastDto,
   SaveCampaignDto,
+  TestSendDto,
 } from './dto/campaigns.dto';
 
 const RECIPIENT_STATUSES: EmailRecipientStatus[] = [
@@ -123,9 +124,15 @@ export class CampaignsController {
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSIONS.CAMPAIGN_MANAGE)
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
-  @ApiOperation({ summary: 'Send one test copy to your own address' })
-  async test(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() principal: TenantPrincipal) {
-    return this.campaigns.testSend(id, principal);
+  @ApiOperation({
+    summary: 'Send one test copy to your own address, or to one server-approved address',
+  })
+  async test(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: TestSendDto,
+    @CurrentUser() principal: TenantPrincipal,
+  ) {
+    return this.campaigns.testSend(id, principal, dto.to);
   }
 
   @Post(':id/confirm')
