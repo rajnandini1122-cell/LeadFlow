@@ -75,6 +75,29 @@ export class RecipientFilterDto {
   qualifications?: string[];
   @IsOptional() @IsBoolean() includeContacts?: boolean;
 
+  @IsOptional()
+  @IsIn(['LEADS', 'CUSTOM'])
+  source?: 'LEADS' | 'CUSTOM';
+
+  /** A custom list of addresses (source CUSTOM). Normalised and de-duplicated here. */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(1000)
+  @IsString(STRINGS)
+  @MaxLength(320, STRINGS)
+  @Transform(({ value }: { value: unknown }) =>
+    Array.isArray(value)
+      ? [
+          ...new Set(
+            value
+              .map((v) => (typeof v === 'string' ? v.trim().toLowerCase() : v))
+              .filter((v) => v !== ''),
+          ),
+        ]
+      : value,
+  )
+  customEmails?: string[];
+
   /** Addresses taken out by hand from the matching list. */
   @IsOptional()
   @IsArray()

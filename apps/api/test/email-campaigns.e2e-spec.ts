@@ -799,6 +799,70 @@ describe('Email campaigns: compose, confirm, deliver', () => {
       expect(some.eligible).toBe(1); // the one who may receive it is unaffected
     });
 
+    it('a custom list: exactly the typed addresses, linked to existing leads, under the same eligibility rules', async () => {
+      const city = tag();
+      const known = `known.${city}@cust.example`.toLowerCase();
+      const knownLeadId = await lead(city, known);
+      const stranger = `new.${city}@elsewhere.example`.toLowerCase();
+      // Another organization has a lead with this address: it must never be linked here.
+      const otherOrgLead = await ctx
+        .http()
+        .post('/api/v1/leads')
+        .set(auth(ctx.orgB.owner.accessToken))
+        .send({
+          firstName: 'Other',
+          lastName: 'Org',
+          mobile: fixtureMobile(),
+          email: stranger,
+          city,
+          source: 'Website',
+          priority: 'MEDIUM',
+          nextFollowUpAt: new Date(Date.now() + 86_400_000).toISOString(),
+        });
+      expect(otherOrgLead.status).toBe(201);
+      const custom = { source: 'CUSTOM', customEmails: [known.toUpperCase(), stranger, known] };
+
+      const before = await preview(custom);
+      expect(before).toMatchObject({ selected: 2, eligible: 0 });
+      expect(before.excluded.NO_CONSENT).toBe(2);
+
+      await grant([known, stranger]);
+      const after = await preview({ ...custom, statuses: ['LOST'], cities: ['Nowhere'] });
+      // Lead filters are ignored for a custom list.
+      expect(after).toMatchObject({ selected: 2, eligible: 2 });
+      expect(after.recipients.map((r: { email: string }) => r.email).sort()).toEqual(
+        [known, stranger].sort(),
+      );
+
+      const id = await draft(city, { filter: custom });
+      expect((await confirm(id, 2)).status).toBe(200);
+      const rows = await recipients(id);
+      expect(rows.map((r) => [r.email, r.leadId])).toEqual(
+        [
+          [known, knownLeadId],
+          [stranger, null],
+        ].sort((x, y) => String(x[0]).localeCompare(String(y[0]))),
+      );
+    });
+
+    it('a custom list over 1,000 addresses, or with non-text entries, is refused', async () => {
+      ctx.redis.flush();
+      const many = Array.from({ length: 1001 }, (_, i) => `p${i}@x.example`);
+      const res = await ctx
+        .http()
+        .post('/api/v1/email/campaigns/audience')
+        .set(owner())
+        .send({ purpose: 'PROMOTIONAL', filter: { source: 'CUSTOM', customEmails: many } });
+      expect(res.status).toBe(400);
+      ctx.redis.flush();
+      const bad = await ctx
+        .http()
+        .post('/api/v1/email/campaigns/audience')
+        .set(owner())
+        .send({ purpose: 'PROMOTIONAL', filter: { source: 'SOMEWHERE', customEmails: [] } });
+      expect(bad.status).toBe(400);
+    });
+
     it('contact history: not contacted yet versus contacted before', async () => {
       const city = tag();
       const fresh = `fresh.${city}@cust.example`.toLowerCase();

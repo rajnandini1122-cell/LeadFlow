@@ -96,7 +96,17 @@ export const EMAIL_EXCLUSION_REASONS = [
 ] as const;
 export type EmailExclusionReason = (typeof EMAIL_EXCLUSION_REASONS)[number];
 
+/** The most addresses a custom recipient list may hold. */
+export const MAX_CUSTOM_EMAILS = 1000;
+
 export interface EmailRecipientFilter {
+  /**
+   * LEADS (default): leads matching the filters below. CUSTOM: exactly the
+   * addresses in customEmails; the lead filters are ignored.
+   */
+  source?: 'LEADS' | 'CUSTOM';
+  /** CUSTOM only: the addresses typed or pasted in. */
+  customEmails?: string[];
   statuses?: string[];
   priorities?: string[];
   sources?: string[];

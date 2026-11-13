@@ -5,6 +5,7 @@ import {
   EMAIL_MERGE_FIELDS,
   LEAD_PRIORITIES,
   LEAD_STATUSES,
+  MAX_CUSTOM_EMAILS,
   PERMISSIONS,
   type EmailAudiencePreview,
   type EmailCampaignCategory,
@@ -98,6 +99,7 @@ export function CampaignEditorPage(): React.JSX.Element {
     setForm((f) => ({ ...f, [key]: value }));
   const setFilter = (patch: Partial<EmailRecipientFilter>) =>
     setForm((f) => ({ ...f, filter: { ...f.filter, ...patch } }));
+  const isCustom = form.filter.source === 'CUSTOM';
 
   const submit = () =>
     save.mutate(
@@ -246,71 +248,103 @@ export function CampaignEditorPage(): React.JSX.Element {
           <Card>
             <CardHeader
               title="Recipients"
-              subtitle="Leads with an email address. Filters combine (all must match)."
+              subtitle={
+                isCustom
+                  ? 'Exactly the addresses you enter. The same eligibility and unsubscribe rules apply.'
+                  : 'Leads with an email address. Filters combine (all must match).'
+              }
             />
-            <div className="grid gap-4 p-5 sm:grid-cols-2">
-              <MultiCheck
-                label="Lead status"
-                options={LEAD_STATUSES as readonly string[]}
-                value={form.filter.statuses ?? []}
-                onChange={(statuses) => setFilter({ statuses })}
-              />
-              <MultiCheck
-                label="Priority"
-                options={LEAD_PRIORITIES as readonly string[]}
-                value={form.filter.priorities ?? []}
-                onChange={(priorities) => setFilter({ priorities })}
-              />
-              <MultiCheck
-                label="Contact history"
-                options={['NEVER', 'CONTACTED']}
-                labels={{
-                  NEVER: `Not contacted yet${options.data ? ` (${options.data.contacted.never})` : ''}`,
-                  CONTACTED: `Contacted before${options.data ? ` (${options.data.contacted.contacted})` : ''}`,
-                }}
-                value={form.filter.contacted ?? []}
-                onChange={(contacted) =>
-                  setFilter({ contacted: contacted as ('NEVER' | 'CONTACTED')[] })
-                }
-              />
-              <CityChecklist
-                cities={options.data?.cities ?? []}
-                value={form.filter.cities ?? []}
-                onChange={(cities) => setFilter({ cities })}
-              />
-              <Field label="States" id="states" hint="Comma-separated">
+            <fieldset className="flex flex-wrap gap-4 px-5 pt-4 text-sm">
+              <legend className="sr-only">Who receives it</legend>
+              <label className="flex items-center gap-2">
                 <input
-                  id="states"
-                  className={inputClass}
-                  defaultValue={(form.filter.states ?? []).join(', ')}
-                  onBlur={(e) => setFilter({ states: toList(e.target.value) })}
+                  type="radio"
+                  name="recipient-source"
+                  checked={!isCustom}
+                  onChange={() => setFilter({ source: 'LEADS' })}
                 />
-              </Field>
-              <Field label="Lead sources" id="sources" hint="Comma-separated">
-                <input
-                  id="sources"
-                  className={inputClass}
-                  defaultValue={(form.filter.sources ?? []).join(', ')}
-                  onBlur={(e) => setFilter({ sources: toList(e.target.value) })}
-                />
-              </Field>
-              <Field label="Customer industries" id="industries" hint="Comma-separated">
-                <input
-                  id="industries"
-                  className={inputClass}
-                  defaultValue={(form.filter.industries ?? []).join(', ')}
-                  onBlur={(e) => setFilter({ industries: toList(e.target.value) })}
-                />
-              </Field>
-              <label className="flex items-center gap-2 text-sm sm:col-span-2">
-                <input
-                  type="checkbox"
-                  checked={form.filter.includeContacts ?? false}
-                  onChange={(e) => setFilter({ includeContacts: e.target.checked })}
-                />
-                Also include the contacts linked to these leads
+                Leads matching filters
               </label>
-            </div>
+              <label className="flex items-center gap-2">
+                <input
+                  type="radio"
+                  name="recipient-source"
+                  checked={isCustom}
+                  onChange={() => setFilter({ source: 'CUSTOM' })}
+                />
+                A custom list of email addresses
+              </label>
+            </fieldset>
+            {isCustom ? (
+              <CustomEmailList
+                value={form.filter.customEmails ?? []}
+                onChange={(customEmails) => setFilter({ customEmails })}
+              />
+            ) : (
+              <div className="grid gap-4 p-5 sm:grid-cols-2">
+                <MultiCheck
+                  label="Lead status"
+                  options={LEAD_STATUSES as readonly string[]}
+                  value={form.filter.statuses ?? []}
+                  onChange={(statuses) => setFilter({ statuses })}
+                />
+                <MultiCheck
+                  label="Priority"
+                  options={LEAD_PRIORITIES as readonly string[]}
+                  value={form.filter.priorities ?? []}
+                  onChange={(priorities) => setFilter({ priorities })}
+                />
+                <MultiCheck
+                  label="Contact history"
+                  options={['NEVER', 'CONTACTED']}
+                  labels={{
+                    NEVER: `Not contacted yet${options.data ? ` (${options.data.contacted.never})` : ''}`,
+                    CONTACTED: `Contacted before${options.data ? ` (${options.data.contacted.contacted})` : ''}`,
+                  }}
+                  value={form.filter.contacted ?? []}
+                  onChange={(contacted) =>
+                    setFilter({ contacted: contacted as ('NEVER' | 'CONTACTED')[] })
+                  }
+                />
+                <CityChecklist
+                  cities={options.data?.cities ?? []}
+                  value={form.filter.cities ?? []}
+                  onChange={(cities) => setFilter({ cities })}
+                />
+                <Field label="States" id="states" hint="Comma-separated">
+                  <input
+                    id="states"
+                    className={inputClass}
+                    defaultValue={(form.filter.states ?? []).join(', ')}
+                    onBlur={(e) => setFilter({ states: toList(e.target.value) })}
+                  />
+                </Field>
+                <Field label="Lead sources" id="sources" hint="Comma-separated">
+                  <input
+                    id="sources"
+                    className={inputClass}
+                    defaultValue={(form.filter.sources ?? []).join(', ')}
+                    onBlur={(e) => setFilter({ sources: toList(e.target.value) })}
+                  />
+                </Field>
+                <Field label="Customer industries" id="industries" hint="Comma-separated">
+                  <input
+                    id="industries"
+                    className={inputClass}
+                    defaultValue={(form.filter.industries ?? []).join(', ')}
+                    onBlur={(e) => setFilter({ industries: toList(e.target.value) })}
+                  />
+                </Field>
+                <label className="flex items-center gap-2 text-sm sm:col-span-2">
+                  <input
+                    type="checkbox"
+                    checked={form.filter.includeContacts ?? false}
+                    onChange={(e) => setFilter({ includeContacts: e.target.checked })}
+                  />
+                  Also include the contacts linked to these leads
+                </label>
+              </div>
+            )}
           </Card>
         </div>
 
@@ -361,8 +395,81 @@ function isDirty(
 
 function clean(filter: EmailRecipientFilter): EmailRecipientFilter {
   return Object.fromEntries(
-    Object.entries(filter).filter(([, v]) => (Array.isArray(v) ? v.length > 0 : v === true)),
+    Object.entries(filter).filter(([k, v]) =>
+      Array.isArray(v) ? v.length > 0 : v === true || (k === 'source' && v === 'CUSTOM'),
+    ),
   ) as EmailRecipientFilter;
+}
+
+const EMAIL_SHAPE = /^[^\s@<>,;]+@[^\s@<>,;]+\.[^\s@<>,;]+$/;
+
+/** Splits pasted text into addresses: commas, semicolons, spaces or new lines. */
+export function parseEmailList(text: string): { valid: string[]; invalid: string[] } {
+  const valid: string[] = [];
+  const invalid: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of text.split(/[\s,;]+/)) {
+    const email = raw.trim().replace(/^<|>$/g, '').toLowerCase();
+    if (!email || seen.has(email)) continue;
+    seen.add(email);
+    (EMAIL_SHAPE.test(email) ? valid : invalid).push(email);
+  }
+  return { valid, invalid };
+}
+
+/**
+ * Recipients typed or pasted in: one address or many. Only well-formed
+ * addresses are kept; the rest are shown so they can be corrected. Each one
+ * then appears in the Audience list with its own checkbox, under the same
+ * eligibility and unsubscribe rules as leads.
+ */
+export function CustomEmailList({
+  value,
+  onChange,
+}: {
+  value: string[];
+  onChange: (emails: string[]) => void;
+}): React.JSX.Element {
+  const [text, setText] = useState(value.join('\n'));
+  const parsed = parseEmailList(text);
+  const over = parsed.valid.length > MAX_CUSTOM_EMAILS;
+  return (
+    <div className="space-y-2 p-5 text-sm">
+      <label htmlFor="custom-emails" className="block text-xs font-medium text-slate-700">
+        Email addresses
+      </label>
+      <textarea
+        id="custom-emails"
+        rows={6}
+        value={text}
+        onChange={(e) => {
+          setText(e.target.value);
+          onChange(parseEmailList(e.target.value).valid.slice(0, MAX_CUSTOM_EMAILS));
+        }}
+        placeholder={'one@example.com\nanother@example.com, third@example.com'}
+        className={inputClass}
+      />
+      <p className="text-xs text-slate-500">
+        One address, or many separated by commas, spaces or new lines. Up to {MAX_CUSTOM_EMAILS}.
+      </p>
+      <p className="text-xs text-slate-700" data-testid="custom-count">
+        {Math.min(parsed.valid.length, MAX_CUSTOM_EMAILS)}{' '}
+        {parsed.valid.length === 1 ? 'address' : 'addresses'}
+      </p>
+      {parsed.invalid.length > 0 && (
+        <p role="alert" className="text-xs text-red-700">
+          Not a valid address, left out: {parsed.invalid.slice(0, 10).join(', ')}
+          {parsed.invalid.length > 10 ? ` and ${parsed.invalid.length - 10} more` : ''}
+        </p>
+      )}
+      {over && (
+        <p role="alert" className="text-xs text-amber-700">
+          Only the first {MAX_CUSTOM_EMAILS} addresses are used. Split the rest into another
+          campaign.
+        </p>
+      )}
+    </div>
+  );
 }
 
 function AudienceCard({
