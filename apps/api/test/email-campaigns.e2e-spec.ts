@@ -17,6 +17,7 @@ import { TenantContextService } from '../src/common/tenancy/tenant-context.servi
 import { MailboxService } from '../src/modules/campaigns/mailbox/mailbox.service';
 import { EmailDispatcher } from '../src/modules/campaigns/dispatch/email-dispatcher.service';
 import { DispatchRepository } from '../src/modules/campaigns/dispatch/dispatch.repository';
+import { CampaignsRepository } from '../src/modules/campaigns/campaigns/campaigns.repository';
 import { AppConfig } from '../src/common/config/config.module';
 
 /**
@@ -621,16 +622,11 @@ describe('Email campaigns: compose, confirm, deliver', () => {
     return ctx.http().post(`/api/v1/email/campaigns/${id}/test`).set(as).send({});
   };
 
-  it('test emails go only to the signed-in user, never to a typed address (both switches on)', async () => {
+  it('without `to`, a test email goes to the signed-in user (both switches on)', async () => {
     const city = tag();
     const id = await draft(city);
-    const res = await withSwitches(true, true, () =>
-      ctx
-        .http()
-        .post(`/api/v1/email/campaigns/${id}/test`)
-        .set(owner())
-        .send({ to: 'stranger@elsewhere.example' }),
-    );
+    smtp.reset();
+    const res = await withSwitches(true, true, () => testSend(id));
     expect(res.status).toBe(200);
     expect(res.body.data).toMatchObject({ sentTo: ctx.orgA.owner.email, accepted: true });
     expect(smtp.messages).toHaveLength(1);
@@ -675,6 +671,229 @@ describe('Email campaigns: compose, confirm, deliver', () => {
     });
     expect(smtp.connections).toBe(0);
     expect(smtp.messages).toHaveLength(0);
+  });
+
+  describe('test email to another approved address', () => {
+    const APPROVED = 'approved.tester@inbox.example';
+
+    /**
+     * The switches and the recipient restriction as given; anything left out
+     * keeps the suite's own value. This suite boots with
+     * EMAIL_SENDING_UNRESTRICTED=true, so each test states it explicitly.
+     */
+    const withConfig = async <T>(values: Record<string, unknown>, fn: () => Promise<T>) => {
+      const config = ctx.app.get(AppConfig);
+      const real = config.get.bind(config);
+      const spy = jest
+        .spyOn(config, 'get')
+        .mockImplementation(((key: string) =>
+          key in values ? values[key] : real(key as never)) as typeof config.get);
+      try {
+        return await fn();
+      } finally {
+        spy.mockRestore();
+      }
+    };
+    const restricted = (over: Record<string, unknown> = {}) => ({
+      EMAIL_DISPATCH_ENABLED: true,
+      EMAIL_CAMPAIGNS_SENDING_ENABLED: true,
+      EMAIL_SENDING_UNRESTRICTED: false,
+      EMAIL_ALLOWED_ORGANIZATION_ID: ctx.orgA.id,
+      EMAIL_RECIPIENT_ALLOWLIST: APPROVED,
+      ...over,
+    });
+    const sendTo = (id: string, to: unknown, as = owner()) =>
+      ctx.http().post(`/api/v1/email/campaigns/${id}/test`).set(as).send({ to });
+    const audits = (id: string, action: string) =>
+      asSystem(() =>
+        prisma().auditLog.findMany({
+          where: { entityId: id, action },
+          orderBy: { createdAt: 'asc' },
+        }),
+      );
+    const SENT = 'email.campaign.test_sent';
+    const REFUSED = 'email.campaign.test_recipient_refused';
+
+    it('an exactly approved address receives it; the audit names actor, organization, recipient and type', async () => {
+      const id = await draft(tag());
+      const res = await withConfig(restricted(), () =>
+        sendTo(id, ' Approved.Tester@INBOX.example '),
+      );
+      expect(res.status).toBe(200);
+      expect(res.body.data).toMatchObject({ sentTo: APPROVED, accepted: true });
+      expect(smtp.messages).toHaveLength(1);
+      expect(smtp.messages[0]!.to).toEqual([APPROVED]);
+      expect(smtp.messages[0]!.raw).toContain('[TEST]');
+      const [row] = await audits(id, SENT);
+      expect(row).toMatchObject({
+        organizationId: ctx.orgA.id,
+        actorUserId: ctx.orgA.owner.id,
+        after: {
+          accepted: true,
+          recipient: APPROVED,
+          recipientType: 'APPROVED_ADDRESS',
+          providerMessageId: null,
+        },
+      });
+    });
+
+    it('backward compatible: no `to`, an empty `to` or your own address is a self test', async () => {
+      for (const to of [undefined, '', '   ', ctx.orgA.owner.email.toUpperCase()]) {
+        const id = await draft(tag());
+        smtp.reset();
+        ctx.redis.flush();
+        const res = await withConfig(
+          restricted({ EMAIL_RECIPIENT_ALLOWLIST: `${ctx.orgA.owner.email},${APPROVED}` }),
+          () => sendTo(id, to),
+        );
+        expect(res.status).toBe(200);
+        expect(res.body.data.sentTo).toBe(ctx.orgA.owner.email);
+        expect(smtp.messages[0]!.to).toEqual([ctx.orgA.owner.email.toLowerCase()]);
+        expect((await audits(id, SENT))[0]!.after).toMatchObject({ recipientType: 'SELF' });
+      }
+    });
+
+    // Overrides of `restricted()`, applied inside each test (ctx exists only then).
+    it.each<[string, Record<string, unknown>, string]>([
+      ['an address not on the allowlist', {}, 'stranger@elsewhere.example'],
+      ['a near miss of an approved address', {}, 'approved.tester@inbox.example.evil'],
+      [
+        'an approved address, but the restriction names another organization',
+        { EMAIL_ALLOWED_ORGANIZATION_ID: '01a0d17f-0000-7000-8000-000000000000' },
+        APPROVED,
+      ],
+      ['no allowlist at all', { EMAIL_RECIPIENT_ALLOWLIST: undefined }, APPROVED],
+      [
+        'EMAIL_SENDING_UNRESTRICTED=true with the address not listed',
+        { EMAIL_SENDING_UNRESTRICTED: true },
+        'stranger@elsewhere.example',
+      ],
+      [
+        'EMAIL_SENDING_UNRESTRICTED=true with no allowlist',
+        {
+          EMAIL_SENDING_UNRESTRICTED: true,
+          EMAIL_RECIPIENT_ALLOWLIST: undefined,
+          EMAIL_ALLOWED_ORGANIZATION_ID: undefined,
+        },
+        'stranger@elsewhere.example',
+      ],
+    ])(
+      'is refused explicitly for %s — nothing sent, never redirected, refusal audited',
+      async (_label, over, to) => {
+        const id = await draft(tag());
+        const res = await withConfig(restricted(over), () => sendTo(id, to));
+        expect(res.status).toBe(400);
+        expect(res.body.error.message).toContain('not approved for test emails');
+        // The refusal names no approved address or organization.
+        expect(res.body.error.message).not.toContain(APPROVED);
+        expect(res.body.error.message).not.toContain(ctx.orgA.id);
+        expect(smtp.connections).toBe(0);
+        expect(smtp.messages).toHaveLength(0);
+        expect(await audits(id, SENT)).toHaveLength(0);
+        const refused = await audits(id, REFUSED);
+        expect(refused).toHaveLength(1);
+        expect(refused[0]).toMatchObject({
+          organizationId: ctx.orgA.id,
+          actorUserId: ctx.orgA.owner.id,
+          after: { recipient: String(to).trim().toLowerCase(), reason: 'NOT_APPROVED' },
+        });
+      },
+    );
+
+    it('a suppressed approved address is refused and audited as SUPPRESSED', async () => {
+      const id = await draft(tag());
+      const suppressed = `sup.${tag()}@inbox.example`.toLowerCase();
+      const added = await ctx
+        .http()
+        .post('/api/v1/email/suppressions')
+        .set(owner())
+        .send({ emails: [suppressed], note: 'Asked to stop' });
+      expect(added.status).toBe(200);
+      const res = await withConfig(restricted({ EMAIL_RECIPIENT_ALLOWLIST: suppressed }), () =>
+        sendTo(id, suppressed),
+      );
+      expect(res.status).toBe(400);
+      expect(res.body.error.message).toContain('suppressed');
+      expect(smtp.messages).toHaveLength(0);
+      expect((await audits(id, REFUSED))[0]!.after).toEqual({
+        recipient: suppressed,
+        reason: 'SUPPRESSED',
+      });
+    });
+
+    it.each([
+      ['dispatch off', { EMAIL_DISPATCH_ENABLED: false }],
+      ['sending off', { EMAIL_CAMPAIGNS_SENDING_ENABLED: false }],
+      [
+        'both unset',
+        { EMAIL_DISPATCH_ENABLED: undefined, EMAIL_CAMPAIGNS_SENDING_ENABLED: undefined },
+      ],
+    ])('an approved address is still refused with %s — before anything else', async (_l, over) => {
+      const id = await draft(tag());
+      const res = await withConfig(restricted(over), () => sendTo(id, APPROVED));
+      expect(res.status).toBe(400);
+      expect(res.body.error.message).toContain('Test emails are switched off');
+      expect(smtp.connections).toBe(0);
+      expect(await audits(id, SENT)).toHaveLength(0);
+      expect(await audits(id, REFUSED)).toHaveLength(0);
+    });
+
+    it('needs the campaign permission and stays inside the organization', async () => {
+      const id = await draft(tag());
+      await withConfig(restricted(), async () => {
+        expect((await sendTo(id, APPROVED, auth(ctx.orgA.rep.accessToken))).status).toBe(403);
+        ctx.redis.flush();
+        expect((await sendTo(id, APPROVED, auth(ctx.orgB.owner.accessToken))).status).toBe(404);
+        expect(
+          (await ctx.http().post(`/api/v1/email/campaigns/${id}/test`).send({ to: APPROVED }))
+            .status,
+        ).toBe(401);
+      });
+      expect(smtp.connections).toBe(0);
+      expect(await audits(id, SENT)).toHaveLength(0);
+      expect(await audits(id, REFUSED)).toHaveLength(0);
+    });
+
+    it.each([
+      ['not an email', 'not-an-email'],
+      ['two addresses', `${APPROVED},other@inbox.example`],
+      ['a header injection', `${APPROVED}\r\nBcc: other@inbox.example`],
+      ['longer than 254 characters', `${'a'.repeat(250)}@x.example`],
+      ['not a string', ['a@x.example']],
+    ])('rejects %s as invalid input — nothing sent', async (_label, to) => {
+      const id = await draft(tag());
+      const res = await withConfig(restricted(), () => sendTo(id, to));
+      expect(res.status).toBe(400);
+      expect(smtp.connections).toBe(0);
+      expect(await audits(id, SENT)).toHaveLength(0);
+    });
+
+    it('the daily cap of 20 test emails applies to approved addresses too', async () => {
+      const id = await draft(tag());
+      const spy = jest
+        .spyOn(ctx.app.get(CampaignsRepository), 'testSendsToday')
+        .mockResolvedValue(20);
+      try {
+        const res = await withConfig(restricted(), () => sendTo(id, APPROVED));
+        expect(res.status).toBe(400);
+        expect(res.body.error.message).toContain('At most 20 test emails per day');
+        expect(smtp.connections).toBe(0);
+        expect(await audits(id, SENT)).toHaveLength(0);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('the route allows 5 test requests a minute, whatever the recipient', async () => {
+      const id = await draft(tag());
+      const statuses = await withConfig(restricted({ EMAIL_DISPATCH_ENABLED: false }), async () => {
+        const out: number[] = [];
+        for (let i = 0; i < 6; i++) out.push((await sendTo(id, APPROVED)).status);
+        return out;
+      });
+      expect(statuses).toEqual([400, 400, 400, 400, 400, 429]);
+      expect(smtp.connections).toBe(0);
+    });
   });
 
   it('another organization can neither see nor send it; a sales rep cannot send', async () => {

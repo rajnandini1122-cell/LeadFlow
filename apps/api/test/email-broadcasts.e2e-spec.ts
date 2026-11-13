@@ -1281,6 +1281,57 @@ describe('Email broadcasts (Resend Marketing)', () => {
       expect(String(sent.body['html'])).toContain('This email was sent by');
       expect(resend.log[resend.log.length - 1]!.auth).toBe(`Bearer ${MARKETING_KEY}`);
     });
+
+    it('to an exactly approved address: sent only there, audited with the Resend message id', async () => {
+      const id = await draftCampaign();
+      const approved = `approved.${tag()}@inbox.example`.toLowerCase();
+      const emails = resend.emails.length;
+      const config = ctx.app.get(AppConfig);
+      const real = config.get.bind(config);
+      const values: Record<string, unknown> = {
+        EMAIL_DISPATCH_ENABLED: true,
+        EMAIL_CAMPAIGNS_SENDING_ENABLED: true,
+        EMAIL_SENDING_UNRESTRICTED: false,
+        EMAIL_ALLOWED_ORGANIZATION_ID: ctx.orgA.id,
+        EMAIL_RECIPIENT_ALLOWLIST: approved,
+      };
+      const spy = jest
+        .spyOn(config, 'get')
+        .mockImplementation(((key: string) =>
+          key in values ? values[key] : real(key as never)) as typeof config.get);
+      let res;
+      try {
+        ctx.redis.flush();
+        res = await ctx
+          .http()
+          .post(`/api/v1/email/campaigns/${id}/test`)
+          .set(owner())
+          .send({ to: approved });
+      } finally {
+        spy.mockRestore();
+      }
+      expect(res.status).toBe(200);
+      expect(res.body.data).toMatchObject({ sentTo: approved, accepted: true });
+      expect(resend.emails).toHaveLength(emails + 1);
+      const sent = resend.emails[resend.emails.length - 1]!;
+      expect(sent.to).toBe(approved);
+      expect(sent.body['reply_to']).toBe(SENDER);
+      const audit = await asSystem(() =>
+        prisma().auditLog.findFirst({
+          where: { entityId: id, action: 'email.campaign.test_sent' },
+        }),
+      );
+      expect(audit).toMatchObject({
+        organizationId: ctx.orgA.id,
+        actorUserId: ctx.orgA.owner.id,
+        after: {
+          accepted: true,
+          recipient: approved,
+          recipientType: 'APPROVED_ADDRESS',
+          providerMessageId: sent.id,
+        },
+      });
+    });
   });
 
   describe('service messages (one email per recipient)', () => {

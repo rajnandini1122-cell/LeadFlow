@@ -1,10 +1,12 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { CampaignEditorPage } from '../features/email/campaign-editor-page';
 import * as apiClient from '../lib/api-client';
+import { ApiError } from '../lib/api-client';
 
 /**
  * "Send me a test email" on an existing draft: enabled exactly when the server
@@ -143,6 +145,81 @@ describe('Send me a test email', () => {
       }),
     );
     expect(await button()).toBeEnabled();
+  });
+
+  it('"Send me a test email" posts no recipient — the server sends to the signed-in user', async () => {
+    const post = open(mailbox());
+    await userEvent.click(await button());
+    const call = post.mock.calls.find(([url]) => String(url).endsWith('/test'));
+    expect(call).toEqual(['/email/campaigns/c1/test', {}]);
+  });
+
+  describe('Send test to another approved email', () => {
+    const openOther = async () => {
+      await userEvent.click(await screen.findByText('Send test to another approved email'));
+      return {
+        input: screen.getByLabelText('Email address'),
+        send: screen.getByRole('button', { name: 'Send test to this address' }),
+      };
+    };
+
+    it('needs a valid address, then posts exactly that address (trimmed, lowercased)', async () => {
+      const post = open(mailbox());
+      const { input, send } = await openOther();
+      expect(send).toBeDisabled();
+      await userEvent.type(input, 'not-an-email');
+      expect(send).toBeDisabled();
+      await userEvent.clear(input);
+      await userEvent.type(input, ' Rajnandini1122@Gmail.com ');
+      expect(send).toBeEnabled();
+      await userEvent.click(send);
+      const calls = post.mock.calls.filter(([url]) => String(url).endsWith('/test'));
+      expect(calls).toEqual([['/email/campaigns/c1/test', { to: 'rajnandini1122@gmail.com' }]]);
+    });
+
+    it('shows the server refusal; it never falls back to your own address', async () => {
+      const post = open(mailbox());
+      post.mockImplementation(((url: string) =>
+        String(url).endsWith('/test')
+          ? Promise.reject(
+              new ApiError(
+                'VALIDATION_ERROR' as never,
+                'This address is not approved for test emails on this server. Only approved internal addresses can receive them.',
+                400,
+              ),
+            )
+          : Promise.resolve({
+              selected: 0,
+              eligible: 0,
+              excluded: {},
+              sample: [],
+              recipients: [],
+              recipientsTruncated: false,
+              recipientsListed: true,
+              recipientsTotal: 0,
+              undisplayedEligible: 0,
+            })) as never);
+      const { input, send } = await openOther();
+      await userEvent.type(input, 'stranger@elsewhere.example');
+      await userEvent.click(send);
+      expect(await screen.findByRole('alert')).toHaveTextContent('not approved for test emails');
+      const calls = post.mock.calls.filter(([url]) => String(url).endsWith('/test'));
+      expect(calls).toEqual([['/email/campaigns/c1/test', { to: 'stranger@elsewhere.example' }]]);
+    });
+
+    it('is unavailable whenever "Send me a test email" is (switches off)', async () => {
+      open(mailbox({ platform: { sendingEnabled: false, dispatcherEnabled: false } }));
+      const { input, send } = await openOther();
+      await userEvent.type(input, 'rajnandini1122@gmail.com');
+      expect(send).toBeDisabled();
+    });
+
+    it('never shows which addresses are approved', async () => {
+      open(mailbox());
+      await openOther();
+      const card = screen.getByText('Send test to another approved email').closest('details')!;
+      expect(within(card).queryByText(/@/)).not.toBeInTheDocument();
+    });
   });
 
   it('SMTP account with SMTP not tested: disabled, asks for the SMTP test', async () => {

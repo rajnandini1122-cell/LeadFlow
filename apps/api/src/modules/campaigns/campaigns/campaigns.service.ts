@@ -35,8 +35,8 @@ import type {
 import { ConsentRepository } from '../consent/consent.repository';
 import { deriveUnsubscribeToken, unsubscribeKey } from '../consent/unsubscribe-token';
 import { MailboxService } from '../mailbox/mailbox.service';
-import { composeMessage, sendOnce, type SmtpOutcome } from '../mailbox/mail-connection';
-import { sendViaResend } from '../mailbox/resend-transport';
+import { composeMessage, sendOnce } from '../mailbox/mail-connection';
+import { sendViaResend, type ResendOutcome } from '../mailbox/resend-transport';
 import {
   BROADCAST_MERGE_FIELDS,
   HANDED_TO_PROVIDER,
@@ -62,6 +62,7 @@ export const CAMPAIGN_AUDIT = {
   CREATED: 'email.campaign.created',
   UPDATED: 'email.campaign.updated',
   TEST_SENT: 'email.campaign.test_sent',
+  TEST_RECIPIENT_REFUSED: 'email.campaign.test_recipient_refused',
   CONFIRMED: 'email.campaign.confirmed',
   PAUSED: 'email.campaign.paused',
   RESUMED: 'email.campaign.resumed',
@@ -308,8 +309,12 @@ export class CampaignsService {
   }
 
   /**
-   * Sends ONE copy to the signed-in user's own address — never to an address
-   * typed in, so this can never be used to mail strangers.
+   * Sends ONE copy to the signed-in user's own address or, when `to` names
+   * another address, to that address only if the server approves it exactly:
+   * it is on EMAIL_RECIPIENT_ALLOWLIST, the organization is
+   * EMAIL_ALLOWED_ORGANIZATION_ID (EMAIL_SENDING_UNRESTRICTED does not lift
+   * this), and it is not suppressed. An address that fails is refused and
+   * audited — never silently replaced — so this can never mail strangers.
    *
    * It is still a real send, so it is switched off with the rest of email:
    * both EMAIL_DISPATCH_ENABLED and EMAIL_CAMPAIGNS_SENDING_ENABLED must be on.
@@ -319,9 +324,44 @@ export class CampaignsService {
   async testSend(
     id: string,
     principal: TenantPrincipal,
+    to?: string,
   ): Promise<{ sentTo: string; accepted: boolean; message: string }> {
     this.requireTestSending();
     const campaign = await this.require(id);
+    const user = await this.repository.userEmail(principal.userId);
+    if (!user) throw AppException.forbidden();
+    const allowlist = new SendingAllowlist(this.config);
+    const own = user.email.trim().toLowerCase();
+    const requested = to?.trim().toLowerCase();
+    const recipientType = !requested || requested === own ? 'SELF' : 'APPROVED_ADDRESS';
+    const recipient = recipientType === 'SELF' ? user.email : requested!;
+    if (recipientType === 'SELF') {
+      if (!allowlist.allows(principal.organizationId, user.email)) {
+        throw AppException.validation(
+          `${allowlist.refusal(principal.organizationId)} Your address is not approved for test emails.`,
+        );
+      }
+    } else {
+      const reason = !allowlist.lists(principal.organizationId, recipient)
+        ? 'NOT_APPROVED'
+        : (await this.consents.suppressionsFor([recipient])).has(recipient)
+          ? 'SUPPRESSED'
+          : null;
+      if (reason) {
+        await this.audit.record({
+          action: CAMPAIGN_AUDIT.TEST_RECIPIENT_REFUSED,
+          entityType: 'EmailCampaign',
+          entityId: id,
+          ...auditAttribution(userActor(principal)),
+          after: { recipient, reason },
+        });
+        throw AppException.validation(
+          reason === 'SUPPRESSED'
+            ? 'This address is suppressed (unsubscribed, bounced or blocked), so it cannot receive test emails.'
+            : 'This address is not approved for test emails on this server. Only approved internal addresses can receive them.',
+        );
+      }
+    }
     const mailbox = await this.mailbox.require();
     const tested =
       mailbox.sendingProvider === 'RESEND' ? mailbox.providerOkAt : mailbox.lastSmtpOkAt;
@@ -335,14 +375,6 @@ export class CampaignsService {
     if ((await this.repository.testSendsToday()) >= MAX_TEST_SENDS_PER_DAY) {
       throw AppException.validation(`At most ${MAX_TEST_SENDS_PER_DAY} test emails per day.`);
     }
-    const user = await this.repository.userEmail(principal.userId);
-    if (!user) throw AppException.forbidden();
-    const allowlist = new SendingAllowlist(this.config);
-    if (!allowlist.allows(principal.organizationId, user.email)) {
-      throw AppException.validation(
-        `${allowlist.refusal(principal.organizationId)} Your address is not approved for test emails.`,
-      );
-    }
     const organizationName = await this.repository.organizationName();
     const assets = await this.templateRows.loadAssets(campaign.assetIds);
     const { options } = buildCampaignMessage({
@@ -351,11 +383,12 @@ export class CampaignsService {
       mailboxAddress: mailbox.emailAddress,
       fromAddress: mailbox.fromAddress,
       recipient: {
-        email: user.email,
-        displayName: user.name,
+        email: recipient,
+        displayName: recipientType === 'SELF' ? user.name : null,
         messageId: newMessageId(mailbox.emailAddress),
         unsubscribeToken: null,
       },
+      // Merge fields show the sender's own values, for either recipient.
       merge: {
         first_name: user.name.split(' ')[0] ?? user.name,
         full_name: user.name,
@@ -366,12 +399,12 @@ export class CampaignsService {
     });
 
     const resend = mailbox.sendingProvider === 'RESEND';
-    const outcome: SmtpOutcome = resend
+    const outcome: ResendOutcome = resend
       ? await sendViaResend(
           this.mailbox.resendApiKey(mailbox),
           {
             from: `${organizationName.replace(/[\r\n"<>,;:@\\]/g, ' ').trim() || 'LeadFlow'} <${mailbox.fromAddress ?? mailbox.emailAddress}>`,
-            to: user.email,
+            to: recipient,
             replyTo: mailbox.emailAddress,
             subject: String(options.subject),
             html: String(options.html),
@@ -392,13 +425,13 @@ export class CampaignsService {
         )
       : await sendOnce(
           this.mailbox.account(mailbox),
-          { from: mailbox.fromAddress ?? mailbox.emailAddress, to: [user.email] },
+          { from: mailbox.fromAddress ?? mailbox.emailAddress, to: [recipient] },
           await composeMessage(options),
           this.mailbox.deps,
         );
     const accepted = outcome.kind === 'ACCEPTED';
     const message = accepted
-      ? `Accepted by ${resend ? 'Resend' : mailbox.smtpHost} for ${user.email}. Acceptance is not proof of inbox delivery — check the inbox.`
+      ? `Accepted by ${resend ? 'Resend' : mailbox.smtpHost} for ${recipient}. Acceptance is not proof of inbox delivery — check the inbox.`
       : outcome.kind === 'MAILBOX'
         ? resend
           ? 'Resend refused the API key or the sending domain. Check them in Email settings.'
@@ -409,9 +442,14 @@ export class CampaignsService {
       entityType: 'EmailCampaign',
       entityId: id,
       ...auditAttribution(userActor(principal)),
-      after: { accepted },
+      after: {
+        accepted,
+        recipient,
+        recipientType,
+        providerMessageId: outcome.providerMessageId ?? null,
+      },
     });
-    return { sentTo: user.email, accepted, message };
+    return { sentTo: recipient, accepted, message };
   }
 
   // --- sending -----------------------------------------------------------------

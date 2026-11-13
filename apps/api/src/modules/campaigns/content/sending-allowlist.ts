@@ -26,7 +26,16 @@ export class SendingAllowlist {
   }
 
   allows(organizationId: string, email: string): boolean {
-    if (this.unrestricted) return true;
+    return this.unrestricted || this.lists(organizationId, email);
+  }
+
+  /**
+   * Strict: the address is literally on EMAIL_RECIPIENT_ALLOWLIST and the
+   * organization is EMAIL_ALLOWED_ORGANIZATION_ID. EMAIL_SENDING_UNRESTRICTED
+   * is deliberately ignored — this guards a test email to a typed address,
+   * which must never become a way to mail anyone once sending is unrestricted.
+   */
+  lists(organizationId: string, email: string): boolean {
     if (!this.organizationId || this.addresses.size === 0) return false;
     return (
       organizationId.toLowerCase() === this.organizationId &&

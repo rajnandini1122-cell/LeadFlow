@@ -744,6 +744,9 @@ function SendCard({
   // Enabled exactly when the server would accept a test send (see sending-readiness.ts).
   const ready = sendingReadiness(mailbox.data).testSend;
   const [confirming, setConfirming] = useState(false);
+  const [otherAddress, setOtherAddress] = useState('');
+  const other = otherAddress.trim().toLowerCase();
+  const testBlocked = dirty || test.isPending || !mailbox.data || !ready.ok;
   return (
     <Card>
       <CardHeader title="Preview and send" />
@@ -776,12 +779,42 @@ function SendCard({
         )}
         <button
           type="button"
-          disabled={dirty || test.isPending || !mailbox.data || !ready.ok}
-          onClick={() => test.mutate(campaignId)}
+          disabled={testBlocked}
+          onClick={() => test.mutate({ id: campaignId })}
           className="w-full rounded-lg border border-slate-300 px-3 py-2 hover:bg-slate-50 disabled:opacity-50"
         >
           {test.isPending ? 'Sending test…' : 'Send me a test email'}
         </button>
+        <details className="text-xs">
+          <summary className="cursor-pointer text-slate-600">
+            Send test to another approved email
+          </summary>
+          <div className="mt-2 space-y-2">
+            <label className="block text-slate-600">
+              Email address
+              <input
+                type="email"
+                value={otherAddress}
+                onChange={(e) => setOtherAddress(e.target.value)}
+                maxLength={254}
+                autoComplete="off"
+                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+              />
+            </label>
+            <p className="text-slate-500">
+              Only addresses approved on this server can receive test emails. Any other address is
+              refused — it is never replaced by yours.
+            </p>
+            <button
+              type="button"
+              disabled={testBlocked || !EMAIL_SHAPE.test(other)}
+              onClick={() => test.mutate({ id: campaignId, to: other })}
+              className="w-full rounded-lg border border-slate-300 px-3 py-2 hover:bg-slate-50 disabled:opacity-50"
+            >
+              Send test to this address
+            </button>
+          </div>
+        </details>
         {mailbox.data && !ready.ok && (
           <ul
             aria-label="Why test emails are unavailable"
