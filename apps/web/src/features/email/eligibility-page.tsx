@@ -77,6 +77,16 @@ export function EligibilityPage(): React.JSX.Element {
         unsubscribes and bounces always apply.
       </p>
 
+      {canManage && (
+        <AddEmail
+          onSaved={(email, text) => {
+            setSearch(email);
+            setQuery(email);
+            setMessage(text);
+          }}
+        />
+      )}
+
       <Card className="mb-6">
         <div className="flex flex-wrap items-end gap-3 p-4">
           <form
@@ -242,7 +252,7 @@ export function EligibilityPage(): React.JSX.Element {
                           </span>
                         ) : r.status === 'WITHDRAWN' ? (
                           <span className="rounded-full bg-slate-100 px-2 py-0.5 text-slate-700">
-                            withdrawn
+                            not eligible
                           </span>
                         ) : (
                           <span className="rounded-full bg-slate-100 px-2 py-0.5 text-slate-500">
@@ -251,7 +261,12 @@ export function EligibilityPage(): React.JSX.Element {
                         )}
                       </td>
                       <td className="px-4 py-2 text-xs text-slate-600">
-                        {r.basis ? `${BASIS_LABELS[r.basis]}${r.note ? ` — ${r.note}` : ''}` : '—'}
+                        {r.status === 'GRANTED' && r.basis
+                          ? `${BASIS_LABELS[r.basis]}${r.note ? ` — ${r.note}` : ''}`
+                          : (r.note ?? '—')}
+                        {r.sources.length === 1 && r.sources[0] === 'MANUAL' && (
+                          <span className="block text-slate-400">Added by hand</span>
+                        )}
                         {r.recordedAt && (
                           <span className="block text-slate-400">{formatDate(r.recordedAt)}</span>
                         )}
@@ -265,5 +280,216 @@ export function EligibilityPage(): React.JSX.Element {
         </Card>
       )}
     </>
+  );
+}
+
+const EMAIL_SHAPE = /^[^\s@<>,;]+@[^\s@<>,;]+\.[^\s@<>,;]+$/;
+const today = (): string => new Date().toISOString().slice(0, 10);
+
+/**
+ * Records one address by hand — it need not be a lead or contact. Nothing is
+ * pre-chosen: the person must say whether permission exists, and an eligible
+ * record needs its basis, the date it was given, how, and may add details. The
+ * server still refuses addresses that unsubscribed or complained.
+ */
+function AddEmail({
+  onSaved,
+}: {
+  onSaved: (email: string, message: string) => void;
+}): React.JSX.Element {
+  const grant = useGrantEligibility();
+  const withdraw = useWithdrawEligibility();
+  const [open, setOpen] = useState(false);
+  const [email, setEmail] = useState('');
+  const [decision, setDecision] = useState<'ELIGIBLE' | 'NOT_ELIGIBLE' | null>(null);
+  const [basis, setBasis] = useState<MarketingConsentBasis | ''>('');
+  const [givenOn, setGivenOn] = useState('');
+  const [how, setHow] = useState('');
+  const [details, setDetails] = useState('');
+
+  const address = email.trim().toLowerCase();
+  const evidence = `Given ${givenOn} via ${how.trim()}${details.trim() ? ` — ${details.trim()}` : ''}`;
+  const ready =
+    EMAIL_SHAPE.test(address) &&
+    (decision === 'NOT_ELIGIBLE' ||
+      (decision === 'ELIGIBLE' &&
+        basis !== '' &&
+        givenOn !== '' &&
+        givenOn <= today() &&
+        how.trim().length >= 3 &&
+        evidence.length <= 500));
+  const pending = grant.isPending || withdraw.isPending;
+  const error = grant.error ?? withdraw.error;
+  const reset = () => {
+    setEmail('');
+    setDecision(null);
+    setBasis('');
+    setGivenOn('');
+    setHow('');
+    setDetails('');
+    setOpen(false);
+  };
+
+  if (!open) {
+    return (
+      <div className="mb-4">
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium hover:bg-slate-50"
+        >
+          Add email
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <Card className="mb-4">
+      <CardHeader
+        title="Add an email address"
+        subtitle="Any address — it does not need to be a lead or contact."
+      />
+      <form
+        className="space-y-3 p-4 text-sm"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (!ready) return;
+          if (decision === 'ELIGIBLE' && basis !== '') {
+            grant.mutate(
+              { emails: [address], basis, note: evidence },
+              {
+                onSuccess: (r) => {
+                  onSaved(
+                    address,
+                    r.granted.length
+                      ? `${address} marked eligible.`
+                      : `${address} was not marked eligible: it unsubscribed or complained.`,
+                  );
+                  reset();
+                },
+              },
+            );
+          } else {
+            withdraw.mutate(
+              {
+                emails: [address],
+                note: `Permission not established${details.trim() ? ` — ${details.trim()}` : ''}`,
+              },
+              {
+                onSuccess: () => {
+                  onSaved(address, `${address} recorded as not eligible.`);
+                  reset();
+                },
+              },
+            );
+          }
+        }}
+      >
+        <label className="block text-slate-700">
+          Email address
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            maxLength={254}
+            autoComplete="off"
+            className="mt-1 w-full max-w-md rounded-lg border border-slate-300 px-3 py-2"
+          />
+        </label>
+        <fieldset className="space-y-1">
+          <legend className="text-slate-700">Marketing permission</legend>
+          <label className="flex items-center gap-2">
+            <input
+              type="radio"
+              name="decision"
+              checked={decision === 'ELIGIBLE'}
+              onChange={() => setDecision('ELIGIBLE')}
+            />
+            Eligible — permission is recorded
+          </label>
+          <label className="flex items-center gap-2">
+            <input
+              type="radio"
+              name="decision"
+              checked={decision === 'NOT_ELIGIBLE'}
+              onChange={() => setDecision('NOT_ELIGIBLE')}
+            />
+            Not eligible — permission not established
+          </label>
+        </fieldset>
+        {decision === 'ELIGIBLE' && (
+          <div className="grid max-w-2xl gap-3 sm:grid-cols-2">
+            <label className="block text-slate-700">
+              Basis
+              <select
+                value={basis}
+                onChange={(e) => setBasis(e.target.value as MarketingConsentBasis | '')}
+                className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2"
+              >
+                <option value="">Choose…</option>
+                {MARKETING_CONSENT_BASES.map((b) => (
+                  <option key={b} value={b}>
+                    {BASIS_LABELS[b]}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="block text-slate-700">
+              Date permission was given
+              <input
+                type="date"
+                value={givenOn}
+                max={today()}
+                onChange={(e) => setGivenOn(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2"
+              />
+            </label>
+            <label className="block text-slate-700 sm:col-span-2">
+              How it was given (source)
+              <input
+                value={how}
+                onChange={(e) => setHow(e.target.value)}
+                maxLength={120}
+                placeholder="e.g. signed enquiry form, email reply"
+                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2"
+              />
+            </label>
+          </div>
+        )}
+        {decision && (
+          <label className="block max-w-2xl text-slate-700">
+            Notes (optional)
+            <input
+              value={details}
+              onChange={(e) => setDetails(e.target.value)}
+              maxLength={300}
+              className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2"
+            />
+          </label>
+        )}
+        {error && (
+          <p role="alert" className="text-red-700">
+            {error instanceof ApiError ? error.message : 'Could not save.'}
+          </p>
+        )}
+        <div className="flex gap-2">
+          <button
+            type="submit"
+            disabled={!ready || pending}
+            className="rounded-lg bg-slate-900 px-3 py-2 font-medium text-white disabled:opacity-50"
+          >
+            {decision === 'NOT_ELIGIBLE' ? 'Save as not eligible' : 'Save as eligible'}
+          </button>
+          <button
+            type="button"
+            onClick={reset}
+            className="rounded-lg border border-slate-300 px-3 py-2 hover:bg-slate-50"
+          >
+            Cancel
+          </button>
+        </div>
+      </form>
+    </Card>
   );
 }

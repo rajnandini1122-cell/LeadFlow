@@ -175,6 +175,20 @@ export class ConsentRepository {
   }
 
   /**
+   * Addresses this organization has an eligibility record for (granted or
+   * not), including ones added by hand that are no lead or contact.
+   */
+  async recordedAddresses(search: string | null, limit: number): Promise<string[]> {
+    const rows = await this.prisma.client.marketingConsent.findMany({
+      where: search ? { email: { contains: search, mode: 'insensitive' } } : {},
+      select: { email: true },
+      orderBy: { recordedAt: 'desc' },
+      take: limit,
+    });
+    return rows.map((row) => row.email);
+  }
+
+  /**
    * Every address this organization holds on a live lead or contact, with a
    * name and company for display. Bounded: the eligibility screen pages it.
    */
