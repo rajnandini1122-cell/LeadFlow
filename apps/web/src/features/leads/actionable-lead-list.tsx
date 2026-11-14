@@ -26,6 +26,8 @@ export function ActionableLeadList({
   onToggle,
   allSelected = false,
   onToggleAll,
+  columns = DEFAULT_COLUMNS,
+  onOpen,
 }: {
   leads: LeadSummary[];
   /** Show row checkboxes for bulk actions. */
@@ -34,7 +36,12 @@ export function ActionableLeadList({
   onToggle?: (id: string) => void;
   allSelected?: boolean;
   onToggleAll?: () => void;
+  /** Optional columns (desktop). Lead and actions are always shown. */
+  columns?: LeadColumns;
+  /** Opens the quick preview instead of navigating. */
+  onOpen?: (id: string) => void;
 }): React.JSX.Element {
+  const template = gridTemplate(selectable, columns);
   const { can } = useAuth();
   const [logging, setLogging] = useState<{ lead: LogOutcomeLead; followUpId?: string } | null>(
     null,
@@ -56,9 +63,8 @@ export function ActionableLeadList({
         </label>
       )}
       <div
-        className={`hidden border-b border-slate-100 px-5 py-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400 lg:grid lg:gap-4 ${
-          selectable ? GRID_SELECTABLE : GRID
-        }`}
+        style={{ gridTemplateColumns: template }}
+        className="hidden border-b border-slate-100 px-5 py-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400 lg:grid lg:gap-4"
       >
         {selectable && (
           <input
@@ -70,9 +76,9 @@ export function ActionableLeadList({
           />
         )}
         <span>Lead</span>
-        <span>Last contact</span>
-        <span>Latest interaction</span>
-        <span>Next action</span>
+        {columns.lastContact && <span>Last contact</span>}
+        {columns.latestInteraction && <span>Latest interaction</span>}
+        {columns.nextAction && <span>Next action</span>}
         <span className="text-right">Actions</span>
       </div>
 
@@ -82,6 +88,9 @@ export function ActionableLeadList({
             key={lead.id}
             lead={lead}
             selectable={selectable}
+            template={template}
+            columns={columns}
+            onOpen={onOpen ? () => onOpen(lead.id) : undefined}
             selected={isSelected?.(lead.id) ?? false}
             onToggle={() => onToggle?.(lead.id)}
             canLogOutcome={can('lead.update')}
@@ -158,13 +167,37 @@ export function nextActionText(lead: LeadSummary): {
   return { text: what, tone: lead.nextAction.isOverdue ? 'danger' : 'default' };
 }
 
-const GRID = 'lg:grid-cols-[minmax(0,2fr)_minmax(0,1.6fr)_minmax(0,1.6fr)_minmax(0,1.5fr)_auto]';
-const GRID_SELECTABLE =
-  'lg:grid-cols-[auto_minmax(0,2fr)_minmax(0,1.6fr)_minmax(0,1.6fr)_minmax(0,1.5fr)_auto]';
+export interface LeadColumns {
+  lastContact: boolean;
+  latestInteraction: boolean;
+  nextAction: boolean;
+}
+export const DEFAULT_COLUMNS: LeadColumns = {
+  lastContact: true,
+  latestInteraction: true,
+  nextAction: true,
+};
+
+/** The desktop grid for the columns shown (inline: Tailwind cannot build it at runtime). */
+function gridTemplate(selectable: boolean, columns: LeadColumns): string {
+  return [
+    selectable ? 'auto' : null,
+    'minmax(0,2fr)',
+    columns.lastContact ? 'minmax(0,1.6fr)' : null,
+    columns.latestInteraction ? 'minmax(0,1.6fr)' : null,
+    columns.nextAction ? 'minmax(0,1.5fr)' : null,
+    'auto',
+  ]
+    .filter(Boolean)
+    .join(' ');
+}
 
 function ActionableLeadRow({
   lead,
   selectable,
+  template,
+  columns,
+  onOpen,
   selected,
   onToggle,
   canLogOutcome,
@@ -174,6 +207,9 @@ function ActionableLeadRow({
 }: {
   lead: LeadSummary;
   selectable: boolean;
+  template: string;
+  columns: LeadColumns;
+  onOpen: (() => void) | undefined;
   selected: boolean;
   onToggle: () => void;
   canLogOutcome: boolean;
@@ -189,7 +225,8 @@ function ActionableLeadRow({
 
   return (
     <li
-      className={`px-4 py-3.5 transition sm:px-5 lg:grid lg:items-center lg:gap-4 ${selectable ? GRID_SELECTABLE : GRID} ${
+      style={{ gridTemplateColumns: template }}
+      className={`px-4 py-3.5 transition sm:px-5 lg:grid lg:items-center lg:gap-4 ${
         selected ? 'bg-sky-50' : 'hover:bg-slate-50'
       }`}
     >
@@ -203,38 +240,74 @@ function ActionableLeadRow({
         />
       )}
       {/* Lead */}
-      <Link to={`/leads/${lead.id}`} className="group flex min-w-0 items-center gap-3">
-        <Avatar name={lead.name} />
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <p className="truncate text-sm font-medium text-slate-900 group-hover:underline">
-              {lead.name}
+      {onOpen ? (
+        <button
+          type="button"
+          onClick={onOpen}
+          className="group flex min-w-0 items-center gap-3 text-left"
+        >
+          <Avatar name={lead.name} />
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <p className="truncate text-sm font-medium text-slate-900 group-hover:underline">
+                {lead.name}
+              </p>
+              <QualificationBadge qualification={lead.qualification} />
+              <StatusBadge status={lead.status} />
+              <PriorityBadge priority={lead.priority} />
+              <MarketBadge market={lead.market} country={lead.country} />
+            </div>
+            <p className="mt-0.5 truncate text-xs text-slate-500">
+              {lead.companyName ?? (
+                <span className="font-mono text-slate-400">{lead.leadNumber}</span>
+              )}
+              {lead.mobile ? ` · ${lead.mobile}` : ''}
+              {` · ${lead.assignedTo?.fullName ?? 'Unassigned'}`}
             </p>
-            <QualificationBadge qualification={lead.qualification} />
-            <StatusBadge status={lead.status} />
-            <PriorityBadge priority={lead.priority} />
-            <MarketBadge market={lead.market} country={lead.country} />
-          </div>
-          <p className="mt-0.5 truncate text-xs text-slate-500">
-            {lead.companyName ?? (
-              <span className="font-mono text-slate-400">{lead.leadNumber}</span>
+            {primary && (primary.name !== lead.name || (lead.contactCount ?? 0) > 1) && (
+              <p className="mt-0.5 truncate text-xs text-slate-600">
+                Primary: {primary.name}
+                {primary.designation ? `, ${primary.designation}` : ''}
+                {primary.mobile && primary.mobile !== lead.mobile ? ` · ${primary.mobile}` : ''}
+                {(lead.contactCount ?? 0) > 1 ? ` · ${lead.contactCount} contacts` : ''}
+              </p>
             )}
-            {lead.mobile ? ` · ${lead.mobile}` : ''}
-            {` · ${lead.assignedTo?.fullName ?? 'Unassigned'}`}
-          </p>
-          {primary && (primary.name !== lead.name || (lead.contactCount ?? 0) > 1) && (
-            <p className="mt-0.5 truncate text-xs text-slate-600">
-              Primary: {primary.name}
-              {primary.designation ? `, ${primary.designation}` : ''}
-              {primary.mobile && primary.mobile !== lead.mobile ? ` · ${primary.mobile}` : ''}
-              {(lead.contactCount ?? 0) > 1 ? ` · ${lead.contactCount} contacts` : ''}
+          </div>
+        </button>
+      ) : (
+        <Link to={`/leads/${lead.id}`} className="group flex min-w-0 items-center gap-3">
+          <Avatar name={lead.name} />
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <p className="truncate text-sm font-medium text-slate-900 group-hover:underline">
+                {lead.name}
+              </p>
+              <QualificationBadge qualification={lead.qualification} />
+              <StatusBadge status={lead.status} />
+              <PriorityBadge priority={lead.priority} />
+              <MarketBadge market={lead.market} country={lead.country} />
+            </div>
+            <p className="mt-0.5 truncate text-xs text-slate-500">
+              {lead.companyName ?? (
+                <span className="font-mono text-slate-400">{lead.leadNumber}</span>
+              )}
+              {lead.mobile ? ` · ${lead.mobile}` : ''}
+              {` · ${lead.assignedTo?.fullName ?? 'Unassigned'}`}
             </p>
-          )}
-        </div>
-      </Link>
+            {primary && (primary.name !== lead.name || (lead.contactCount ?? 0) > 1) && (
+              <p className="mt-0.5 truncate text-xs text-slate-600">
+                Primary: {primary.name}
+                {primary.designation ? `, ${primary.designation}` : ''}
+                {primary.mobile && primary.mobile !== lead.mobile ? ` · ${primary.mobile}` : ''}
+                {(lead.contactCount ?? 0) > 1 ? ` · ${lead.contactCount} contacts` : ''}
+              </p>
+            )}
+          </div>
+        </Link>
+      )}
 
       {/* Last contact */}
-      <div className="mt-2 min-w-0 lg:mt-0">
+      <div className={`mt-2 min-w-0 lg:mt-0 ${columns.lastContact ? '' : 'lg:hidden'}`}>
         <p className="text-[11px] font-medium uppercase tracking-wide text-slate-400 lg:hidden">
           Last contact
         </p>
@@ -253,7 +326,7 @@ function ActionableLeadRow({
       </div>
 
       {/* Latest interaction */}
-      <div className="mt-2 min-w-0 lg:mt-0">
+      <div className={`mt-2 min-w-0 lg:mt-0 ${columns.latestInteraction ? '' : 'lg:hidden'}`}>
         <p className="text-[11px] font-medium uppercase tracking-wide text-slate-400 lg:hidden">
           Latest interaction
         </p>
@@ -271,7 +344,7 @@ function ActionableLeadRow({
       </div>
 
       {/* Next action */}
-      <div className="mt-2 min-w-0 lg:mt-0">
+      <div className={`mt-2 min-w-0 lg:mt-0 ${columns.nextAction ? '' : 'lg:hidden'}`}>
         <p className="text-[11px] font-medium uppercase tracking-wide text-slate-400 lg:hidden">
           Next action
         </p>

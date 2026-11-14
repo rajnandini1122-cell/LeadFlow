@@ -104,6 +104,7 @@ export class LeadsService {
       assignedToId: dto.assignedToId,
       unassigned: dto.unassigned,
       fresh: dto.fresh,
+      overdue: dto.overdue,
       awaiting: dto.awaiting,
       lastOutcome: dto.lastOutcome,
       market: dto.market,
@@ -192,7 +193,10 @@ export class LeadsService {
   > {
     // A lead outside the caller's visibility is a 404, exactly like one in
     // another tenant — the response must not confirm it exists.
-    const lead = await this.repository.findDetailById(id, visibilityFilter(principal)?.assignedToId);
+    const lead = await this.repository.findDetailById(
+      id,
+      visibilityFilter(principal)?.assignedToId,
+    );
     // Another tenant's lead and a non-existent lead are the same 404.
     if (!lead) throw AppException.leadNotFound();
 
@@ -339,7 +343,7 @@ export class LeadsService {
       const existing = byMobile ?? byEmail;
 
       if (existing) {
-        const name = [existing.firstName, existing.lastName].filter(Boolean).join(" ").trim();
+        const name = [existing.firstName, existing.lastName].filter(Boolean).join(' ').trim();
         /*
          * Named by whichever key actually matched.
          *
@@ -507,10 +511,9 @@ export class LeadsService {
     if (isTerminalLeadStatus(status)) return null;
 
     if (!dto.nextFollowUpAt) {
-      throw AppException.validation(
-        'An active lead must have a next follow-up date.',
-        { nextFollowUpAt: ['is required unless the lead is created as WON or LOST'] },
-      );
+      throw AppException.validation('An active lead must have a next follow-up date.', {
+        nextFollowUpAt: ['is required unless the lead is created as WON or LOST'],
+      });
     }
 
     const date = new Date(dto.nextFollowUpAt);
@@ -688,7 +691,13 @@ type LeadRow = {
   }[];
   activities?: { activityType: string; description: string | null; createdAt: Date }[];
   contactLinks?: {
-    contact: { id: string; firstName: string | null; lastName: string | null; designation: string | null; mobile: string | null };
+    contact: {
+      id: string;
+      firstName: string | null;
+      lastName: string | null;
+      designation: string | null;
+      mobile: string | null;
+    };
   }[];
   _count?: { contactLinks?: number };
   qualification: 'ROUGH' | 'REFINED';
@@ -743,7 +752,8 @@ function toSummary(lead: LeadRow, homeCountry: string): LeadSummary {
     primaryContact: primary
       ? {
           id: primary.id,
-          name: [primary.firstName, primary.lastName].filter(Boolean).join(' ').trim() || '(no name)',
+          name:
+            [primary.firstName, primary.lastName].filter(Boolean).join(' ').trim() || '(no name)',
           designation: primary.designation,
           mobile: primary.mobile,
         }

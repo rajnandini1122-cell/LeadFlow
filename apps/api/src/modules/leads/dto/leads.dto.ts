@@ -10,7 +10,12 @@ import {
   MaxLength,
   Min,
 } from 'class-validator';
-import { CALL_OUTCOMES, LEAD_LIFECYCLE_FILTERS, LEAD_QUALIFICATIONS, LEAD_STATUSES } from '@leadflow/api-types';
+import {
+  CALL_OUTCOMES,
+  LEAD_LIFECYCLE_FILTERS,
+  LEAD_QUALIFICATIONS,
+  LEAD_STATUSES,
+} from '@leadflow/api-types';
 import type { CallOutcome } from '@leadflow/api-types';
 import { MARKETS, type Market } from '../../../common/utils/market';
 import type { LeadLifecycleFilter, LeadStatus } from '@leadflow/api-types';
@@ -42,6 +47,12 @@ export class ListLeadsDto {
   @Transform(({ value }) => (value === 'true' ? true : value === 'false' ? false : value))
   @IsBoolean()
   fresh?: boolean;
+
+  /** Open leads whose next action is already late — the Overdue view. */
+  @IsOptional()
+  @Transform(({ value }) => (value === 'true' ? true : value === 'false' ? false : value))
+  @IsBoolean()
+  overdue?: boolean;
 
   /** Waiting on the customer: last outcome "awaiting response", or a quotation is out. */
   @IsOptional()

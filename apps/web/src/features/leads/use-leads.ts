@@ -9,7 +9,9 @@ import type {
   LeadLifecycleFilter,
   LeadPriority,
   LeadStatus,
-  Paginated, ContactRef } from '@leadflow/api-types';
+  Paginated,
+  ContactRef,
+} from '@leadflow/api-types';
 import { apiGet } from '../../lib/api-client';
 
 /** DOMESTIC = the organization's own country; INTERNATIONAL = importers abroad. */
@@ -120,6 +122,7 @@ export interface LeadFilters {
   unassigned?: boolean | undefined;
   /** Still NEW and never reached. */
   fresh?: boolean | undefined;
+  overdue?: boolean | undefined;
   /** Waiting on the customer. */
   awaiting?: boolean | undefined;
   /** Last call had exactly this outcome. */

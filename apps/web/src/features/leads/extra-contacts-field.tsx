@@ -69,10 +69,17 @@ export function ExtraContactsField({
 
   return (
     <fieldset className="space-y-3 rounded-lg border border-slate-200 p-3">
-      <legend className="px-1 text-sm font-medium text-slate-700">Other contacts at this company</legend>
+      <legend className="px-1 text-sm font-medium text-slate-700">
+        Other contacts at this company
+      </legend>
       {drafts.length > 0 && (
         <label className="flex items-center gap-2 text-sm text-slate-700">
-          <input type="radio" name="primary-contact" checked={primaryIndex === -1} onChange={() => onPrimaryChange(-1)} />
+          <input
+            type="radio"
+            name="primary-contact"
+            checked={primaryIndex === -1}
+            onChange={() => onPrimaryChange(-1)}
+          />
           The person above is the primary contact
         </label>
       )}
@@ -82,22 +89,89 @@ export function ExtraContactsField({
         return (
           <div key={index} className="space-y-2 rounded-lg bg-slate-50 p-3">
             <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Contact {index + 2}</span>
-              <button type="button" onClick={() => remove(index)} className="text-xs text-red-600 hover:underline">
+              <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Contact {index + 2}
+              </span>
+              <button
+                type="button"
+                onClick={() => remove(index)}
+                className="text-xs text-red-600 hover:underline"
+              >
                 Remove
               </button>
             </div>
             <div className="grid gap-2 sm:grid-cols-2">
-              <input aria-label="First name" placeholder="First name *" value={draft.firstName} maxLength={80} onChange={(e) => update(index, 'firstName', e.target.value)} className={input} />
-              <input aria-label="Last name" placeholder="Last name" value={draft.lastName} maxLength={80} onChange={(e) => update(index, 'lastName', e.target.value)} className={input} />
-              <input aria-label="Designation" placeholder="Designation" value={draft.designation} maxLength={100} onChange={(e) => update(index, 'designation', e.target.value)} className={input} />
-              <input aria-label="Department" placeholder="Department" list="extra-departments" value={draft.department} maxLength={60} onChange={(e) => update(index, 'department', e.target.value)} className={input} />
-              <input aria-label="Mobile" placeholder="Mobile" type="tel" inputMode="tel" value={draft.mobile} maxLength={30} onChange={(e) => update(index, 'mobile', e.target.value)} className={input} />
-              <input aria-label="WhatsApp" placeholder="WhatsApp, if different" type="tel" inputMode="tel" value={draft.whatsapp} maxLength={30} onChange={(e) => update(index, 'whatsapp', e.target.value)} className={input} />
-              <input aria-label="Email" placeholder="Email" type="email" inputMode="email" value={draft.email} maxLength={320} onChange={(e) => update(index, 'email', e.target.value)} className={`${input} sm:col-span-2`} />
+              <input
+                aria-label="First name"
+                placeholder="First name *"
+                value={draft.firstName}
+                maxLength={80}
+                onChange={(e) => update(index, 'firstName', e.target.value)}
+                className={input}
+              />
+              <input
+                aria-label="Last name"
+                placeholder="Last name"
+                value={draft.lastName}
+                maxLength={80}
+                onChange={(e) => update(index, 'lastName', e.target.value)}
+                className={input}
+              />
+              <input
+                aria-label="Designation"
+                placeholder="Designation"
+                value={draft.designation}
+                maxLength={100}
+                onChange={(e) => update(index, 'designation', e.target.value)}
+                className={input}
+              />
+              <input
+                aria-label="Department"
+                placeholder="Department"
+                list="extra-departments"
+                value={draft.department}
+                maxLength={60}
+                onChange={(e) => update(index, 'department', e.target.value)}
+                className={input}
+              />
+              <input
+                aria-label="Mobile"
+                placeholder="Mobile"
+                type="tel"
+                inputMode="tel"
+                value={draft.mobile}
+                maxLength={30}
+                onChange={(e) => update(index, 'mobile', e.target.value)}
+                className={input}
+              />
+              <input
+                aria-label="WhatsApp"
+                placeholder="WhatsApp, if different"
+                type="tel"
+                inputMode="tel"
+                value={draft.whatsapp}
+                maxLength={30}
+                onChange={(e) => update(index, 'whatsapp', e.target.value)}
+                className={input}
+              />
+              <input
+                aria-label="Email"
+                placeholder="Email"
+                type="email"
+                inputMode="email"
+                value={draft.email}
+                maxLength={320}
+                onChange={(e) => update(index, 'email', e.target.value)}
+                className={`${input} sm:col-span-2`}
+              />
             </div>
             <label className="flex items-center gap-2 text-sm text-slate-700">
-              <input type="radio" name="primary-contact" checked={primaryIndex === index} onChange={() => onPrimaryChange(index)} />
+              <input
+                type="radio"
+                name="primary-contact"
+                checked={primaryIndex === index}
+                onChange={() => onPrimaryChange(index)}
+              />
               Primary contact
             </label>
             {errors.length > 0 && (

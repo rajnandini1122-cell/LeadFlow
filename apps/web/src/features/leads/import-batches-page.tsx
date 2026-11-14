@@ -2,7 +2,14 @@ import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import type { LeadImportBatchSummary } from '@leadflow/api-types';
 import { apiGet } from '../../lib/api-client';
-import { Card, CardHeader, EmptyState, ErrorNotice, PageHeader, SkeletonRows } from '../../components/ui';
+import {
+  Card,
+  CardHeader,
+  EmptyState,
+  ErrorNotice,
+  PageHeader,
+  SkeletonRows,
+} from '../../components/ui';
 
 /**
  * Past CSV imports.
@@ -101,9 +108,7 @@ function BatchRow({ batch }: { batch: LeadImportBatchSummary }): React.JSX.Eleme
       <td className="px-5 py-3 text-xs text-slate-500">
         {new Date(batch.startedAt).toLocaleString()}
       </td>
-      <td className="px-5 py-3 text-xs text-slate-600">
-        {batch.importedBy?.fullName ?? '—'}
-      </td>
+      <td className="px-5 py-3 text-xs text-slate-600">{batch.importedBy?.fullName ?? '—'}</td>
       <td className="px-5 py-3 tabular-nums text-slate-600">{batch.totalRows}</td>
       <td className="px-5 py-3 text-xs">
         <span className="text-emerald-700">{batch.created} created</span>

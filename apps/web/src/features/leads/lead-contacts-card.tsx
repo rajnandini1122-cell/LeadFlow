@@ -4,7 +4,14 @@ import { Card, CardHeader, EmptyState, SkeletonRows } from '../../components/ui'
 import { useToast } from '../../components/toast';
 import { ApiError } from '../../lib/api-client';
 import { telHref, whatsappHref } from '../../lib/format';
-import { Dialog, DialogActions, Field, errorMessage, fieldErrorOf, inputClass } from './lead-dialogs';
+import {
+  Dialog,
+  DialogActions,
+  Field,
+  errorMessage,
+  fieldErrorOf,
+  inputClass,
+} from './lead-dialogs';
 import {
   useAddLeadContact,
   useLeadContactAction,
@@ -21,7 +28,13 @@ import {
  * opens on the phone (an Android intent in the app) and nothing is sent or
  * logged until the rep records what happened.
  */
-export function LeadContactsCard({ leadId, canEdit }: { leadId: string; canEdit: boolean }): React.JSX.Element {
+export function LeadContactsCard({
+  leadId,
+  canEdit,
+}: {
+  leadId: string;
+  canEdit: boolean;
+}): React.JSX.Element {
   const contacts = useLeadContacts(leadId);
   const action = useLeadContactAction(leadId);
   const toast = useToast();
@@ -34,7 +47,11 @@ export function LeadContactsCard({ leadId, canEdit }: { leadId: string; canEdit:
   const inactive = all.filter((c) => !c.active);
   const shown = showInactive ? all : active;
 
-  const run = (contact: LeadContact, kind: 'primary' | 'deactivate' | 'reactivate', done: string): void => {
+  const run = (
+    contact: LeadContact,
+    kind: 'primary' | 'deactivate' | 'reactivate',
+    done: string,
+  ): void => {
     action.mutate(
       { linkId: contact.id, action: kind },
       {
@@ -78,7 +95,9 @@ export function LeadContactsCard({ leadId, canEdit }: { leadId: string; canEdit:
               canEdit={canEdit}
               busy={action.isPending}
               onEdit={() => setEditing(contact)}
-              onPrimary={() => run(contact, 'primary', `${contact.name} is now the primary contact.`)}
+              onPrimary={() =>
+                run(contact, 'primary', `${contact.name} is now the primary contact.`)
+              }
               onDeactivate={() => setConfirming(contact)}
               onReactivate={() => run(contact, 'reactivate', `${contact.name} is active again.`)}
             />
@@ -105,11 +124,15 @@ export function LeadContactsCard({ leadId, canEdit }: { leadId: string; canEdit:
         onClose={() => setEditing(null)}
       />
 
-      <Dialog open={confirming !== null} title="Mark contact inactive?" onClose={() => setConfirming(null)}>
+      <Dialog
+        open={confirming !== null}
+        title="Mark contact inactive?"
+        onClose={() => setConfirming(null)}
+      >
         <div className="space-y-3 p-5 text-sm text-slate-700">
           <p>
-            <strong>{confirming?.name}</strong> will no longer be offered when you call, follow up or log an outcome
-            on this lead. Calls already logged with them are kept.
+            <strong>{confirming?.name}</strong> will no longer be offered when you call, follow up
+            or log an outcome on this lead. Calls already logged with them are kept.
           </p>
           {confirming?.isPrimary && active.length > 1 && (
             <p className="rounded-lg bg-amber-50 px-3 py-2 text-amber-800">
@@ -129,7 +152,8 @@ export function LeadContactsCard({ leadId, canEdit }: { leadId: string; canEdit:
               type="button"
               disabled={action.isPending}
               onClick={() => {
-                if (confirming) run(confirming, 'deactivate', `${confirming.name} marked inactive.`);
+                if (confirming)
+                  run(confirming, 'deactivate', `${confirming.name} marked inactive.`);
                 setConfirming(null);
               }}
               className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-red-700 disabled:opacity-50"
@@ -169,11 +193,17 @@ function ContactRow({
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-sm font-medium text-slate-900">{contact.name}</span>
         {contact.isPrimary ? (
-          <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[11px] font-medium text-emerald-700">Primary</span>
+          <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[11px] font-medium text-emerald-700">
+            Primary
+          </span>
         ) : contact.active ? (
-          <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-600">Secondary</span>
+          <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-600">
+            Secondary
+          </span>
         ) : (
-          <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-500">Inactive</span>
+          <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-500">
+            Inactive
+          </span>
         )}
       </div>
       {role && <p className="mt-0.5 text-xs text-slate-500">{role}</p>}
@@ -186,7 +216,10 @@ function ContactRow({
 
       <div className="mt-2 flex flex-wrap gap-1.5">
         {contact.active && call && (
-          <a href={call} className="rounded-lg bg-slate-900 px-2.5 py-1 text-xs font-medium text-white hover:bg-slate-800">
+          <a
+            href={call}
+            className="rounded-lg bg-slate-900 px-2.5 py-1 text-xs font-medium text-white hover:bg-slate-800"
+          >
             Call
           </a>
         )}
@@ -219,11 +252,21 @@ function ContactRow({
               </button>
             )}
             {contact.active ? (
-              <button type="button" disabled={busy} onClick={onDeactivate} className={`${secondaryButton} text-red-600`}>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={onDeactivate}
+                className={`${secondaryButton} text-red-600`}
+              >
                 Mark inactive
               </button>
             ) : (
-              <button type="button" disabled={busy} onClick={onReactivate} className={secondaryButton}>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={onReactivate}
+                className={secondaryButton}
+              >
                 Mark active
               </button>
             )}
@@ -303,7 +346,11 @@ function ContactDialog({
     event.preventDefault();
     const allowDuplicate = duplicate !== null;
     const onError = (error: unknown) => {
-      if (error instanceof ApiError && error.code === ERROR_CODES.DUPLICATE_CONTACT && !error.details?.['linkId']) {
+      if (
+        error instanceof ApiError &&
+        error.code === ERROR_CODES.DUPLICATE_CONTACT &&
+        !error.details?.['linkId']
+      ) {
         setDuplicate(error.message);
       }
     };
@@ -323,13 +370,20 @@ function ContactDialog({
     }
     const body: LeadContactInput = { firstName: form.firstName };
     for (const [k, v] of Object.entries(form) as [keyof LeadContactInput, string][]) {
-      if (k !== 'firstName' && typeof v === 'string' && v.trim()) (body as unknown as Record<string, string>)[k] = v.trim();
+      if (k !== 'firstName' && typeof v === 'string' && v.trim())
+        (body as unknown as Record<string, string>)[k] = v.trim();
     }
     add.mutate(
-      { ...body, ...(makePrimary ? { isPrimary: true } : {}), ...(allowDuplicate ? { allowDuplicate } : {}) },
+      {
+        ...body,
+        ...(makePrimary ? { isPrimary: true } : {}),
+        ...(allowDuplicate ? { allowDuplicate } : {}),
+      },
       {
         onSuccess: (created) => {
-          toast.success(`${created.name} added${created.isPrimary ? ' as the primary contact' : ''}.`);
+          toast.success(
+            `${created.name} added${created.isPrimary ? ' as the primary contact' : ''}.`,
+          );
           onClose();
         },
         onError,
@@ -344,13 +398,36 @@ function ContactDialog({
       <form onSubmit={submit} className="space-y-4 p-5" noValidate>
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="First name" htmlFor="poc-first" required error={err('firstName')}>
-            <input id="poc-first" value={form.firstName} maxLength={80} onChange={set('firstName')} className={inputClass} />
+            <input
+              id="poc-first"
+              value={form.firstName}
+              maxLength={80}
+              onChange={set('firstName')}
+              className={inputClass}
+            />
           </Field>
           <Field label="Last name" htmlFor="poc-last" error={err('lastName')}>
-            <input id="poc-last" value={form.lastName} maxLength={80} onChange={set('lastName')} className={inputClass} />
+            <input
+              id="poc-last"
+              value={form.lastName}
+              maxLength={80}
+              onChange={set('lastName')}
+              className={inputClass}
+            />
           </Field>
-          <Field label="Designation" htmlFor="poc-designation" hint="e.g. Purchase Manager" error={err('designation')}>
-            <input id="poc-designation" value={form.designation} maxLength={100} onChange={set('designation')} className={inputClass} />
+          <Field
+            label="Designation"
+            htmlFor="poc-designation"
+            hint="e.g. Purchase Manager"
+            error={err('designation')}
+          >
+            <input
+              id="poc-designation"
+              value={form.designation}
+              maxLength={100}
+              onChange={set('designation')}
+              className={inputClass}
+            />
           </Field>
           <Field label="Department" htmlFor="poc-department" error={err('department')}>
             <input
@@ -368,26 +445,75 @@ function ContactDialog({
             </datalist>
           </Field>
           <Field label="Mobile" htmlFor="poc-mobile" error={err('mobile')}>
-            <input id="poc-mobile" type="tel" inputMode="tel" value={form.mobile} maxLength={30} onChange={set('mobile')} className={inputClass} />
+            <input
+              id="poc-mobile"
+              type="tel"
+              inputMode="tel"
+              value={form.mobile}
+              maxLength={30}
+              onChange={set('mobile')}
+              className={inputClass}
+            />
           </Field>
-          <Field label="WhatsApp" htmlFor="poc-whatsapp" hint="Only if different from mobile" error={err('whatsapp')}>
-            <input id="poc-whatsapp" type="tel" inputMode="tel" value={form.whatsapp} maxLength={30} onChange={set('whatsapp')} className={inputClass} />
+          <Field
+            label="WhatsApp"
+            htmlFor="poc-whatsapp"
+            hint="Only if different from mobile"
+            error={err('whatsapp')}
+          >
+            <input
+              id="poc-whatsapp"
+              type="tel"
+              inputMode="tel"
+              value={form.whatsapp}
+              maxLength={30}
+              onChange={set('whatsapp')}
+              className={inputClass}
+            />
           </Field>
         </div>
         <Field label="Email" htmlFor="poc-email" error={err('email')}>
-          <input id="poc-email" type="email" inputMode="email" value={form.email} maxLength={320} onChange={set('email')} className={inputClass} />
+          <input
+            id="poc-email"
+            type="email"
+            inputMode="email"
+            value={form.email}
+            maxLength={320}
+            onChange={set('email')}
+            className={inputClass}
+          />
         </Field>
-        <Field label="Notes" htmlFor="poc-notes" hint={`About their role on this lead. ${form.notes?.length ?? 0}/500`} error={err('notes')}>
-          <textarea id="poc-notes" rows={2} value={form.notes} maxLength={500} onChange={set('notes')} className={inputClass} />
+        <Field
+          label="Notes"
+          htmlFor="poc-notes"
+          hint={`About their role on this lead. ${form.notes?.length ?? 0}/500`}
+          error={err('notes')}
+        >
+          <textarea
+            id="poc-notes"
+            rows={2}
+            value={form.notes}
+            maxLength={500}
+            onChange={set('notes')}
+            className={inputClass}
+          />
         </Field>
 
         {!contact && !isFirst && (
           <label className="flex items-center gap-2 text-sm text-slate-700">
-            <input type="checkbox" checked={makePrimary} onChange={(e) => setMakePrimary(e.target.checked)} />
+            <input
+              type="checkbox"
+              checked={makePrimary}
+              onChange={(e) => setMakePrimary(e.target.checked)}
+            />
             Make this the primary contact
           </label>
         )}
-        {contact && <p className="text-xs text-slate-500">Name, numbers and designation update this person on every lead they are on.</p>}
+        {contact && (
+          <p className="text-xs text-slate-500">
+            Name, numbers and designation update this person on every lead they are on.
+          </p>
+        )}
 
         {duplicate ? (
           <p role="alert" className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
@@ -395,7 +521,11 @@ function ContactDialog({
           </p>
         ) : (
           mutation.isError && (
-            <p role="alert" aria-live="assertive" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
+            <p
+              role="alert"
+              aria-live="assertive"
+              className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700"
+            >
               {errorMessage(mutation.error, 'Could not save the contact.')}
             </p>
           )

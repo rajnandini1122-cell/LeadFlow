@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQueries, useQuery } from '@tanstack/react-query';
 import type { Paginated } from '@leadflow/api-types';
 import { apiGet } from '../../lib/api-client';
 import { useEffect, useMemo, useState } from 'react';
@@ -27,7 +27,15 @@ import {
   toggleSelection,
   type LeadSelection,
 } from './bulk-actions';
-import { ActionableLeadList, nextActionText } from './actionable-lead-list';
+import { ViewTabs, viewParams } from './lead-views';
+import { LeadPreviewDrawer } from './lead-preview-drawer';
+import { LeadKanban } from './lead-kanban';
+import {
+  ActionableLeadList,
+  DEFAULT_COLUMNS,
+  nextActionText,
+  type LeadColumns,
+} from './actionable-lead-list';
 import { NewLeadDialog } from './new-lead-dialog';
 import { downloadCsv, exportFilename, toCsv } from '../../lib/export-csv';
 import { useAuth } from '../auth/auth-context';
@@ -74,6 +82,30 @@ export function LeadsPage(): React.JSX.Element {
    * follow-up queue — this is the one place a manager can find them to assign.
    */
   const unassignedOnly = params.get('unassigned') === 'true';
+  const overdueOnly = params.get('overdue') === 'true';
+  const owner = params.get('owner') ?? undefined;
+  const mode = params.get('mode') === 'kanban' ? 'kanban' : 'table';
+  const [previewId, setPreviewId] = useState<string | null>(null);
+  const [columns, setColumns] = useState<LeadColumns>(() => {
+    try {
+      const raw = window.localStorage.getItem('leadflow.leadColumns');
+      return raw
+        ? { ...DEFAULT_COLUMNS, ...(JSON.parse(raw) as Partial<LeadColumns>) }
+        : DEFAULT_COLUMNS;
+    } catch {
+      return DEFAULT_COLUMNS;
+    }
+  });
+  const toggleColumn = (key: keyof LeadColumns): void =>
+    setColumns((current) => {
+      const next = { ...current, [key]: !current[key] };
+      try {
+        window.localStorage.setItem('leadflow.leadColumns', JSON.stringify(next));
+      } catch {
+        // Not remembered in this browser; the choice still applies now.
+      }
+      return next;
+    });
   const freshOnly = params.get('fresh') === 'true';
   const awaitingOnly = params.get('awaiting') === 'true';
   const qualificationParam = params.get('qualification');
@@ -110,6 +142,8 @@ export function LeadsPage(): React.JSX.Element {
 
   const listFilters: LeadFilters = {
     search: search || undefined,
+    ...(owner ? { assignedToId: owner } : {}),
+    ...(overdueOnly ? { overdue: true } : {}),
     status: status === 'ALL' ? undefined : status,
     ...(canSeeTeam && unassignedOnly ? { unassigned: true } : {}),
     ...(freshOnly ? { fresh: true } : {}),
@@ -153,6 +187,21 @@ export function LeadsPage(): React.JSX.Element {
   const rows = useMemo(() => (leads.data?.pages ?? []).flatMap((page) => page.items), [leads.data]);
 
   const total = leads.data?.pages[0]?.total ?? null;
+  // Stage totals for the Kanban headers, with the same filters as the list.
+  const stageCounts = useQueries({
+    queries: LEAD_STATUSES.map((stage) => ({
+      queryKey: ['leads', 'stage-count', JSON.stringify(listFilters), stage],
+      queryFn: () =>
+        apiGet<Paginated<unknown>>('/leads', { ...listFilters, status: stage, limit: 1 }),
+      enabled: mode === 'kanban',
+    })),
+  });
+  const counts = Object.fromEntries(
+    LEAD_STATUSES.map((stage, i) => [stage, stageCounts[i]?.data?.total]).filter(
+      ([, n]) => n !== undefined,
+    ),
+  ) as Partial<Record<LeadStatus, number>>;
+  const previewIndex = previewId ? rows.findIndex((lead) => lead.id === previewId) : -1;
   const allLoadedSelected = rows.length > 0 && rows.every((lead) => isSelected(selection, lead.id));
   const toggleAllLoaded = (): void =>
     setSelection(
@@ -272,6 +321,75 @@ export function LeadsPage(): React.JSX.Element {
       />
 
       <NewLeadDialog open={dialogOpen} onClose={() => setDialogOpen(false)} />
+
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <ViewTabs
+          userId={user?.id}
+          canSeeTeam={canSeeTeam}
+          current={viewParams(params)}
+          onSelect={(view) => {
+            setStatus('ALL');
+            setParams(
+              new URLSearchParams({ ...view, ...(mode === 'kanban' ? { mode: 'kanban' } : {}) }),
+              {
+                replace: true,
+              },
+            );
+          }}
+        />
+        <div className="flex items-center gap-2">
+          {mode === 'table' && (
+            <details className="relative">
+              <summary className="cursor-pointer list-none rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50">
+                Columns
+              </summary>
+              <div className="absolute right-0 z-30 mt-1 w-48 space-y-1 rounded-lg border border-slate-200 bg-white p-2 text-xs shadow-lg">
+                {(
+                  [
+                    ['lastContact', 'Last contact'],
+                    ['latestInteraction', 'Latest interaction'],
+                    ['nextAction', 'Next action'],
+                  ] as const
+                ).map(([key, label]) => (
+                  <label
+                    key={key}
+                    className="flex items-center gap-2 rounded px-1 py-1 hover:bg-slate-50"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={columns[key]}
+                      onChange={() => toggleColumn(key)}
+                    />
+                    {label}
+                  </label>
+                ))}
+              </div>
+            </details>
+          )}
+          <div
+            role="group"
+            aria-label="Layout"
+            className="inline-flex overflow-hidden rounded-lg border border-slate-200 bg-white text-xs font-medium"
+          >
+            <button
+              type="button"
+              aria-pressed={mode === 'table'}
+              onClick={() => setFilter('mode', null)}
+              className={`px-3 py-1.5 ${mode === 'table' ? 'bg-slate-900 text-white' : 'text-slate-700 hover:bg-slate-50'}`}
+            >
+              Table
+            </button>
+            <button
+              type="button"
+              aria-pressed={mode === 'kanban'}
+              onClick={() => setFilter('mode', 'kanban')}
+              className={`px-3 py-1.5 ${mode === 'kanban' ? 'bg-slate-900 text-white' : 'text-slate-700 hover:bg-slate-50'}`}
+            >
+              Kanban
+            </button>
+          </div>
+        </div>
+      </div>
 
       <div className="mb-4 space-y-3">
         <input
@@ -434,14 +552,22 @@ export function LeadsPage(): React.JSX.Element {
           />
         ) : (
           <>
-            <ActionableLeadList
-              leads={rows}
-              selectable={canBulk}
-              isSelected={(id) => isSelected(selection, id)}
-              onToggle={(id) => setSelection((current) => toggleSelection(current, id))}
-              allSelected={allLoadedSelected}
-              onToggleAll={toggleAllLoaded}
-            />
+            {mode === 'kanban' ? (
+              <div className="p-3">
+                <LeadKanban leads={rows} counts={counts} onOpen={setPreviewId} />
+              </div>
+            ) : (
+              <ActionableLeadList
+                columns={columns}
+                onOpen={setPreviewId}
+                leads={rows}
+                selectable={canBulk}
+                isSelected={(id) => isSelected(selection, id)}
+                onToggle={(id) => setSelection((current) => toggleSelection(current, id))}
+                allSelected={allLoadedSelected}
+                onToggleAll={toggleAllLoaded}
+              />
+            )}
 
             {leads.hasNextPage && (
               <div className="border-t border-slate-100 p-4 text-center">
@@ -458,6 +584,18 @@ export function LeadsPage(): React.JSX.Element {
           </>
         )}
       </Card>
+      {previewId && (
+        <LeadPreviewDrawer
+          leadId={previewId}
+          onClose={() => setPreviewId(null)}
+          {...(previewIndex > 0
+            ? { onPrevious: () => setPreviewId(rows[previewIndex - 1]!.id) }
+            : {})}
+          {...(previewIndex >= 0 && previewIndex < rows.length - 1
+            ? { onNext: () => setPreviewId(rows[previewIndex + 1]!.id) }
+            : {})}
+        />
+      )}
     </>
   );
 }

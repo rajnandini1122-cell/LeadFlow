@@ -16,7 +16,11 @@ import { currencySymbol, humanise } from '../../lib/format';
 import type { LeadSummary } from './use-leads';
 import { zonedDefault, zonedInputToIso } from '../../lib/zoned-input';
 import { ContactListField } from './contact-list-field';
-import { ExtraContactsField, toAdditionalContacts, type ExtraContactDraft } from './extra-contacts-field';
+import {
+  ExtraContactsField,
+  toAdditionalContacts,
+  type ExtraContactDraft,
+} from './extra-contacts-field';
 
 /**
  * Neutral fallback, used only when an organization has configured none of its
@@ -121,10 +125,9 @@ export function NewLeadDialog({
     enabled: open,
   });
 
-  const sources =
-    organization.data?.settings?.leadSources?.length
-      ? organization.data.settings.leadSources
-      : FALLBACK_SOURCES;
+  const sources = organization.data?.settings?.leadSources?.length
+    ? organization.data.settings.leadSources
+    : FALLBACK_SOURCES;
 
   const assignable = useQuery({
     queryKey: ['assignable-users'],
@@ -205,8 +208,12 @@ export function NewLeadDialog({
         ...(addressLine2.trim() ? { addressLine2 } : {}),
         ...(stateName.trim() ? { state: stateName } : {}),
         ...(postalCode.trim() ? { postalCode } : {}),
-        ...(phones.some((p) => p.trim()) ? { additionalPhones: phones.filter((p) => p.trim()) } : {}),
-        ...(emails.some((e) => e.trim()) ? { additionalEmails: emails.filter((e) => e.trim()) } : {}),
+        ...(phones.some((p) => p.trim())
+          ? { additionalPhones: phones.filter((p) => p.trim()) }
+          : {}),
+        ...(emails.some((e) => e.trim())
+          ? { additionalEmails: emails.filter((e) => e.trim()) }
+          : {}),
         ...(source ? { source } : {}),
         ...(productId ? { productId } : {}),
         ...(accountId ? { accountId } : {}),
@@ -275,8 +282,8 @@ export function NewLeadDialog({
           <div className="border-b border-amber-200 bg-amber-50 px-5 py-4">
             <p className="text-sm font-medium text-amber-900">This customer already exists</p>
             <p className="mt-1 text-sm text-amber-800">
-              <span className="font-mono text-xs">{duplicate.leadNumber}</span> —{' '}
-              {duplicate.name} ({humanise(duplicate.status)}) has the same mobile number.
+              <span className="font-mono text-xs">{duplicate.leadNumber}</span> — {duplicate.name} (
+              {humanise(duplicate.status)}) has the same mobile number.
             </p>
             <div className="mt-3 flex flex-wrap gap-2">
               <Link
@@ -307,8 +314,8 @@ export function NewLeadDialog({
 
         <form onSubmit={submit} className="space-y-4 p-5">
           <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900">
-            New leads start as <strong>Rough</strong>. Qualify them first; a manager marks them Refined to start sales
-            follow-ups.
+            New leads start as <strong>Rough</strong>. Qualify them first; a manager marks them
+            Refined to start sales follow-ups.
           </p>
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="First name" required error={fieldError('firstName')}>
@@ -329,7 +336,11 @@ export function NewLeadDialog({
             </Field>
           </div>
 
-          <Field label="Designation" hint="Their role, e.g. Purchase Manager, Proprietor." error={fieldError('designation')}>
+          <Field
+            label="Designation"
+            hint="Their role, e.g. Purchase Manager, Proprietor."
+            error={fieldError('designation')}
+          >
             <input
               autoComplete="organization-title"
               maxLength={100}
@@ -346,15 +357,15 @@ export function NewLeadDialog({
               error={fieldError('mobile')}
             >
               {/*
-                * Not required.
-                *
-                * A lead created from an Instagram or Messenger conversation has
-                * no phone number to give: those platforms hand over an opaque
-                * account id and nothing else. Demanding one forced the person
-                * triaging the review queue to invent a number, which is worse
-                * than recording that there isn't one — the conversation itself
-                * is the way back to that customer.
-                */}
+               * Not required.
+               *
+               * A lead created from an Instagram or Messenger conversation has
+               * no phone number to give: those platforms hand over an opaque
+               * account id and nothing else. Demanding one forced the person
+               * triaging the review queue to invent a number, which is worse
+               * than recording that there isn't one — the conversation itself
+               * is the way back to that customer.
+               */}
               <input
                 value={mobile}
                 onChange={(event) => setMobile(event.target.value)}
@@ -497,10 +508,7 @@ export function NewLeadDialog({
             monthly, food manufacturing use", and losing that detail would cost
             more than the grouping gains.
           */}
-          <Field
-            label="Product"
-            hint="Groups this lead for product reporting. Optional."
-          >
+          <Field label="Product" hint="Groups this lead for product reporting. Optional.">
             <select
               value={productId}
               onChange={(event) => setProductId(event.target.value)}

@@ -137,9 +137,18 @@ function UploadForm({ leadId }: { leadId: string }): React.JSX.Element {
   const fileError = localError ?? fieldErrorOf(upload.error, 'file');
 
   return (
-    <form onSubmit={submit} className="space-y-3 border-b border-slate-100 px-5 py-4" aria-label="Attach a file">
+    <form
+      onSubmit={submit}
+      className="space-y-3 border-b border-slate-100 px-5 py-4"
+      aria-label="Attach a file"
+    >
       <div className="grid gap-3 sm:grid-cols-2">
-        <Field label="File" htmlFor="attachment-file" error={fileError} hint="PDF, image, Excel, Word, CSV — up to 10 MB.">
+        <Field
+          label="File"
+          htmlFor="attachment-file"
+          error={fileError}
+          hint="PDF, image, Excel, Word, CSV — up to 10 MB."
+        >
           <input
             ref={fileInput}
             id="attachment-file"
@@ -167,7 +176,11 @@ function UploadForm({ leadId }: { leadId: string }): React.JSX.Element {
 
       <div className="grid gap-3 sm:grid-cols-2">
         {KINDS_WITH_AMOUNT.includes(kind) && (
-          <Field label="Amount" htmlFor="attachment-amount" error={fieldErrorOf(upload.error, 'amount')}>
+          <Field
+            label="Amount"
+            htmlFor="attachment-amount"
+            error={fieldErrorOf(upload.error, 'amount')}
+          >
             <input
               id="attachment-amount"
               type="number"
@@ -250,7 +263,9 @@ function AttachmentRow({
             {ATTACHMENT_KIND_LABELS[attachment.kind] ?? attachment.kind}
           </span>
           {attachment.amount !== null && (
-            <span className="text-sm font-semibold text-slate-900">{formatCurrency(attachment.amount)}</span>
+            <span className="text-sm font-semibold text-slate-900">
+              {formatCurrency(attachment.amount)}
+            </span>
           )}
         </div>
         <p className="mt-1 truncate text-sm font-medium text-slate-900" title={attachment.fileName}>
@@ -280,10 +295,13 @@ function AttachmentRow({
             disabled={remove.isPending}
             aria-label={`Remove ${attachment.fileName}`}
             onClick={() => {
-              if (window.confirm(`Remove ${attachment.fileName}? It stays on the record, hidden.`)) {
+              if (
+                window.confirm(`Remove ${attachment.fileName}? It stays on the record, hidden.`)
+              ) {
                 remove.mutate(attachment.id, {
                   onSuccess: () => toast.success('File removed.'),
-                  onError: (error) => toast.error(errorMessage(error, 'Could not remove the file.')),
+                  onError: (error) =>
+                    toast.error(errorMessage(error, 'Could not remove the file.')),
                 });
               }
             }}
@@ -298,11 +316,22 @@ function AttachmentRow({
 }
 
 function Thumbnail({ attachment }: { attachment: LeadAttachment }): React.JSX.Element {
-  const src = useAuthedImage(attachment.isImage ? attachmentDownloadPath(attachment.leadId, attachment.id) : null);
+  const src = useAuthedImage(
+    attachment.isImage ? attachmentDownloadPath(attachment.leadId, attachment.id) : null,
+  );
   if (src) {
-    return <img src={src} alt="" className="h-12 w-12 shrink-0 rounded-lg border border-slate-200 object-cover" />;
+    return (
+      <img
+        src={src}
+        alt=""
+        className="h-12 w-12 shrink-0 rounded-lg border border-slate-200 object-cover"
+      />
+    );
   }
-  const label = attachment.mimeType === 'application/pdf' ? 'PDF' : (attachment.fileName.split('.').pop() ?? 'FILE').toUpperCase();
+  const label =
+    attachment.mimeType === 'application/pdf'
+      ? 'PDF'
+      : (attachment.fileName.split('.').pop() ?? 'FILE').toUpperCase();
   return (
     <span
       aria-hidden="true"

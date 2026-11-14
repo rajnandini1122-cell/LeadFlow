@@ -19,7 +19,13 @@ import type { LeadDetail } from './use-leads';
  * mapping review. Linking here, or creating the customer with the duplicate
  * check, completes New lead → Won → Customer in one place.
  */
-export function LeadCustomerCard({ lead, canLink }: { lead: LeadDetail; canLink: boolean }): React.JSX.Element {
+export function LeadCustomerCard({
+  lead,
+  canLink,
+}: {
+  lead: LeadDetail;
+  canLink: boolean;
+}): React.JSX.Element {
   const account = lead.account ?? null;
 
   return (
@@ -28,7 +34,10 @@ export function LeadCustomerCard({ lead, canLink }: { lead: LeadDetail; canLink:
       <div className="space-y-3 px-5 py-4 text-sm">
         {account ? (
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <Link to={`/customers/${account.id}`} className="font-medium text-slate-900 hover:underline">
+            <Link
+              to={`/customers/${account.id}`}
+              className="font-medium text-slate-900 hover:underline"
+            >
               {account.name}
             </Link>
             <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-700">
@@ -105,7 +114,10 @@ function LinkCustomer({ lead }: { lead: LeadDetail }): React.JSX.Element {
   const create = async (force = false): Promise<void> => {
     setCreating(true);
     try {
-      const { account } = await apiPost<{ account: Candidate }>('/accounts', { name, ...(force ? { force: true } : {}) });
+      const { account } = await apiPost<{ account: Candidate }>('/accounts', {
+        name,
+        ...(force ? { force: true } : {}),
+      });
       link(account);
     } catch (error) {
       const found = duplicatesFrom(error);
@@ -122,7 +134,9 @@ function LinkCustomer({ lead }: { lead: LeadDetail }): React.JSX.Element {
     <div className="space-y-2">
       {matches.length > 0 && !duplicates && (
         <>
-          <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Existing customers that match</p>
+          <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+            Existing customers that match
+          </p>
           <ul className="space-y-1.5">
             {matches.map((match) => (
               <li key={match.id}>
