@@ -174,7 +174,19 @@ describe('ConfirmDialog states who receives it', { timeout: 20_000 }, () => {
     undisplayedEligible: 0,
     ...over,
   });
-  const open = (audience: EmailAudiencePreview, confirm?: () => Promise<unknown>) => {
+  const open = (
+    audience: EmailAudiencePreview,
+    confirm?: () => Promise<unknown>,
+    checks: { id: string; status: 'pass' | 'warn' | 'fail'; title: string }[] = [
+      { id: 'SENDING_AVAILABLE', status: 'pass', title: 'Email sending is available' },
+    ],
+  ) => {
+    vi.spyOn(apiClient, 'apiGet').mockResolvedValue({
+      intent: 'CONFIRM',
+      channel: 'RESEND_BROADCAST',
+      ok: checks.every((c) => c.status !== 'fail'),
+      checks,
+    } as never);
     const post = vi
       .spyOn(apiClient, 'apiPost')
       .mockImplementation((url: string) =>
@@ -192,6 +204,21 @@ describe('ConfirmDialog states who receives it', { timeout: 20_000 }, () => {
     );
     return post;
   };
+
+  it('shows the server checklist; a failing check keeps Send off, with the reason and a fix link', async () => {
+    const post = open(preview({ selected: 1, eligible: 1, recipientsTotal: 1 }), undefined, [
+      { id: 'SENDING_AVAILABLE', status: 'pass', title: 'Email sending is available' },
+      { id: 'MESSAGE_FITS', status: 'fail', title: 'Change the message before sending' },
+    ]);
+    const list = await screen.findByRole('list', { name: 'Before you send' });
+    expect(list).toHaveTextContent('Change the message before sending');
+    expect(list).toHaveTextContent('Email sending is available');
+    expect(await screen.findByRole('button', { name: /^Send to 1$/ })).toBeDisabled();
+    expect(post.mock.calls.some(([url]) => String(url).endsWith('/confirm'))).toBe(false);
+    expect(apiClient.apiGet).toHaveBeenCalledWith('/email/campaigns/c1/readiness', {
+      intent: 'CONFIRM',
+    });
+  });
 
   it('says plainly, before the Send button, that this is the real campaign and NOT a test email', async () => {
     open(preview({ selected: 2, eligible: 2, recipientsTotal: 2 }));

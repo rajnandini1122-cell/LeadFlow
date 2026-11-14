@@ -6,6 +6,8 @@ import {
   RECIPIENT_LIST_LIMIT,
   type EmailAudienceOptions,
   type EmailAudiencePreview,
+  type CampaignReadiness,
+  type CampaignReadinessIntent,
   type EmailCampaignCounts,
   type EmailCampaignListItem,
   type EmailCampaignRecipientView,
@@ -37,11 +39,7 @@ import { deriveUnsubscribeToken, unsubscribeKey } from '../consent/unsubscribe-t
 import { MailboxService } from '../mailbox/mailbox.service';
 import { composeMessage, sendOnce } from '../mailbox/mail-connection';
 import { sendViaResend, type ResendOutcome } from '../mailbox/resend-transport';
-import {
-  BROADCAST_MERGE_FIELDS,
-  HANDED_TO_PROVIDER,
-  type BroadcastState,
-} from '../broadcast/broadcast-state';
+import { HANDED_TO_PROVIDER, type BroadcastState } from '../broadcast/broadcast-state';
 import {
   BroadcastService,
   type ReviewAction,
@@ -56,6 +54,7 @@ import { SendingAllowlist } from '../content/sending-allowlist';
 import { evaluateAudience, listRecipients, type AudienceResult } from './audience';
 import { CampaignsRepository } from './campaigns.repository';
 import { buildCampaignMessage, newMessageId } from './mail-message';
+import { broadcastContentProblems, evaluateReadiness, type ReadinessInput } from './readiness';
 import type { AudiencePreviewDto, ConfirmCampaignDto, SaveCampaignDto } from './dto/campaigns.dto';
 
 export const CAMPAIGN_AUDIT = {
@@ -811,26 +810,64 @@ export class CampaignsService {
         'Promotional email needs the Resend webhook, so unsubscribes, bounces and complaints reach LeadFlow.',
       );
     }
-    if (campaign.assetIds.length > 0) {
-      throw AppException.validation(
-        'Broadcasts cannot carry attachments. Link to the catalogue instead.',
-      );
+    // One message for everyone: the same content rules the readiness checklist shows.
+    const [problem] = broadcastContentProblems(readinessContent(campaign));
+    if (problem) throw AppException.validation(problem);
+  }
+
+  /**
+   * The pre-send checklist for a test email or the real send, built from the
+   * same rules the guards above enforce. Never names switches, hosts, keys or
+   * approved addresses.
+   */
+  async readiness(
+    id: string,
+    intent: CampaignReadinessIntent,
+    principal: TenantPrincipal,
+  ): Promise<CampaignReadiness> {
+    const campaign = await this.require(id);
+    const mailbox = await this.mailbox.find();
+    let audience: ReadinessInput['audience'];
+    if (intent === 'CONFIRM') {
+      try {
+        const result = await this.buildAudience(
+          campaign.filter as EmailRecipientFilter,
+          campaign.purpose,
+        );
+        const allowlist = new SendingAllowlist(this.config);
+        audience = {
+          eligible: result.eligible.length,
+          unapproved: result.eligible.filter(
+            (member) => !allowlist.allows(principal.organizationId, member.email),
+          ).length,
+          tooLarge: false,
+        };
+      } catch (error) {
+        if (!(error instanceof AppException)) throw error;
+        audience = { eligible: 0, unapproved: 0, tooLarge: true };
+      }
     }
-    // One message for everyone: only fields Resend can fill per contact.
-    const used = [...`${campaign.html} ${campaign.text}`.matchAll(/\{\{\s*([a-z_]+)\s*\}\}/gi)].map(
-      (m) => m[1]!.toLowerCase(),
-    );
-    const unsupported = [...new Set(used)].filter(
-      (f) => !(f in BROADCAST_MERGE_FIELDS) && f !== 'organization' && f !== 'sender_name',
-    );
-    if (unsupported.length > 0) {
-      throw AppException.validation(
-        `A broadcast can only personalise first name and last name. Remove: ${unsupported.map((f) => `{{${f}}}`).join(', ')}.`,
-      );
-    }
-    if (/\{\{\s*(first_name|last_name|full_name)\s*\}\}/i.test(campaign.subject)) {
-      throw AppException.validation('A broadcast subject cannot be personalised per recipient.');
-    }
+    return evaluateReadiness({
+      intent,
+      switches: {
+        dispatch: this.config.get('EMAIL_DISPATCH_ENABLED') === true,
+        sending: this.config.get('EMAIL_CAMPAIGNS_SENDING_ENABLED') === true,
+        broadcasts: this.config.get('EMAIL_RESEND_BROADCASTS_ENABLED') === true,
+      },
+      mailbox: mailbox
+        ? {
+            enabled: mailbox.enabled,
+            sendingProvider: mailbox.sendingProvider,
+            providerTested: Boolean(mailbox.providerOkAt),
+            smtpTested: Boolean(mailbox.lastSmtpOkAt),
+            fullAccessKey: mailbox.apiKeyAccess === 'full',
+            domainVerified: Boolean(mailbox.domainVerifiedAt),
+            webhookConnected: Boolean(mailbox.encryptedWebhookSecret),
+          }
+        : null,
+      campaign: readinessContent(campaign),
+      ...(audience ? { audience } : {}),
+    });
   }
 
   private requireCustomerSending(): void {
@@ -1005,4 +1042,15 @@ function cleanFilter(filter: EmailRecipientFilter): EmailRecipientFilter {
     if (key === 'source' && value === 'CUSTOM') out.source = 'CUSTOM';
   }
   return out;
+}
+
+/** The parts of a campaign the readiness rules look at. */
+function readinessContent(campaign: EmailCampaign): ReadinessInput['campaign'] {
+  return {
+    purpose: campaign.purpose,
+    subject: campaign.subject,
+    html: campaign.html,
+    text: campaign.text,
+    attachments: campaign.assetIds.length,
+  };
 }

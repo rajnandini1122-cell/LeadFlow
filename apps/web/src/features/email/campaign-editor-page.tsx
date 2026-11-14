@@ -22,7 +22,7 @@ import {
   useAudiencePreview,
   useCampaign,
   useCampaignAction,
-  useMailbox,
+  useCampaignReadiness,
   useRenderedPreview,
   useSaveCampaign,
   useTemplates,
@@ -30,7 +30,7 @@ import {
   useUploadAsset,
   type CampaignInput,
 } from './use-email';
-import { sendingReadiness } from './sending-readiness';
+import { ReadinessChecklist } from './readiness-checklist';
 
 const inputClass =
   'w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:border-slate-900 focus:ring-1 focus:ring-slate-900 focus:outline-none';
@@ -743,11 +743,10 @@ function SendCard({
 }): React.JSX.Element {
   const preview = useRenderedPreview(campaignId);
   const test = useTestSend();
-  const mailbox = useMailbox();
-  // Enabled exactly when the server would accept a test send (see sending-readiness.ts).
-  const ready = sendingReadiness(mailbox.data).testSend;
+  // Enabled exactly when the server would accept a test send: the server's own checklist.
+  const readiness = useCampaignReadiness(campaignId, 'TEST');
   const [confirming, setConfirming] = useState(false);
-  const testBlocked = dirty || test.isPending || !mailbox.data || !ready.ok;
+  const testBlocked = dirty || test.isPending || !readiness.data?.ok;
   const { user } = useAuth();
   const own = (user?.email ?? '').trim().toLowerCase();
   // One test address, starting as your own; edited means "send it there instead".
@@ -823,15 +822,12 @@ function SendCard({
                 : 'Send test'}
           </button>
         </section>
-        {mailbox.data && !ready.ok && (
-          <ul
-            aria-label="Why test emails are unavailable"
-            className="list-disc space-y-0.5 pl-5 text-xs text-slate-500"
-          >
-            {ready.reasons.map((r) => (
-              <li key={r}>{r}</li>
-            ))}
-          </ul>
+        {readiness.data && (
+          <ReadinessChecklist
+            checks={readiness.data.checks}
+            label={readiness.data.ok ? 'Test email notes' : 'Why test emails are unavailable'}
+            only="attention"
+          />
         )}
         {test.data && (
           <p
@@ -885,6 +881,8 @@ export function ConfirmDialog({
   const navigate = useNavigate();
   const audience = useAudiencePreview();
   const action = useCampaignAction();
+  // The same rules the server applies on confirmation; Send stays off until they pass.
+  const readiness = useCampaignReadiness(campaignId, 'CONFIRM');
   const [when, setWhen] = useState<'now' | 'later'>('now');
   const [at, setAt] = useState('');
   // One key per dialog: a double click confirms once.
@@ -966,6 +964,16 @@ export function ConfirmDialog({
             receive it.
           </p>
         )}
+        <div className="mt-3 rounded-lg border border-slate-200 px-3 py-2">
+          <p className="mb-1.5 text-xs font-semibold text-slate-700">Before you send</p>
+          {readiness.isPending && <p className="text-xs text-slate-500">Checking…</p>}
+          {readiness.data && (
+            <ReadinessChecklist checks={readiness.data.checks} label="Before you send" />
+          )}
+          {readiness.error && (
+            <p className="text-xs text-red-700">The checklist could not be loaded. Try again.</p>
+          )}
+        </div>
         {needsAck && (
           <div
             role="alert"
@@ -1020,6 +1028,7 @@ export function ConfirmDialog({
             disabled={
               action.isPending ||
               audience.isPending ||
+              !readiness.data?.ok ||
               count === 0 ||
               (when === 'later' && !at) ||
               (needsAck && !acknowledged)

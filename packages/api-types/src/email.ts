@@ -331,6 +331,31 @@ export interface EmailRenderedPreview {
   sampleRecipient: string | null;
 }
 
+/** How a campaign is delivered: SMTP, one Resend email per person, or one Resend broadcast. */
+export type EmailDeliveryChannel = 'SMTP' | 'RESEND_EMAIL' | 'RESEND_BROADCAST';
+
+export const CAMPAIGN_READINESS_INTENTS = ['TEST', 'CONFIRM'] as const;
+export type CampaignReadinessIntent = (typeof CAMPAIGN_READINESS_INTENTS)[number];
+
+/** One line of a campaign's pre-send checklist, written for business users. */
+export interface CampaignReadinessCheck {
+  id: string;
+  /** fail blocks the action; warn is shown but does not block. */
+  status: 'pass' | 'warn' | 'fail';
+  title: string;
+  detail?: string;
+  fix?: { label: string; to: string };
+}
+
+/** GET /email/campaigns/:id/readiness — the same rules the send guards apply. */
+export interface CampaignReadiness {
+  intent: CampaignReadinessIntent;
+  /** Predicted delivery channel; null when no email account is set up. */
+  channel: EmailDeliveryChannel | null;
+  ok: boolean;
+  checks: CampaignReadinessCheck[];
+}
+
 export interface EmailReplyView {
   id: string;
   fromAddress: string | null;

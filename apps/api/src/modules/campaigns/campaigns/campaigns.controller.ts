@@ -13,7 +13,10 @@ import {
 import { ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import {
+  CAMPAIGN_READINESS_INTENTS,
   PERMISSIONS,
+  type CampaignReadiness,
+  type CampaignReadinessIntent,
   type EmailAudienceOptions,
   type EmailAudiencePreview,
   type EmailCampaignListItem,
@@ -118,6 +121,23 @@ export class CampaignsController {
   @ApiOperation({ summary: 'The rendered message (subject, HTML, text, attachments)' })
   async preview(@Param('id', ParseUUIDPipe) id: string): Promise<EmailRenderedPreview> {
     return this.campaigns.renderPreview(id);
+  }
+
+  @Get(':id/readiness')
+  @RequirePermissions(PERMISSIONS.CAMPAIGN_VIEW)
+  @ApiOperation({ summary: 'The pre-send checklist for a test email or the real send' })
+  @ApiQuery({ name: 'intent', enum: CAMPAIGN_READINESS_INTENTS })
+  async readiness(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query('intent') intent: string,
+    @CurrentUser() principal: TenantPrincipal,
+  ): Promise<CampaignReadiness> {
+    if (!(CAMPAIGN_READINESS_INTENTS as readonly string[]).includes(intent)) {
+      throw AppException.validation(
+        `intent must be one of: ${CAMPAIGN_READINESS_INTENTS.join(', ')}`,
+      );
+    }
+    return this.campaigns.readiness(id, intent as CampaignReadinessIntent, principal);
   }
 
   @Post(':id/test')
