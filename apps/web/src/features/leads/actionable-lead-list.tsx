@@ -19,9 +19,26 @@ import { QualificationBadge } from './lead-qualification-card';
  *
  * Desktop: a dense table-like grid. Phone: one card per lead, actions below.
  */
-export function ActionableLeadList({ leads }: { leads: LeadSummary[] }): React.JSX.Element {
+export function ActionableLeadList({
+  leads,
+  selectable = false,
+  isSelected,
+  onToggle,
+  allSelected = false,
+  onToggleAll,
+}: {
+  leads: LeadSummary[];
+  /** Show row checkboxes for bulk actions. */
+  selectable?: boolean;
+  isSelected?: (id: string) => boolean;
+  onToggle?: (id: string) => void;
+  allSelected?: boolean;
+  onToggleAll?: () => void;
+}): React.JSX.Element {
   const { can } = useAuth();
-  const [logging, setLogging] = useState<{ lead: LogOutcomeLead; followUpId?: string } | null>(null);
+  const [logging, setLogging] = useState<{ lead: LogOutcomeLead; followUpId?: string } | null>(
+    null,
+  );
   const [rescheduling, setRescheduling] = useState<{
     id: string;
     leadId: string;
@@ -32,10 +49,26 @@ export function ActionableLeadList({ leads }: { leads: LeadSummary[] }): React.J
   return (
     <>
       {/* Column headings — desktop only; cards carry their own labels. */}
+      {selectable && (
+        <label className="flex items-center gap-2 border-b border-slate-100 px-4 py-2 text-xs text-slate-600 sm:px-5 lg:hidden">
+          <input type="checkbox" checked={allSelected} onChange={onToggleAll} className="h-5 w-5" />
+          Select all loaded
+        </label>
+      )}
       <div
-        aria-hidden
-        className="hidden border-b border-slate-100 px-5 py-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400 lg:grid lg:grid-cols-[minmax(0,2fr)_minmax(0,1.6fr)_minmax(0,1.6fr)_minmax(0,1.5fr)_auto] lg:gap-4"
+        className={`hidden border-b border-slate-100 px-5 py-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400 lg:grid lg:gap-4 ${
+          selectable ? GRID_SELECTABLE : GRID
+        }`}
       >
+        {selectable && (
+          <input
+            type="checkbox"
+            aria-label="Select all loaded leads"
+            checked={allSelected}
+            onChange={onToggleAll}
+            className="h-4 w-4"
+          />
+        )}
         <span>Lead</span>
         <span>Last contact</span>
         <span>Latest interaction</span>
@@ -48,6 +81,9 @@ export function ActionableLeadList({ leads }: { leads: LeadSummary[] }): React.J
           <ActionableLeadRow
             key={lead.id}
             lead={lead}
+            selectable={selectable}
+            selected={isSelected?.(lead.id) ?? false}
+            onToggle={() => onToggle?.(lead.id)}
             canLogOutcome={can('lead.update')}
             canReschedule={can('followup.create')}
             onLogOutcome={() =>
@@ -70,20 +106,37 @@ export function ActionableLeadList({ leads }: { leads: LeadSummary[] }): React.J
       </ul>
 
       {logging && (
-        <LogOutcomeDialog lead={logging.lead} followUpId={logging.followUpId} open onClose={() => setLogging(null)} />
+        <LogOutcomeDialog
+          lead={logging.lead}
+          followUpId={logging.followUpId}
+          open
+          onClose={() => setLogging(null)}
+        />
       )}
-      <RescheduleFollowUpDialog followUp={rescheduling} open={rescheduling !== null} onClose={() => setRescheduling(null)} />
+      <RescheduleFollowUpDialog
+        followUp={rescheduling}
+        open={rescheduling !== null}
+        onClose={() => setRescheduling(null)}
+      />
     </>
   );
 }
 
 /** India or international — a neutral outlined tag, so it never reads as a stage or an outcome. */
-function MarketBadge({ market, country }: { market: LeadSummary['market']; country: string | null }): React.JSX.Element | null {
+function MarketBadge({
+  market,
+  country,
+}: {
+  market: LeadSummary['market'];
+  country: string | null;
+}): React.JSX.Element | null {
   if (market === 'UNKNOWN') return null;
   return (
     <span
       className={`rounded-md px-1.5 py-0.5 text-[11px] font-medium ring-1 ring-inset ${
-        market === 'INTERNATIONAL' ? 'text-indigo-700 ring-indigo-200' : 'text-slate-600 ring-slate-200'
+        market === 'INTERNATIONAL'
+          ? 'text-indigo-700 ring-indigo-200'
+          : 'text-slate-600 ring-slate-200'
       }`}
       title={country ? `Country: ${country}` : 'From the mobile number'}
     >
@@ -93,22 +146,36 @@ function MarketBadge({ market, country }: { market: LeadSummary['market']; count
 }
 
 /** What the agent should do next, in words — derived, never stored. */
-export function nextActionText(lead: LeadSummary): { text: string; tone: 'danger' | 'warning' | 'muted' | 'default' } {
-  if (lead.status === 'WON' || lead.status === 'LOST') return { text: `Closed — ${humanise(lead.status)}`, tone: 'muted' };
+export function nextActionText(lead: LeadSummary): {
+  text: string;
+  tone: 'danger' | 'warning' | 'muted' | 'default';
+} {
+  if (lead.status === 'WON' || lead.status === 'LOST')
+    return { text: `Closed — ${humanise(lead.status)}`, tone: 'muted' };
   if (!lead.assignedTo) return { text: 'Assign an owner', tone: 'warning' };
   if (!lead.nextAction) return { text: 'Schedule the next action', tone: 'warning' };
   const what = lead.nextAction.title ?? `${humanise(lead.nextAction.type)} the customer`;
   return { text: what, tone: lead.nextAction.isOverdue ? 'danger' : 'default' };
 }
 
+const GRID = 'lg:grid-cols-[minmax(0,2fr)_minmax(0,1.6fr)_minmax(0,1.6fr)_minmax(0,1.5fr)_auto]';
+const GRID_SELECTABLE =
+  'lg:grid-cols-[auto_minmax(0,2fr)_minmax(0,1.6fr)_minmax(0,1.6fr)_minmax(0,1.5fr)_auto]';
+
 function ActionableLeadRow({
   lead,
+  selectable,
+  selected,
+  onToggle,
   canLogOutcome,
   canReschedule,
   onLogOutcome,
   onReschedule,
 }: {
   lead: LeadSummary;
+  selectable: boolean;
+  selected: boolean;
+  onToggle: () => void;
   canLogOutcome: boolean;
   canReschedule: boolean;
   onLogOutcome: () => void;
@@ -121,20 +188,37 @@ function ActionableLeadRow({
   const next = nextActionText(lead);
 
   return (
-    <li className="px-4 py-3.5 transition hover:bg-slate-50 sm:px-5 lg:grid lg:grid-cols-[minmax(0,2fr)_minmax(0,1.6fr)_minmax(0,1.6fr)_minmax(0,1.5fr)_auto] lg:items-center lg:gap-4">
+    <li
+      className={`px-4 py-3.5 transition sm:px-5 lg:grid lg:items-center lg:gap-4 ${selectable ? GRID_SELECTABLE : GRID} ${
+        selected ? 'bg-sky-50' : 'hover:bg-slate-50'
+      }`}
+    >
+      {selectable && (
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={onToggle}
+          aria-label={`Select ${lead.name}`}
+          className="mb-2 h-5 w-5 lg:mb-0 lg:h-4 lg:w-4"
+        />
+      )}
       {/* Lead */}
       <Link to={`/leads/${lead.id}`} className="group flex min-w-0 items-center gap-3">
         <Avatar name={lead.name} />
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-1.5">
-            <p className="truncate text-sm font-medium text-slate-900 group-hover:underline">{lead.name}</p>
+            <p className="truncate text-sm font-medium text-slate-900 group-hover:underline">
+              {lead.name}
+            </p>
             <QualificationBadge qualification={lead.qualification} />
             <StatusBadge status={lead.status} />
             <PriorityBadge priority={lead.priority} />
             <MarketBadge market={lead.market} country={lead.country} />
           </div>
           <p className="mt-0.5 truncate text-xs text-slate-500">
-            {lead.companyName ?? <span className="font-mono text-slate-400">{lead.leadNumber}</span>}
+            {lead.companyName ?? (
+              <span className="font-mono text-slate-400">{lead.leadNumber}</span>
+            )}
             {lead.mobile ? ` · ${lead.mobile}` : ''}
             {` · ${lead.assignedTo?.fullName ?? 'Unassigned'}`}
           </p>
@@ -151,12 +235,16 @@ function ActionableLeadRow({
 
       {/* Last contact */}
       <div className="mt-2 min-w-0 lg:mt-0">
-        <p className="text-[11px] font-medium uppercase tracking-wide text-slate-400 lg:hidden">Last contact</p>
+        <p className="text-[11px] font-medium uppercase tracking-wide text-slate-400 lg:hidden">
+          Last contact
+        </p>
         {lead.lastOutcome ? (
           <div className="flex flex-col items-start gap-0.5">
             <OutcomeBadge outcome={lead.lastOutcome} at={lead.lastOutcomeAt} />
             <span className="text-[11px] text-slate-500">
-              {lead.lastContactedAt ? `Spoke ${formatRelative(lead.lastContactedAt)}` : 'Not reached yet'}
+              {lead.lastContactedAt
+                ? `Spoke ${formatRelative(lead.lastContactedAt)}`
+                : 'Not reached yet'}
             </span>
           </div>
         ) : (
@@ -166,9 +254,14 @@ function ActionableLeadRow({
 
       {/* Latest interaction */}
       <div className="mt-2 min-w-0 lg:mt-0">
-        <p className="text-[11px] font-medium uppercase tracking-wide text-slate-400 lg:hidden">Latest interaction</p>
+        <p className="text-[11px] font-medium uppercase tracking-wide text-slate-400 lg:hidden">
+          Latest interaction
+        </p>
         {lead.latestActivity ? (
-          <p className="line-clamp-2 text-xs text-slate-600" title={lead.latestActivity.description ?? undefined}>
+          <p
+            className="line-clamp-2 text-xs text-slate-600"
+            title={lead.latestActivity.description ?? undefined}
+          >
             {lead.latestActivity.description ?? humanise(lead.latestActivity.type)}
             <span className="text-slate-400"> · {formatRelative(lead.latestActivity.at)}</span>
           </p>
@@ -179,7 +272,9 @@ function ActionableLeadRow({
 
       {/* Next action */}
       <div className="mt-2 min-w-0 lg:mt-0">
-        <p className="text-[11px] font-medium uppercase tracking-wide text-slate-400 lg:hidden">Next action</p>
+        <p className="text-[11px] font-medium uppercase tracking-wide text-slate-400 lg:hidden">
+          Next action
+        </p>
         <p
           className={`truncate text-xs font-medium ${
             next.tone === 'danger'
@@ -195,13 +290,20 @@ function ActionableLeadRow({
         </p>
         {lead.nextAction ? (
           <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
-            <DueBadge iso={lead.nextAction.scheduledAt} label={formatDueDate(lead.nextAction.scheduledAt)} />
-            <span className="text-[11px] text-slate-400">{formatDateTime(lead.nextAction.scheduledAt)}</span>
+            <DueBadge
+              iso={lead.nextAction.scheduledAt}
+              label={formatDueDate(lead.nextAction.scheduledAt)}
+            />
+            <span className="text-[11px] text-slate-400">
+              {formatDateTime(lead.nextAction.scheduledAt)}
+            </span>
           </div>
         ) : (
           !closed &&
           lead.nextFollowUpAt && (
-            <span className="text-[11px] text-slate-400">Due {formatDateTime(lead.nextFollowUpAt)} — not in anyone’s queue</span>
+            <span className="text-[11px] text-slate-400">
+              Due {formatDateTime(lead.nextFollowUpAt)} — not in anyone’s queue
+            </span>
           )
         )}
       </div>

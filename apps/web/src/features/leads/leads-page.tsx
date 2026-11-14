@@ -18,14 +18,15 @@ import {
   formatDueDate,
   humanise,
 } from '../../lib/format';
+import { Card, EmptyState, ErrorNotice, PageHeader, SkeletonRows } from '../../components/ui';
+import { MARKET_LABELS, useLeadsPage, type LeadFilters } from './use-leads';
 import {
-  Card,
-  EmptyState,
-  ErrorNotice,
-  PageHeader,
-  SkeletonRows,
-} from '../../components/ui';
-import { MARKET_LABELS, useLeadsPage } from './use-leads';
+  BulkActionBar,
+  isSelected,
+  selectionCount,
+  toggleSelection,
+  type LeadSelection,
+} from './bulk-actions';
 import { ActionableLeadList, nextActionText } from './actionable-lead-list';
 import { NewLeadDialog } from './new-lead-dialog';
 import { downloadCsv, exportFilename, toCsv } from '../../lib/export-csv';
@@ -47,7 +48,9 @@ export function LeadsPage(): React.JSX.Element {
   const [initialParams] = useSearchParams();
   const requestedStatus = initialParams.get('status');
   const [status, setStatus] = useState<LeadStatus | 'ALL'>(
-    requestedStatus && (LEAD_STATUSES as readonly string[]).includes(requestedStatus) ? (requestedStatus as LeadStatus) : 'ALL',
+    requestedStatus && (LEAD_STATUSES as readonly string[]).includes(requestedStatus)
+      ? (requestedStatus as LeadStatus)
+      : 'ALL',
   );
   const [dialogOpen, setDialogOpen] = useState(false);
   const [lifecycle, setLifecycle] = useState<LeadLifecycleFilter>('ACTIVE');
@@ -75,10 +78,15 @@ export function LeadsPage(): React.JSX.Element {
   const awaitingOnly = params.get('awaiting') === 'true';
   const qualificationParam = params.get('qualification');
   const qualification =
-    qualificationParam === 'ROUGH' || qualificationParam === 'REFINED' ? qualificationParam : undefined;
+    qualificationParam === 'ROUGH' || qualificationParam === 'REFINED'
+      ? qualificationParam
+      : undefined;
   const lastOutcome = params.get('lastOutcome') ?? '';
   const marketParam = params.get('market');
-  const market = marketParam === 'DOMESTIC' || marketParam === 'INTERNATIONAL' || marketParam === 'UNKNOWN' ? marketParam : undefined;
+  const market =
+    marketParam === 'DOMESTIC' || marketParam === 'INTERNATIONAL' || marketParam === 'UNKNOWN'
+      ? marketParam
+      : undefined;
   const setFilter = (key: string, value: string | null): void => {
     const next = new URLSearchParams(params);
     if (value) next.set(key, value);
@@ -100,27 +108,34 @@ export function LeadsPage(): React.JSX.Element {
     return () => clearTimeout(timer);
   }, [searchInput]);
 
-  const leads = useLeadsPage(
-    {
-      search: search || undefined,
-      status: status === 'ALL' ? undefined : status,
-      ...(canSeeTeam && unassignedOnly ? { unassigned: true } : {}),
-      ...(freshOnly ? { fresh: true } : {}),
-      ...(awaitingOnly ? { awaiting: true } : {}),
-      ...(qualification ? { qualification } : {}),
-      ...(lastOutcome ? { lastOutcome } : {}),
-      ...(market ? { market } : {}),
-      /*
-       * Filtering by batch shows ALL of it, deactivated rows included.
-       *
-       * The screen exists to correct a bad import, so it has to show what it is
-       * about to act on — and after somebody deactivates half the batch, a list
-       * that hid those rows would make the work look undone.
-       */
-      ...(importBatchId ? { importBatchId, lifecycle: 'ALL' as const } : { lifecycle }),
-    },
-    PAGE_SIZE,
-  );
+  const listFilters: LeadFilters = {
+    search: search || undefined,
+    status: status === 'ALL' ? undefined : status,
+    ...(canSeeTeam && unassignedOnly ? { unassigned: true } : {}),
+    ...(freshOnly ? { fresh: true } : {}),
+    ...(awaitingOnly ? { awaiting: true } : {}),
+    ...(qualification ? { qualification } : {}),
+    ...(lastOutcome ? { lastOutcome } : {}),
+    ...(market ? { market } : {}),
+    /*
+     * Filtering by batch shows ALL of it, deactivated rows included.
+     *
+     * The screen exists to correct a bad import, so it has to show what it is
+     * about to act on — and after somebody deactivates half the batch, a list
+     * that hid those rows would make the work look undone.
+     */
+    ...(importBatchId ? { importBatchId, lifecycle: 'ALL' as const } : { lifecycle }),
+  };
+  const leads = useLeadsPage(listFilters, PAGE_SIZE);
+
+  /*
+   * Bulk selection. Cleared whenever the filters change, so a bulk action can
+   * never apply to a list the person is no longer looking at.
+   */
+  const canBulk = can('lead.update');
+  const [selection, setSelection] = useState<LeadSelection | null>(null);
+  const filterKey = JSON.stringify(listFilters);
+  useEffect(() => setSelection(null), [filterKey]);
 
   const roughCount = useQuery({
     queryKey: ['leads', 'count', 'ROUGH'],
@@ -135,12 +150,20 @@ export function LeadsPage(): React.JSX.Element {
     ...(refinedCount.data?.total !== undefined ? { REFINED: refinedCount.data.total } : {}),
   };
 
-  const rows = useMemo(
-    () => (leads.data?.pages ?? []).flatMap((page) => page.items),
-    [leads.data],
-  );
+  const rows = useMemo(() => (leads.data?.pages ?? []).flatMap((page) => page.items), [leads.data]);
 
   const total = leads.data?.pages[0]?.total ?? null;
+  const allLoadedSelected = rows.length > 0 && rows.every((lead) => isSelected(selection, lead.id));
+  const toggleAllLoaded = (): void =>
+    setSelection(
+      allLoadedSelected
+        ? null
+        : {
+            mode: 'ids',
+            ids: new Set(rows.map((lead) => lead.id)),
+            snapshotAt: new Date().toISOString(),
+          },
+    );
 
   /**
    * Exports the rows currently loaded — what is on screen, nothing hidden.
@@ -172,10 +195,18 @@ export function LeadsPage(): React.JSX.Element {
       {
         header: 'Last call outcome',
         value: (lead) =>
-          lead.lastOutcome && isCallOutcome(lead.lastOutcome) ? CALL_OUTCOME_RULES[lead.lastOutcome].label : '',
+          lead.lastOutcome && isCallOutcome(lead.lastOutcome)
+            ? CALL_OUTCOME_RULES[lead.lastOutcome].label
+            : '',
       },
-      { header: 'Last call at', value: (lead) => (lead.lastOutcomeAt ? formatDateTime(lead.lastOutcomeAt) : '') },
-      { header: 'Last spoke', value: (lead) => (lead.lastContactedAt ? formatDateTime(lead.lastContactedAt) : '') },
+      {
+        header: 'Last call at',
+        value: (lead) => (lead.lastOutcomeAt ? formatDateTime(lead.lastOutcomeAt) : ''),
+      },
+      {
+        header: 'Last spoke',
+        value: (lead) => (lead.lastContactedAt ? formatDateTime(lead.lastContactedAt) : ''),
+      },
       { header: 'Next action', value: (lead) => nextActionText(lead).text },
       {
         header: 'Next action due',
@@ -184,7 +215,12 @@ export function LeadsPage(): React.JSX.Element {
       { header: 'Created', value: (lead) => formatDate(lead.createdAt) },
       {
         header: 'Qualification',
-        value: (lead) => (lead.qualification === 'ROUGH' ? 'Rough' : lead.qualification === 'REFINED' ? 'Refined' : ''),
+        value: (lead) =>
+          lead.qualification === 'ROUGH'
+            ? 'Rough'
+            : lead.qualification === 'REFINED'
+              ? 'Refined'
+              : '',
       },
     ]);
 
@@ -362,6 +398,19 @@ export function LeadsPage(): React.JSX.Element {
         )}
       </div>
 
+      {selection && selectionCount(selection, total) > 0 && (
+        <BulkActionBar
+          selection={selection}
+          total={total}
+          filters={{ ...listFilters }}
+          canAssign={can('lead.assign')}
+          onClear={() => setSelection(null)}
+          onSelectAllMatching={() =>
+            setSelection({ mode: 'query', excluded: new Set(), snapshotAt: selection.snapshotAt })
+          }
+        />
+      )}
+
       <Card>
         {leads.isPending ? (
           <SkeletonRows rows={8} />
@@ -372,14 +421,27 @@ export function LeadsPage(): React.JSX.Element {
             icon="⌕"
             title="No leads match"
             description={
-              search || status !== 'ALL' || freshOnly || awaitingOnly || lastOutcome || unassignedOnly || market
+              search ||
+              status !== 'ALL' ||
+              freshOnly ||
+              awaitingOnly ||
+              lastOutcome ||
+              unassignedOnly ||
+              market
                 ? 'Try clearing the search box or the filters above.'
                 : 'Add your first lead, or import a CSV file.'
             }
           />
         ) : (
           <>
-            <ActionableLeadList leads={rows} />
+            <ActionableLeadList
+              leads={rows}
+              selectable={canBulk}
+              isSelected={(id) => isSelected(selection, id)}
+              onToggle={(id) => setSelection((current) => toggleSelection(current, id))}
+              allSelected={allLoadedSelected}
+              onToggleAll={toggleAllLoaded}
+            />
 
             {leads.hasNextPage && (
               <div className="border-t border-slate-100 p-4 text-center">
@@ -423,4 +485,3 @@ function FilterChip({
     </button>
   );
 }
-

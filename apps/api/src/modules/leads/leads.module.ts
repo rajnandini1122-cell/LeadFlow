@@ -3,6 +3,7 @@ import { LeadsController } from './leads.controller';
 import { LeadsService } from './leads.service';
 import { LeadsRepository } from './leads.repository';
 import { LeadMutationsService } from './lead-mutations.service';
+import { LeadBulkService } from './lead-bulk.service';
 import { LeadImportService } from './import/lead-import.service';
 import { LeadImportRepository } from './import/lead-import.repository';
 import { LeadLifecycleService } from './lead-lifecycle.service';
@@ -25,10 +26,16 @@ import { IntakeProcessingModule } from '../integrations/intake-processing/intake
   // website enquiry can show the customer's own words, read through the intake
   // relation rather than copied onto the lead.
   imports: [forwardRef(() => FollowUpsModule), ContactsModule, IntakeProcessingModule],
-  controllers: [LeadsController, LeadAttachmentsController, LeadContactsController, LeadQualificationController],
+  controllers: [
+    LeadsController,
+    LeadAttachmentsController,
+    LeadContactsController,
+    LeadQualificationController,
+  ],
   providers: [
     LeadsService,
     LeadMutationsService,
+    LeadBulkService,
     LeadLifecycleService,
     LeadImportService,
     LeadImportRepository,
@@ -40,6 +47,13 @@ import { IntakeProcessingModule } from '../integrations/intake-processing/intake
     LeadQualificationService,
     LeadQualificationRepository,
   ],
-  exports: [LeadsService, LeadMutationsService, LeadLifecycleService, LeadsRepository, LeadContactsService, LeadContactsRepository],
+  exports: [
+    LeadsService,
+    LeadMutationsService,
+    LeadLifecycleService,
+    LeadsRepository,
+    LeadContactsService,
+    LeadContactsRepository,
+  ],
 })
 export class LeadsModule {}
