@@ -9,9 +9,7 @@ import type {
   LeadLifecycleFilter,
   LeadPriority,
   LeadStatus,
-  Paginated,
-  ContactRef,
-} from '@leadflow/api-types';
+  Paginated, ContactRef } from '@leadflow/api-types';
 import { apiGet } from '../../lib/api-client';
 
 /** DOMESTIC = the organization's own country; INTERNATIONAL = importers abroad. */

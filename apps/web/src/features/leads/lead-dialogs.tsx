@@ -87,8 +87,9 @@ export function Dialog({
 
     const focusable = (): HTMLElement[] =>
       Array.from(
-        panel.current?.querySelectorAll<HTMLElement>('button, input, select, textarea, a[href]') ??
-          [],
+        panel.current?.querySelectorAll<HTMLElement>(
+          'button, input, select, textarea, a[href]',
+        ) ?? [],
       ).filter((element) => !element.hasAttribute('disabled'));
 
     focusable()[0]?.focus();
@@ -305,89 +306,37 @@ export function EditLeadDialog({
   return (
     <Dialog open={open} title="Edit lead" onClose={onClose}>
       {/*
-       * Everyone at the customer -- add people, choose the primary contact.
-       * Outside the <form> below: each contact saves on its own, and a form
-       * cannot contain another form.
-       */}
+        * Everyone at the customer -- add people, choose the primary contact.
+        * Outside the <form> below: each contact saves on its own, and a form
+        * cannot contain another form.
+        */}
       <div className="border-b border-slate-100 p-5">
         <LeadContactsCard leadId={lead.id} canEdit />
       </div>
       <form onSubmit={submit} className="space-y-4 p-5" noValidate>
         <p className="text-xs text-slate-500">
-          Enquiry details: the person and number this lead first came in with. Add other people, and
-          choose who is primary, under Contacts above.
+          Enquiry details: the person and number this lead first came in with. Add other people, and choose who is
+          primary, under Contacts above.
         </p>
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field
-            label="First name"
-            htmlFor="edit-first"
-            required
-            error={fieldErrorOf(update.error, 'firstName')}
-          >
-            <input
-              id="edit-first"
-              value={form.firstName}
-              required
-              onChange={(e) => set('firstName')(e.target.value)}
-              className={inputClass}
-            />
+          <Field label="First name" htmlFor="edit-first" required error={fieldErrorOf(update.error, 'firstName')}>
+            <input id="edit-first" value={form.firstName} required onChange={(e) => set('firstName')(e.target.value)} className={inputClass} />
           </Field>
           <Field label="Last name" htmlFor="edit-last">
-            <input
-              id="edit-last"
-              value={form.lastName}
-              onChange={(e) => set('lastName')(e.target.value)}
-              className={inputClass}
-            />
+            <input id="edit-last" value={form.lastName} onChange={(e) => set('lastName')(e.target.value)} className={inputClass} />
           </Field>
         </div>
 
-        <Field
-          label="Designation"
-          htmlFor="edit-designation"
-          error={fieldErrorOf(update.error, 'designation')}
-          hint="Their role, e.g. Purchase Manager, Proprietor."
-        >
-          <input
-            id="edit-designation"
-            autoComplete="organization-title"
-            maxLength={100}
-            value={form.designation}
-            onChange={(e) => set('designation')(e.target.value)}
-            className={inputClass}
-          />
+        <Field label="Designation" htmlFor="edit-designation" error={fieldErrorOf(update.error, 'designation')} hint="Their role, e.g. Purchase Manager, Proprietor.">
+          <input id="edit-designation" autoComplete="organization-title" maxLength={100} value={form.designation} onChange={(e) => set('designation')(e.target.value)} className={inputClass} />
         </Field>
 
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field
-            label="Mobile"
-            htmlFor="edit-mobile"
-            error={fieldErrorOf(update.error, 'mobile')}
-            hint="The main number. Stored as E.164."
-          >
-            <input
-              id="edit-mobile"
-              type="tel"
-              inputMode="tel"
-              value={form.mobile}
-              onChange={(e) => set('mobile')(e.target.value)}
-              className={inputClass}
-            />
+          <Field label="Mobile" htmlFor="edit-mobile" error={fieldErrorOf(update.error, 'mobile')} hint="The main number. Stored as E.164.">
+            <input id="edit-mobile" type="tel" inputMode="tel" value={form.mobile} onChange={(e) => set('mobile')(e.target.value)} className={inputClass} />
           </Field>
-          <Field
-            label="Email"
-            htmlFor="edit-email"
-            error={fieldErrorOf(update.error, 'email')}
-            hint="The main address — one address only."
-          >
-            <input
-              id="edit-email"
-              type="email"
-              inputMode="email"
-              value={form.email}
-              onChange={(e) => set('email')(e.target.value)}
-              className={inputClass}
-            />
+          <Field label="Email" htmlFor="edit-email" error={fieldErrorOf(update.error, 'email')} hint="The main address — one address only.">
+            <input id="edit-email" type="email" inputMode="email" value={form.email} onChange={(e) => set('email')(e.target.value)} className={inputClass} />
           </Field>
         </div>
 
@@ -411,136 +360,54 @@ export function EditLeadDialog({
         </div>
 
         <Field label="Company" htmlFor="edit-company">
-          <input
-            id="edit-company"
-            value={form.companyName}
-            onChange={(e) => set('companyName')(e.target.value)}
-            className={inputClass}
-          />
+          <input id="edit-company" value={form.companyName} onChange={(e) => set('companyName')(e.target.value)} className={inputClass} />
         </Field>
 
         <fieldset className="space-y-3">
           <legend className="text-sm font-medium text-slate-700">Address</legend>
-          <Field
-            label="Address line 1"
-            htmlFor="edit-address1"
-            error={fieldErrorOf(update.error, 'addressLine1')}
-          >
-            <input
-              id="edit-address1"
-              autoComplete="address-line1"
-              placeholder="Building, survey no., street"
-              value={form.addressLine1}
-              onChange={(e) => set('addressLine1')(e.target.value)}
-              className={inputClass}
-            />
+          <Field label="Address line 1" htmlFor="edit-address1" error={fieldErrorOf(update.error, 'addressLine1')}>
+            <input id="edit-address1" autoComplete="address-line1" placeholder="Building, survey no., street" value={form.addressLine1} onChange={(e) => set('addressLine1')(e.target.value)} className={inputClass} />
           </Field>
-          <Field
-            label="Address line 2"
-            htmlFor="edit-address2"
-            error={fieldErrorOf(update.error, 'addressLine2')}
-          >
-            <input
-              id="edit-address2"
-              autoComplete="address-line2"
-              placeholder="Area, landmark"
-              value={form.addressLine2}
-              onChange={(e) => set('addressLine2')(e.target.value)}
-              className={inputClass}
-            />
+          <Field label="Address line 2" htmlFor="edit-address2" error={fieldErrorOf(update.error, 'addressLine2')}>
+            <input id="edit-address2" autoComplete="address-line2" placeholder="Area, landmark" value={form.addressLine2} onChange={(e) => set('addressLine2')(e.target.value)} className={inputClass} />
           </Field>
           <div className="grid gap-4 sm:grid-cols-3">
             <Field label="City" htmlFor="edit-city" error={fieldErrorOf(update.error, 'city')}>
-              <input
-                id="edit-city"
-                autoComplete="address-level2"
-                value={form.city}
-                onChange={(e) => set('city')(e.target.value)}
-                className={inputClass}
-              />
+              <input id="edit-city" autoComplete="address-level2" value={form.city} onChange={(e) => set('city')(e.target.value)} className={inputClass} />
             </Field>
             <Field label="State" htmlFor="edit-state" error={fieldErrorOf(update.error, 'state')}>
-              <input
-                id="edit-state"
-                autoComplete="address-level1"
-                value={form.state}
-                onChange={(e) => set('state')(e.target.value)}
-                className={inputClass}
-              />
+              <input id="edit-state" autoComplete="address-level1" value={form.state} onChange={(e) => set('state')(e.target.value)} className={inputClass} />
             </Field>
-            <Field
-              label="PIN code"
-              htmlFor="edit-postal"
-              error={fieldErrorOf(update.error, 'postalCode')}
-            >
-              <input
-                id="edit-postal"
-                autoComplete="postal-code"
-                inputMode="numeric"
-                value={form.postalCode}
-                onChange={(e) => set('postalCode')(e.target.value)}
-                className={inputClass}
-              />
+            <Field label="PIN code" htmlFor="edit-postal" error={fieldErrorOf(update.error, 'postalCode')}>
+              <input id="edit-postal" autoComplete="postal-code" inputMode="numeric" value={form.postalCode} onChange={(e) => set('postalCode')(e.target.value)} className={inputClass} />
             </Field>
           </div>
         </fieldset>
 
-        <Field
-          label="Product interest"
-          htmlFor="edit-interest"
-          error={fieldErrorOf(update.error, 'productInterest')}
-        >
-          <input
-            id="edit-interest"
-            value={form.productInterest}
-            onChange={(e) => set('productInterest')(e.target.value)}
-            className={inputClass}
-          />
+        <Field label="Product interest" htmlFor="edit-interest" error={fieldErrorOf(update.error, 'productInterest')}>
+          <input id="edit-interest" value={form.productInterest} onChange={(e) => set('productInterest')(e.target.value)} className={inputClass} />
         </Field>
 
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Estimated value" htmlFor="edit-value">
-            <input
-              id="edit-value"
-              type="number"
-              min={0}
-              value={form.estimatedValue}
-              onChange={(e) => set('estimatedValue')(e.target.value)}
-              className={inputClass}
-            />
+            <input id="edit-value" type="number" min={0} value={form.estimatedValue} onChange={(e) => set('estimatedValue')(e.target.value)} className={inputClass} />
           </Field>
           <Field label="Priority" htmlFor="edit-priority">
-            <select
-              id="edit-priority"
-              value={form.priority}
-              onChange={(e) => set('priority')(e.target.value)}
-              className={inputClass}
-            >
+            <select id="edit-priority" value={form.priority} onChange={(e) => set('priority')(e.target.value)} className={inputClass}>
               {LEAD_PRIORITIES.map((key) => (
-                <option key={key} value={key}>
-                  {humanise(key)}
-                </option>
+                <option key={key} value={key}>{humanise(key)}</option>
               ))}
             </select>
           </Field>
         </div>
 
         {update.isError && (
-          <p
-            role="alert"
-            aria-live="assertive"
-            className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700"
-          >
+          <p role="alert" aria-live="assertive" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
             {errorMessage(update.error, 'Could not save the lead.')}
           </p>
         )}
 
-        <DialogActions
-          onCancel={onClose}
-          busy={update.isPending}
-          label="Save changes"
-          busyLabel="Saving…"
-        />
+        <DialogActions onCancel={onClose} busy={update.isPending} label="Save changes" busyLabel="Saving…" />
       </form>
     </Dialog>
   );
@@ -606,14 +473,9 @@ export function ChangeStatusDialog({
             className={inputClass}
           >
             {LEAD_STATUSES.filter(
-              (key) =>
-                lead.qualification !== 'ROUGH' ||
-                key === lead.status ||
-                (ROUGH_ALLOWED_STATUSES as readonly string[]).includes(key),
+              (key) => lead.qualification !== 'ROUGH' || key === lead.status || (ROUGH_ALLOWED_STATUSES as readonly string[]).includes(key),
             ).map((key) => (
-              <option key={key} value={key}>
-                {humanise(key)}
-              </option>
+              <option key={key} value={key}>{humanise(key)}</option>
             ))}
           </select>
         </Field>
@@ -626,30 +488,13 @@ export function ChangeStatusDialog({
             error={fieldErrorOf(update.error, 'lostReason')}
             hint="The most useful field in the dataset — it answers why deals are lost."
           >
-            <input
-              id="lost-reason"
-              value={lostReason}
-              required
-              onChange={(e) => setLostReason(e.target.value)}
-              className={inputClass}
-            />
+            <input id="lost-reason" value={lostReason} required onChange={(e) => setLostReason(e.target.value)} className={inputClass} />
           </Field>
         )}
 
         {status === 'WON' && (
-          <Field
-            label="Closed value"
-            htmlFor="won-value"
-            hint="What it actually closed at. The estimate is kept separately."
-          >
-            <input
-              id="won-value"
-              type="number"
-              min={0}
-              value={wonValue}
-              onChange={(e) => setWonValue(e.target.value)}
-              className={inputClass}
-            />
+          <Field label="Closed value" htmlFor="won-value" hint="What it actually closed at. The estimate is kept separately.">
+            <input id="won-value" type="number" min={0} value={wonValue} onChange={(e) => setWonValue(e.target.value)} className={inputClass} />
           </Field>
         )}
 
@@ -661,33 +506,17 @@ export function ChangeStatusDialog({
             error={fieldErrorOf(update.error, 'nextFollowUpAt')}
             hint="An open lead must always have a next action."
           >
-            <input
-              id="status-followup"
-              type="datetime-local"
-              value={nextFollowUpAt}
-              required
-              onChange={(e) => setNextFollowUpAt(e.target.value)}
-              className={inputClass}
-            />
+            <input id="status-followup" type="datetime-local" value={nextFollowUpAt} required onChange={(e) => setNextFollowUpAt(e.target.value)} className={inputClass} />
           </Field>
         )}
 
         {update.isError && (
-          <p
-            role="alert"
-            aria-live="assertive"
-            className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700"
-          >
+          <p role="alert" aria-live="assertive" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
             {errorMessage(update.error, 'Could not change the status.')}
           </p>
         )}
 
-        <DialogActions
-          onCancel={onClose}
-          busy={update.isPending}
-          label="Update status"
-          busyLabel="Updating…"
-        />
+        <DialogActions onCancel={onClose} busy={update.isPending} label="Update status" busyLabel="Updating…" />
       </form>
     </Dialog>
   );
@@ -733,53 +562,26 @@ export function AssignLeadDialog({
   return (
     <Dialog open={open} title="Reassign lead" onClose={onClose}>
       <form onSubmit={submit} className="space-y-4 p-5" noValidate>
-        <Field
-          label="Owner"
-          htmlFor="assign-owner"
-          required
-          error={fieldErrorOf(assign.error, 'assignedToId')}
-        >
-          <select
-            id="assign-owner"
-            value={assignedToId}
-            required
-            onChange={(e) => setAssignedToId(e.target.value)}
-            className={inputClass}
-          >
+        <Field label="Owner" htmlFor="assign-owner" required error={fieldErrorOf(assign.error, 'assignedToId')}>
+          <select id="assign-owner" value={assignedToId} required onChange={(e) => setAssignedToId(e.target.value)} className={inputClass}>
             <option value="">Choose a team member</option>
             {(members.data ?? []).map((member) => (
-              <option key={member.id} value={member.id}>
-                {member.fullName}
-              </option>
+              <option key={member.id} value={member.id}>{member.fullName}</option>
             ))}
           </select>
         </Field>
 
         <Field label="Reason" htmlFor="assign-reason" hint="Recorded on the timeline.">
-          <input
-            id="assign-reason"
-            value={reason}
-            onChange={(e) => setReason(e.target.value)}
-            className={inputClass}
-          />
+          <input id="assign-reason" value={reason} onChange={(e) => setReason(e.target.value)} className={inputClass} />
         </Field>
 
         {assign.isError && (
-          <p
-            role="alert"
-            aria-live="assertive"
-            className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700"
-          >
+          <p role="alert" aria-live="assertive" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
             {errorMessage(assign.error, 'Could not reassign the lead.')}
           </p>
         )}
 
-        <DialogActions
-          onCancel={onClose}
-          busy={assign.isPending}
-          label="Reassign"
-          busyLabel="Reassigning…"
-        />
+        <DialogActions onCancel={onClose} busy={assign.isPending} label="Reassign" busyLabel="Reassigning…" />
       </form>
     </Dialog>
   );
@@ -845,33 +647,14 @@ export function ScheduleFollowUpDialog({
   return (
     <Dialog open={open} title="Schedule follow-up" onClose={onClose}>
       <form onSubmit={submit} className="space-y-4 p-5" noValidate>
-        <Field
-          label="When"
-          htmlFor="fu-when"
-          required
-          error={fieldErrorOf(create.error, 'scheduledAt')}
-        >
-          <input
-            id="fu-when"
-            type="datetime-local"
-            value={scheduledAt}
-            required
-            onChange={(e) => setScheduledAt(e.target.value)}
-            className={inputClass}
-          />
+        <Field label="When" htmlFor="fu-when" required error={fieldErrorOf(create.error, 'scheduledAt')}>
+          <input id="fu-when" type="datetime-local" value={scheduledAt} required onChange={(e) => setScheduledAt(e.target.value)} className={inputClass} />
         </Field>
 
         <Field label="Type" htmlFor="fu-type">
-          <select
-            id="fu-type"
-            value={type}
-            onChange={(e) => setType(e.target.value)}
-            className={inputClass}
-          >
+          <select id="fu-type" value={type} onChange={(e) => setType(e.target.value)} className={inputClass}>
             {FOLLOW_UP_TYPES.map((key) => (
-              <option key={key} value={key}>
-                {humanise(key)}
-              </option>
+              <option key={key} value={key}>{humanise(key)}</option>
             ))}
           </select>
         </Field>
@@ -886,27 +669,21 @@ export function ScheduleFollowUpDialog({
         />
 
         {/*
-         * "What for?" is a SHORT label (the API holds 200 characters). It used
-         * to be the only text box, so people wrote their whole comment into
-         * it, went over the limit and got "Request validation failed" with no
-         * hint which field (production, 2026-10-30 — five failed attempts on
-         * one lead, then the comment saved as a separate note). The comment
-         * now has its own box, both show their limit as you type, and an
-         * error lands under the field it belongs to.
-         */}
+          * "What for?" is a SHORT label (the API holds 200 characters). It used
+          * to be the only text box, so people wrote their whole comment into
+          * it, went over the limit and got "Request validation failed" with no
+          * hint which field (production, 2026-10-30 — five failed attempts on
+          * one lead, then the comment saved as a separate note). The comment
+          * now has its own box, both show their limit as you type, and an
+          * error lands under the field it belongs to.
+          */}
         <Field
           label="What for?"
           htmlFor="fu-title"
           error={fieldErrorOf(create.error, 'title')}
           hint={`Short label, e.g. "Send revised quotation". ${title.length}/${FOLLOW_UP_TITLE_MAX}`}
         >
-          <input
-            id="fu-title"
-            value={title}
-            maxLength={FOLLOW_UP_TITLE_MAX}
-            onChange={(e) => setTitle(e.target.value)}
-            className={inputClass}
-          />
+          <input id="fu-title" value={title} maxLength={FOLLOW_UP_TITLE_MAX} onChange={(e) => setTitle(e.target.value)} className={inputClass} />
         </Field>
 
         <Field
@@ -915,32 +692,16 @@ export function ScheduleFollowUpDialog({
           error={fieldErrorOf(create.error, 'notes')}
           hint={`Optional. Shown on the lead's timeline. ${notes.length}/${FOLLOW_UP_COMMENT_MAX}`}
         >
-          <textarea
-            id="fu-notes"
-            rows={3}
-            value={notes}
-            maxLength={FOLLOW_UP_COMMENT_MAX}
-            onChange={(e) => setNotes(e.target.value)}
-            className={inputClass}
-          />
+          <textarea id="fu-notes" rows={3} value={notes} maxLength={FOLLOW_UP_COMMENT_MAX} onChange={(e) => setNotes(e.target.value)} className={inputClass} />
         </Field>
 
         {create.isError && (
-          <p
-            role="alert"
-            aria-live="assertive"
-            className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700"
-          >
+          <p role="alert" aria-live="assertive" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
             {errorMessage(create.error, 'Could not schedule the follow-up.')}
           </p>
         )}
 
-        <DialogActions
-          onCancel={onClose}
-          busy={create.isPending}
-          label="Schedule"
-          busyLabel="Scheduling…"
-        />
+        <DialogActions onCancel={onClose} busy={create.isPending} label="Schedule" busyLabel="Scheduling…" />
       </form>
     </Dialog>
   );
@@ -1019,13 +780,10 @@ export function CompleteFollowUpDialog({
         ...(next === 'done'
           ? {}
           : next === 'schedule'
-            ? { nextFollowUpAt: zonedInputToIso(nextFollowUpAt) }
-            : next === 'won'
-              ? {
-                  leadStatus: 'WON' as LeadStatus,
-                  ...(wonValue ? { wonValue: Number(wonValue) } : {}),
-                }
-              : { leadStatus: 'LOST' as LeadStatus, lostReason }),
+          ? { nextFollowUpAt: zonedInputToIso(nextFollowUpAt) }
+          : next === 'won'
+            ? { leadStatus: 'WON' as LeadStatus, ...(wonValue ? { wonValue: Number(wonValue) } : {}) }
+            : { leadStatus: 'LOST' as LeadStatus, lostReason }),
       },
       {
         onSuccess: () => {
@@ -1037,19 +795,10 @@ export function CompleteFollowUpDialog({
   };
 
   return (
-    <Dialog
-      open={open}
-      title={`Complete follow-up — ${followUp.leadName ?? followUp.accountName ?? 'customer'}`}
-      onClose={onClose}
-    >
+    <Dialog open={open} title={`Complete follow-up — ${followUp.leadName ?? followUp.accountName ?? 'customer'}`} onClose={onClose}>
       <form onSubmit={submit} className="space-y-4 p-5" noValidate>
         <Field label="What happened?" htmlFor="outcome">
-          <select
-            id="outcome"
-            value={outcome}
-            onChange={(e) => setOutcome(e.target.value)}
-            className={inputClass}
-          >
+          <select id="outcome" value={outcome} onChange={(e) => setOutcome(e.target.value)} className={inputClass}>
             {OUTCOMES.map((option) => (
               <option key={option}>{option}</option>
             ))}
@@ -1057,13 +806,7 @@ export function CompleteFollowUpDialog({
         </Field>
 
         <Field label="Notes" htmlFor="fu-notes">
-          <textarea
-            id="fu-notes"
-            rows={2}
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-            className={inputClass}
-          />
+          <textarea id="fu-notes" rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} className={inputClass} />
         </Field>
 
         <fieldset className="rounded-lg bg-slate-50 p-3">
@@ -1096,69 +839,30 @@ export function CompleteFollowUpDialog({
         </fieldset>
 
         {next === 'schedule' && (
-          <Field
-            label="Next follow-up"
-            htmlFor="next-when"
-            required
-            error={fieldErrorOf(complete.error, 'nextFollowUpAt')}
-          >
-            <input
-              id="next-when"
-              type="datetime-local"
-              value={nextFollowUpAt}
-              required
-              onChange={(e) => setNextFollowUpAt(e.target.value)}
-              className={inputClass}
-            />
+          <Field label="Next follow-up" htmlFor="next-when" required error={fieldErrorOf(complete.error, 'nextFollowUpAt')}>
+            <input id="next-when" type="datetime-local" value={nextFollowUpAt} required onChange={(e) => setNextFollowUpAt(e.target.value)} className={inputClass} />
           </Field>
         )}
 
         {next === 'won' && (
           <Field label="Closed value" htmlFor="next-won">
-            <input
-              id="next-won"
-              type="number"
-              min={0}
-              value={wonValue}
-              onChange={(e) => setWonValue(e.target.value)}
-              className={inputClass}
-            />
+            <input id="next-won" type="number" min={0} value={wonValue} onChange={(e) => setWonValue(e.target.value)} className={inputClass} />
           </Field>
         )}
 
         {next === 'lost' && (
-          <Field
-            label="Why was it lost?"
-            htmlFor="next-lost"
-            required
-            error={fieldErrorOf(complete.error, 'lostReason')}
-          >
-            <input
-              id="next-lost"
-              value={lostReason}
-              required
-              onChange={(e) => setLostReason(e.target.value)}
-              className={inputClass}
-            />
+          <Field label="Why was it lost?" htmlFor="next-lost" required error={fieldErrorOf(complete.error, 'lostReason')}>
+            <input id="next-lost" value={lostReason} required onChange={(e) => setLostReason(e.target.value)} className={inputClass} />
           </Field>
         )}
 
         {complete.isError && (
-          <p
-            role="alert"
-            aria-live="assertive"
-            className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700"
-          >
+          <p role="alert" aria-live="assertive" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
             {errorMessage(complete.error, 'Could not complete the follow-up.')}
           </p>
         )}
 
-        <DialogActions
-          onCancel={onClose}
-          busy={complete.isPending}
-          label="Complete"
-          busyLabel="Saving…"
-        />
+        <DialogActions onCancel={onClose} busy={complete.isPending} label="Complete" busyLabel="Saving…" />
       </form>
     </Dialog>
   );
@@ -1190,11 +894,7 @@ export function RescheduleFollowUpDialog({
    * `scheduledAt` and a name are shown so the agent sees what is moving.
    */
   followUp:
-    | (Pick<FollowUp, 'id' | 'leadId'> & {
-        scheduledAt?: string;
-        leadName?: string | null;
-        accountName?: string | null;
-      })
+    | (Pick<FollowUp, 'id' | 'leadId'> & { scheduledAt?: string; leadName?: string | null; accountName?: string | null })
     | null;
   open: boolean;
   onClose: () => void;
@@ -1237,27 +937,17 @@ export function RescheduleFollowUpDialog({
   return (
     <Dialog
       open={open}
-      title={`Reschedule follow-up${(followUp.leadName ?? followUp.accountName) ? ` — ${followUp.leadName ?? followUp.accountName}` : ''}`}
+      title={`Reschedule follow-up${followUp.leadName ?? followUp.accountName ? ` — ${followUp.leadName ?? followUp.accountName}` : ''}`}
       onClose={onClose}
     >
       <form onSubmit={submit} className="space-y-4 p-5" noValidate>
         {followUp.scheduledAt && (
           <p className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600">
-            Currently:{' '}
-            <span className="font-medium text-slate-900">
-              {formatDateTime(followUp.scheduledAt)}
-            </span>
+            Currently: <span className="font-medium text-slate-900">{formatDateTime(followUp.scheduledAt)}</span>
           </p>
         )}
         <Field label="New date and time" htmlFor="re-when" required>
-          <input
-            id="re-when"
-            type="datetime-local"
-            value={scheduledAt}
-            required
-            onChange={(e) => setScheduledAt(e.target.value)}
-            className={inputClass}
-          />
+          <input id="re-when" type="datetime-local" value={scheduledAt} required onChange={(e) => setScheduledAt(e.target.value)} className={inputClass} />
         </Field>
 
         <div className="flex flex-wrap gap-2">
@@ -1279,32 +969,16 @@ export function RescheduleFollowUpDialog({
           error={fieldErrorOf(reschedule.error, 'reason')}
           hint={`Shown on the lead's timeline with the old and new time. ${reason.length}/${RESCHEDULE_REASON_MAX}`}
         >
-          <textarea
-            id="re-reason"
-            rows={2}
-            value={reason}
-            maxLength={RESCHEDULE_REASON_MAX}
-            onChange={(e) => setReason(e.target.value)}
-            className={inputClass}
-          />
+          <textarea id="re-reason" rows={2} value={reason} maxLength={RESCHEDULE_REASON_MAX} onChange={(e) => setReason(e.target.value)} className={inputClass} />
         </Field>
 
         {reschedule.isError && (
-          <p
-            role="alert"
-            aria-live="assertive"
-            className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700"
-          >
+          <p role="alert" aria-live="assertive" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
             {errorMessage(reschedule.error, 'Could not reschedule.')}
           </p>
         )}
 
-        <DialogActions
-          onCancel={onClose}
-          busy={reschedule.isPending}
-          label="Reschedule"
-          busyLabel="Rescheduling…"
-        />
+        <DialogActions onCancel={onClose} busy={reschedule.isPending} label="Reschedule" busyLabel="Rescheduling…" />
       </form>
     </Dialog>
   );
@@ -1333,11 +1007,7 @@ export function DialogActions({
   const pendingLabel = useBusyLabel(busyLabel);
   return (
     <div className="flex justify-end gap-2 border-t border-slate-100 pt-4">
-      <button
-        type="button"
-        onClick={onCancel}
-        className="rounded-lg px-4 py-2 text-sm text-slate-600 transition hover:bg-slate-100"
-      >
+      <button type="button" onClick={onCancel} className="rounded-lg px-4 py-2 text-sm text-slate-600 transition hover:bg-slate-100">
         Cancel
       </button>
       <button
@@ -1394,10 +1064,10 @@ export function DeactivateLeadDialog({
     <Dialog open={open} title="Deactivate lead" onClose={onClose}>
       <form onSubmit={submit} className="space-y-4 p-5" noValidate>
         <p className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600">
-          {lead.leadNumber} leaves the active pipeline and its open reminders are cancelled. Nothing
-          is deleted — the lead, its history and its customer all stay, and you can bring it back.
-          Its mobile and email are freed, so you can create the corrected lead with the same
-          details.
+          {lead.leadNumber} leaves the active pipeline and its open reminders are cancelled.
+          Nothing is deleted — the lead, its history and its customer all stay, and you can bring
+          it back. Its mobile and email are freed, so you can create the corrected lead with the
+          same details.
         </p>
 
         <Field
@@ -1612,7 +1282,9 @@ export function RecordAttemptDialog({
 }): React.JSX.Element | null {
   const record = useRecordAttempt(lead.id);
 
-  const [activityType, setActivityType] = useState<string>(initialAttempt ?? ATTEMPTS[0].value);
+  const [activityType, setActivityType] = useState<string>(
+    initialAttempt ?? ATTEMPTS[0].value,
+  );
   const [note, setNote] = useState('');
   const [retryAt, setRetryAt] = useState(defaultNextFollowUp(1));
   const [idempotencyKey, setIdempotencyKey] = useState(newIdempotencyKey);
@@ -1755,12 +1427,7 @@ export function ContactPicker({
   if (active.length < 2) return null;
   return (
     <Field label={label} htmlFor={id} hint="Who to speak to" error={error}>
-      <select
-        id={id}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className={inputClass}
-      >
+      <select id={id} value={value} onChange={(e) => onChange(e.target.value)} className={inputClass}>
         <option value="">Primary contact</option>
         {active.map((c) => (
           <option key={c.id} value={c.contactId}>

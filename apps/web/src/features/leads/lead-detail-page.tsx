@@ -182,9 +182,7 @@ export function LeadDetailPage(): React.JSX.Element {
               onLogged={setNotice}
               // A Rough lead is qualified, not worked: the call is logged as a qualification note.
               onLogOutcome={() =>
-                rough
-                  ? setQualifyingNote(true)
-                  : setLogging(nextFollowUp ? { followUpId: nextFollowUp.id } : {})
+                rough ? setQualifyingNote(true) : setLogging(nextFollowUp ? { followUpId: nextFollowUp.id } : {})
               }
             />
 
@@ -277,7 +275,10 @@ export function LeadDetailPage(): React.JSX.Element {
 
         <div className="space-y-6">
           <Card>
-            <CardHeader title="Next action" subtitle={closed ? 'This lead is closed' : undefined} />
+            <CardHeader
+              title="Next action"
+              subtitle={closed ? 'This lead is closed' : undefined}
+            />
             <div className="p-5">
               {nextFollowUp ? (
                 <>
@@ -285,13 +286,8 @@ export function LeadDetailPage(): React.JSX.Element {
                     {nextFollowUp.title ?? `${humanise(nextFollowUp.type)} the customer`}
                   </p>
                   <div className="mt-1.5 flex flex-wrap items-center gap-2">
-                    <DueBadge
-                      iso={nextFollowUp.scheduledAt}
-                      label={formatDueDate(nextFollowUp.scheduledAt)}
-                    />
-                    <span className="text-sm text-slate-700">
-                      {formatDateTime(nextFollowUp.scheduledAt)}
-                    </span>
+                    <DueBadge iso={nextFollowUp.scheduledAt} label={formatDueDate(nextFollowUp.scheduledAt)} />
+                    <span className="text-sm text-slate-700">{formatDateTime(nextFollowUp.scheduledAt)}</span>
                   </div>
                   <p className="mt-1 text-xs text-slate-500">
                     {humanise(nextFollowUp.type)} · {nextFollowUp.assignedTo.fullName}
@@ -322,9 +318,7 @@ export function LeadDetailPage(): React.JSX.Element {
               ) : data.nextFollowUpAt ? (
                 <>
                   <DueBadge iso={data.nextFollowUpAt} label={formatDueDate(data.nextFollowUpAt)} />
-                  <p className="mt-2 text-sm text-slate-900">
-                    {formatDateTime(data.nextFollowUpAt)}
-                  </p>
+                  <p className="mt-2 text-sm text-slate-900">{formatDateTime(data.nextFollowUpAt)}</p>
                   <p className="mt-1 text-xs text-amber-700">
                     Not in anyone’s queue — assign an owner so it is worked.
                   </p>
@@ -548,9 +542,7 @@ function QuickActions({
           aria-disabled={!tel}
           onClick={() => tel && !closed && onLogOutcome()}
           className={`flex-1 rounded-lg px-4 py-2 text-center text-sm font-medium transition sm:flex-none ${
-            tel
-              ? 'bg-slate-900 text-white hover:bg-slate-800'
-              : 'pointer-events-none bg-slate-100 text-slate-400'
+            tel ? 'bg-slate-900 text-white hover:bg-slate-800' : 'pointer-events-none bg-slate-100 text-slate-400'
           }`}
         >
           Call
@@ -562,9 +554,7 @@ function QuickActions({
           aria-disabled={!whatsapp}
           onClick={() => whatsapp && record('WHATSAPP_OPENED', 'WhatsApp logged.')}
           className={`flex-1 rounded-lg px-4 py-2 text-center text-sm font-medium transition sm:flex-none ${
-            whatsapp
-              ? 'bg-emerald-600 text-white hover:bg-emerald-700'
-              : 'pointer-events-none bg-slate-100 text-slate-400'
+            whatsapp ? 'bg-emerald-600 text-white hover:bg-emerald-700' : 'pointer-events-none bg-slate-100 text-slate-400'
           }`}
         >
           WhatsApp
@@ -719,6 +709,7 @@ function Timeline({ activities }: { activities: LeadActivity[] }): React.JSX.Ele
   );
 }
 
+
 /**
  * Says plainly that this record is not live work, and why.
  *
@@ -784,14 +775,7 @@ function ContactDetails({ lead }: { lead: LeadDetail }): React.JSX.Element | nul
   const phones = lead.additionalPhones ?? [];
   const emails = lead.additionalEmails ?? [];
 
-  if (
-    !lead.designation &&
-    !lead.mobile &&
-    !lead.email &&
-    address.length === 0 &&
-    phones.length === 0 &&
-    emails.length === 0
-  ) {
+  if (!lead.designation && !lead.mobile && !lead.email && address.length === 0 && phones.length === 0 && emails.length === 0) {
     return null;
   }
 
@@ -806,11 +790,7 @@ function ContactDetails({ lead }: { lead: LeadDetail }): React.JSX.Element | nul
           <dt className="text-xs text-slate-500">Additional phones</dt>
           <dd className="flex flex-col">
             {phones.map((phone) => (
-              <a
-                key={phone}
-                href={`tel:${phone}`}
-                className="inline-flex min-h-11 items-center text-slate-800 underline decoration-slate-300 underline-offset-2 hover:decoration-slate-800 sm:min-h-0"
-              >
+              <a key={phone} href={`tel:${phone}`} className="inline-flex min-h-11 items-center text-slate-800 underline decoration-slate-300 underline-offset-2 hover:decoration-slate-800 sm:min-h-0">
                 {phone}
               </a>
             ))}
@@ -822,11 +802,7 @@ function ContactDetails({ lead }: { lead: LeadDetail }): React.JSX.Element | nul
           <dt className="text-xs text-slate-500">Additional emails</dt>
           <dd className="flex flex-col">
             {emails.map((email) => (
-              <a
-                key={email}
-                href={`mailto:${email}`}
-                className="inline-flex min-h-11 items-center break-all text-slate-800 underline decoration-slate-300 underline-offset-2 hover:decoration-slate-800 sm:min-h-0"
-              >
+              <a key={email} href={`mailto:${email}`} className="inline-flex min-h-11 items-center break-all text-slate-800 underline decoration-slate-300 underline-offset-2 hover:decoration-slate-800 sm:min-h-0">
                 {email}
               </a>
             ))}
@@ -886,14 +862,9 @@ function CommercialDetails({ lead }: { lead: LeadDetail }): React.JSX.Element {
         <Detail label="Quantity" value={lead.requirementQuantity ?? null} />
         <Detail
           label="Expected purchase"
-          value={
-            lead.expectedPurchaseDate ? formatDate(`${lead.expectedPurchaseDate}T12:00:00Z`) : null
-          }
+          value={lead.expectedPurchaseDate ? formatDate(`${lead.expectedPurchaseDate}T12:00:00Z`) : null}
         />
-        <Detail
-          label="Estimated value"
-          value={lead.estimatedValue ? formatCurrency(lead.estimatedValue) : null}
-        />
+        <Detail label="Estimated value" value={lead.estimatedValue ? formatCurrency(lead.estimatedValue) : null} />
         <Detail label="Quotation" value={quotation} />
         {quoted && (
           <Detail
@@ -906,24 +877,15 @@ function CommercialDetails({ lead }: { lead: LeadDetail }): React.JSX.Element {
         {lead.status === 'WON' && (
           <Detail
             label="Won"
-            value={
-              [
-                lead.wonValue ? formatCurrency(lead.wonValue) : null,
-                lead.wonAt ? formatDate(lead.wonAt) : null,
-              ]
-                .filter(Boolean)
-                .join(' · ') || 'Won'
-            }
+            value={[lead.wonValue ? formatCurrency(lead.wonValue) : null, lead.wonAt ? formatDate(lead.wonAt) : null]
+              .filter(Boolean)
+              .join(' · ') || 'Won'}
           />
         )}
         {lead.status === 'LOST' && (
           <Detail
             label="Lost"
-            value={
-              [lead.lostReason, lead.lostAt ? formatDate(lead.lostAt) : null]
-                .filter(Boolean)
-                .join(' · ') || 'Lost'
-            }
+            value={[lead.lostReason, lead.lostAt ? formatDate(lead.lostAt) : null].filter(Boolean).join(' · ') || 'Lost'}
           />
         )}
       </dl>

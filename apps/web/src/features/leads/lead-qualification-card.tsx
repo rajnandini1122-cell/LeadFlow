@@ -8,15 +8,7 @@ import { Card, CardHeader, SkeletonRows } from '../../components/ui';
 import { useToast } from '../../components/toast';
 import { formatDateTime } from '../../lib/format';
 import { zonedInputToIso } from '../../lib/zoned-input';
-import {
-  ContactPicker,
-  Dialog,
-  DialogActions,
-  Field,
-  errorMessage,
-  fieldErrorOf,
-  inputClass,
-} from './lead-dialogs';
+import { ContactPicker, Dialog, DialogActions, Field, errorMessage, fieldErrorOf, inputClass } from './lead-dialogs';
 import { useLeadContacts } from './use-lead-contacts';
 import {
   useLeadQualification,
@@ -26,20 +18,12 @@ import {
 } from './use-lead-qualification';
 
 /** "Rough" / "Refined" pill, for lists and the lead header. */
-export function QualificationBadge({
-  qualification,
-}: {
-  qualification: LeadQualification | undefined;
-}): React.JSX.Element | null {
+export function QualificationBadge({ qualification }: { qualification: LeadQualification | undefined }): React.JSX.Element | null {
   if (!qualification) return null;
   return qualification === 'ROUGH' ? (
-    <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-800 ring-1 ring-amber-200">
-      Rough
-    </span>
+    <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-800 ring-1 ring-amber-200">Rough</span>
   ) : (
-    <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[11px] font-medium text-emerald-700 ring-1 ring-emerald-200">
-      Refined
-    </span>
+    <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[11px] font-medium text-emerald-700 ring-1 ring-emerald-200">Refined</span>
   );
 }
 
@@ -78,13 +62,7 @@ export function LeadQualificationCard({
     <Card>
       <CardHeader
         title="Qualification"
-        subtitle={
-          data
-            ? data.qualification === 'ROUGH'
-              ? 'Rough — verify before sales follow-up'
-              : 'Refined — in the sales workflow'
-            : undefined
-        }
+        subtitle={data ? (data.qualification === 'ROUGH' ? 'Rough — verify before sales follow-up' : 'Refined — in the sales workflow') : undefined}
         action={<QualificationBadge qualification={data?.qualification} />}
       />
       {view.isPending || !data ? (
@@ -97,8 +75,7 @@ export function LeadQualificationCard({
             <Check ok={null} label="Business fit confirmed (when you refine)" />
           </ul>
           <p className="text-xs text-slate-500">
-            Rough leads stay out of the sales follow-up queues and overdue counts. Research and
-            qualify them here.
+            Rough leads stay out of the sales follow-up queues and overdue counts. Research and qualify them here.
           </p>
           <div className="flex flex-wrap gap-2">
             {canUpdate && (
@@ -112,9 +89,7 @@ export function LeadQualificationCard({
               </button>
             )}
           </div>
-          {!canQualify && (
-            <p className="text-xs text-slate-500">A manager or admin marks leads as Refined.</p>
-          )}
+          {!canQualify && <p className="text-xs text-slate-500">A manager or admin marks leads as Refined.</p>}
         </div>
       ) : (
         <div className="space-y-2 px-5 py-4 text-sm">
@@ -159,11 +134,7 @@ function Check({ ok, label }: { ok: boolean | null; label: string }): React.JSX.
       <span
         aria-hidden
         className={`inline-flex h-4 w-4 items-center justify-center rounded-full text-[10px] ${
-          ok === null
-            ? 'bg-slate-100 text-slate-500'
-            : ok
-              ? 'bg-emerald-100 text-emerald-700'
-              : 'bg-red-50 text-red-600'
+          ok === null ? 'bg-slate-100 text-slate-500' : ok ? 'bg-emerald-100 text-emerald-700' : 'bg-red-50 text-red-600'
         }`}
       >
         {ok === null ? '•' : ok ? '✓' : '!'}
@@ -173,15 +144,7 @@ function Check({ ok, label }: { ok: boolean | null; label: string }): React.JSX.
   );
 }
 
-function NoteDialog({
-  leadId,
-  open,
-  onClose,
-}: {
-  leadId: string;
-  open: boolean;
-  onClose: () => void;
-}): React.JSX.Element | null {
+function NoteDialog({ leadId, open, onClose }: { leadId: string; open: boolean; onClose: () => void }): React.JSX.Element | null {
   const save = useQualificationNote(leadId);
   const contacts = useLeadContacts(open ? leadId : undefined);
   const toast = useToast();
@@ -223,12 +186,7 @@ function NoteDialog({
     <Dialog open={open} title="Log qualification note" onClose={onClose}>
       <form onSubmit={submit} className="space-y-4 p-5" noValidate>
         <Field label="What happened?" htmlFor="qn-outcome" required>
-          <select
-            id="qn-outcome"
-            value={outcome}
-            onChange={(e) => setOutcome(e.target.value)}
-            className={inputClass}
-          >
+          <select id="qn-outcome" value={outcome} onChange={(e) => setOutcome(e.target.value)} className={inputClass}>
             {Object.entries(QUALIFICATION_NOTE_OUTCOMES).map(([key, label]) => (
               <option key={key} value={key}>
                 {label}
@@ -236,27 +194,9 @@ function NoteDialog({
             ))}
           </select>
         </Field>
-        <ContactPicker
-          id="qn-contact"
-          label="With"
-          contacts={contacts.data}
-          value={contactId}
-          onChange={setContactId}
-        />
-        <Field
-          label="Note"
-          htmlFor="qn-note"
-          hint={`${note.length}/1000`}
-          error={fieldErrorOf(save.error, 'note')}
-        >
-          <textarea
-            id="qn-note"
-            rows={3}
-            maxLength={1000}
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-            className={inputClass}
-          />
+        <ContactPicker id="qn-contact" label="With" contacts={contacts.data} value={contactId} onChange={setContactId} />
+        <Field label="Note" htmlFor="qn-note" hint={`${note.length}/1000`} error={fieldErrorOf(save.error, 'note')}>
+          <textarea id="qn-note" rows={3} maxLength={1000} value={note} onChange={(e) => setNote(e.target.value)} className={inputClass} />
         </Field>
         <Field
           label="Qualify again by"
@@ -264,25 +204,14 @@ function NoteDialog({
           hint="Optional. Moves this lead's qualify-by date."
           error={fieldErrorOf(save.error, 'nextQualificationAt')}
         >
-          <input
-            id="qn-next"
-            type="datetime-local"
-            value={nextAt}
-            onChange={(e) => setNextAt(e.target.value)}
-            className={inputClass}
-          />
+          <input id="qn-next" type="datetime-local" value={nextAt} onChange={(e) => setNextAt(e.target.value)} className={inputClass} />
         </Field>
         {save.isError && (
           <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
             {errorMessage(save.error, 'Could not save the note.')}
           </p>
         )}
-        <DialogActions
-          onCancel={onClose}
-          busy={save.isPending}
-          label="Save note"
-          busyLabel="Saving…"
-        />
+        <DialogActions onCancel={onClose} busy={save.isPending} label="Save note" busyLabel="Saving…" />
       </form>
     </Dialog>
   );
@@ -316,12 +245,8 @@ function RefineDialog({
   if (!open) return null;
 
   const missing = [
-    ...(checklist && !checklist.company
-      ? ['Add the company name or link the customer (Edit details).']
-      : []),
-    ...(checklist && !checklist.contact
-      ? ['Add a contact with a phone number or email (Contacts).']
-      : []),
+    ...(checklist && !checklist.company ? ['Add the company name or link the customer (Edit details).'] : []),
+    ...(checklist && !checklist.contact ? ['Add a contact with a phone number or email (Contacts).'] : []),
   ];
   const noteNeeded = outcome === 'OTHER' && !note.trim();
 
@@ -352,12 +277,7 @@ function RefineDialog({
           </div>
         )}
         <Field label="Outcome" htmlFor="rf-outcome" required>
-          <select
-            id="rf-outcome"
-            value={outcome}
-            onChange={(e) => setOutcome(e.target.value)}
-            className={inputClass}
-          >
+          <select id="rf-outcome" value={outcome} onChange={(e) => setOutcome(e.target.value)} className={inputClass}>
             {Object.entries(REFINEMENT_OUTCOMES).map(([key, label]) => (
               <option key={key} value={key}>
                 {label}
@@ -372,22 +292,10 @@ function RefineDialog({
           hint={`What you verified. ${note.length}/1000`}
           error={fieldErrorOf(refine.error, 'note')}
         >
-          <textarea
-            id="rf-note"
-            rows={3}
-            maxLength={1000}
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-            className={inputClass}
-          />
+          <textarea id="rf-note" rows={3} maxLength={1000} value={note} onChange={(e) => setNote(e.target.value)} className={inputClass} />
         </Field>
         <label className="flex items-start gap-2 text-sm text-slate-700">
-          <input
-            type="checkbox"
-            className="mt-0.5"
-            checked={fit}
-            onChange={(e) => setFit(e.target.checked)}
-          />
+          <input type="checkbox" className="mt-0.5" checked={fit} onChange={(e) => setFit(e.target.checked)} />
           I have verified the company, a relevant contact and that this is a fit for our business.
         </label>
         {refine.isError && (
@@ -407,15 +315,7 @@ function RefineDialog({
   );
 }
 
-function RevertDialog({
-  leadId,
-  open,
-  onClose,
-}: {
-  leadId: string;
-  open: boolean;
-  onClose: () => void;
-}): React.JSX.Element | null {
+function RevertDialog({ leadId, open, onClose }: { leadId: string; open: boolean; onClose: () => void }): React.JSX.Element | null {
   const revert = useRevertToRough(leadId);
   const toast = useToast();
   const [reason, setReason] = useState('');
@@ -445,37 +345,17 @@ function RevertDialog({
     <Dialog open={open} title="Revert to Rough?" onClose={onClose}>
       <form onSubmit={submit} className="space-y-4 p-5" noValidate>
         <p className="text-sm text-slate-700">
-          The lead leaves the sales queues and counts until it is refined again. Its follow-ups are
-          kept, not cancelled.
+          The lead leaves the sales queues and counts until it is refined again. Its follow-ups are kept, not cancelled.
         </p>
-        <Field
-          label="Reason"
-          htmlFor="rv-reason"
-          required
-          hint="At least 5 characters. Recorded on the timeline."
-          error={fieldErrorOf(revert.error, 'reason')}
-        >
-          <textarea
-            id="rv-reason"
-            rows={3}
-            maxLength={500}
-            value={reason}
-            onChange={(e) => setReason(e.target.value)}
-            className={inputClass}
-          />
+        <Field label="Reason" htmlFor="rv-reason" required hint="At least 5 characters. Recorded on the timeline." error={fieldErrorOf(revert.error, 'reason')}>
+          <textarea id="rv-reason" rows={3} maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} className={inputClass} />
         </Field>
         {revert.isError && (
           <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
             {errorMessage(revert.error, 'Could not revert the lead.')}
           </p>
         )}
-        <DialogActions
-          onCancel={onClose}
-          busy={revert.isPending}
-          disabled={reason.trim().length < 5}
-          label="Revert to Rough"
-          busyLabel="Saving…"
-        />
+        <DialogActions onCancel={onClose} busy={revert.isPending} disabled={reason.trim().length < 5} label="Revert to Rough" busyLabel="Saving…" />
       </form>
     </Dialog>
   );

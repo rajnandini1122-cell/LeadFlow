@@ -69,7 +69,8 @@ export function ImportLeadsPage(): React.JSX.Element {
 
   const templates = useQuery({
     queryKey: ['lead-import-mappings'],
-    queryFn: () => apiGet<LeadImportMappingTemplateSummary[]>('/leads/import/mappings'),
+    queryFn: () =>
+      apiGet<LeadImportMappingTemplateSummary[]>('/leads/import/mappings'),
   });
 
   const preview = useMutation({
@@ -252,10 +253,8 @@ export function ImportLeadsPage(): React.JSX.Element {
                   {collisions.length > 0 && (
                     <Warning tone="error">
                       Two columns are mapped to{' '}
-                      {collisions
-                        .map((field) => IMPORT_FIELD_LABELS[field].replace(' *', ''))
-                        .join(', ')}
-                      . Only one can be, so pick which column holds it.
+                      {collisions.map((field) => IMPORT_FIELD_LABELS[field].replace(' *', '')).join(', ')}.
+                      Only one can be, so pick which column holds it.
                     </Warning>
                   )}
 
@@ -465,7 +464,9 @@ export function ImportLeadsPage(): React.JSX.Element {
                       className={inputClass}
                     >
                       <option value="SKIP">Skip them (recommended)</option>
-                      <option value="CREATE_ANYWAY">Create a second lead for them anyway</option>
+                      <option value="CREATE_ANYWAY">
+                        Create a second lead for them anyway
+                      </option>
                     </select>
                   </Field>
 
@@ -493,8 +494,8 @@ export function ImportLeadsPage(): React.JSX.Element {
                         <span>
                           I have checked these and want the second leads created
                           <span className="block text-xs text-slate-500">
-                            Each new lead records on its timeline which existing lead it duplicates,
-                            and the import is recorded against your account.
+                            Each new lead records on its timeline which existing lead it
+                            duplicates, and the import is recorded against your account.
                           </span>
                         </span>
                       </label>
@@ -563,7 +564,10 @@ function Warning({
   children: React.ReactNode;
   tone?: 'warn' | 'error';
 }): React.JSX.Element {
-  const styles = tone === 'error' ? 'bg-red-50 text-red-800' : 'bg-amber-50 text-amber-800';
+  const styles =
+    tone === 'error'
+      ? 'bg-red-50 text-red-800'
+      : 'bg-amber-50 text-amber-800';
 
   return <p className={`rounded-lg px-3 py-2 text-xs ${styles}`}>{children}</p>;
 }
