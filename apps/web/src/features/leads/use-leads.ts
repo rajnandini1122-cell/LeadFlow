@@ -120,6 +120,7 @@ export interface LeadFilters {
   unassigned?: boolean | undefined;
   /** Still NEW and never reached. */
   fresh?: boolean | undefined;
+  overdue?: boolean | undefined;
   /** Waiting on the customer. */
   awaiting?: boolean | undefined;
   /** Last call had exactly this outcome. */

@@ -319,6 +319,27 @@ describe('Leads — bulk changes', () => {
     expect(rep.body.data.items.map((i: { id: string }) => i.id)).toEqual([repLead]);
   });
 
+  it('the Overdue view lists only open leads whose next action is late', async () => {
+    const tag = `OD${randomUUID().slice(0, 6)}`;
+    const late = await createLead({ companyName: `${tag} Late` });
+    const onTime = await createLead({ companyName: `${tag} OnTime`, nextFollowUpAt: inDays(3) });
+    await asSystem(() =>
+      prisma().lead.update({
+        where: { id: late },
+        data: { nextFollowUpAt: new Date(Date.now() - 86_400_000) },
+      }),
+    );
+    const res = await ctx
+      .http()
+      .get('/api/v1/leads')
+      .query({ search: tag, overdue: 'true' })
+      .set(owner());
+    expect(res.status).toBe(200);
+    const ids = res.body.data.items.map((i: { id: string }) => i.id);
+    expect(ids).toContain(late);
+    expect(ids).not.toContain(onTime);
+  });
+
   it('refuses a selection larger than the bulk limit', async () => {
     const res = await bulk({
       action: 'SET_PRIORITY',

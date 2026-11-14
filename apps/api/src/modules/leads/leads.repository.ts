@@ -83,6 +83,8 @@ export interface LeadListFilters {
    * matches a lead three calls deep where nobody has answered.
    */
   fresh?: boolean | undefined;
+  /** Open leads whose next action is already late. */
+  overdue?: boolean | undefined;
   /** Waiting on the CUSTOMER: last outcome was "awaiting response", or a quotation is out. */
   awaiting?: boolean | undefined;
   /** Exactly this last outcome (a CALL_OUTCOMES code). */
@@ -177,6 +179,9 @@ export class LeadsRepository {
     const and: Record<string, unknown>[] = [];
     if (filters.unassigned) and.push({ assignedToId: null });
     if (filters.fresh) and.push({ status: 'NEW', lastContactedAt: null });
+    if (filters.overdue) {
+      and.push({ status: { notIn: ['WON', 'LOST'] }, nextFollowUpAt: { lt: new Date() } });
+    }
     if (filters.awaiting) {
       and.push({
         status: { notIn: ['WON', 'LOST'] },
