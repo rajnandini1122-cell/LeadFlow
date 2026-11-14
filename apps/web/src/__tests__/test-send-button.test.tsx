@@ -50,16 +50,19 @@ const draft = {
   broadcast: null,
 };
 
-function mailbox(over: Record<string, unknown> = {}) {
+/** The server's TEST checklist (GET /email/campaigns/c1/readiness?intent=TEST). */
+function ready(
+  checks: { id: string; status: 'pass' | 'warn' | 'fail'; title: string; detail?: string }[] = [],
+) {
+  const all = [
+    { id: 'SENDING_AVAILABLE', status: 'pass' as const, title: 'Email sending is available' },
+    ...checks,
+  ];
   return {
-    configured: true,
-    sendingProvider: 'RESEND',
-    smtp: { checkedAt: OK, okAt: null, error: 'The connection timed out.' },
-    imap: { checkedAt: OK, okAt: OK, error: null },
-    provider: { checkedAt: OK, okAt: OK, error: null },
-    resend: { domainVerifiedAt: OK },
-    platform: { sendingEnabled: true, dispatcherEnabled: true },
-    ...over,
+    intent: 'TEST',
+    channel: 'RESEND_BROADCAST',
+    ok: all.every((c) => c.status !== 'fail'),
+    checks: all,
   };
 }
 
@@ -79,7 +82,7 @@ function open(mb: unknown) {
     Promise.resolve(
       (url === '/email/campaigns/c1'
         ? draft
-        : url === '/email/mailbox'
+        : url === '/email/campaigns/c1/readiness'
           ? mb
           : url === '/email/campaigns/c1/preview'
             ? { subject: draft.subject, html: draft.html, text: draft.text, attachments: [] }
@@ -106,68 +109,52 @@ const field_ = () => screen.findByLabelText('Send test to');
 const testCalls = (post: ReturnType<typeof open>) =>
   post.mock.calls.filter(([url]) => String(url).endsWith('/test'));
 
-describe('Test email readiness', () => {
-  it('Resend tested + domain verified + switches on: ENABLED although SMTP timed out', async () => {
-    const post = open(mailbox());
+describe('Test email readiness — the server checklist decides', () => {
+  it('checklist ok: the test button is enabled and nothing is listed', async () => {
+    const post = open(ready());
     expect(await button()).toBeEnabled();
     expect(screen.queryByLabelText('Why test emails are unavailable')).not.toBeInTheDocument();
     // Rendering never sends anything.
-    expect(post.mock.calls.some(([url]) => String(url).endsWith('/test'))).toBe(false);
+    expect(testCalls(post)).toEqual([]);
   });
 
-  it('switches off: disabled, and says sending is switched off on this server', async () => {
-    open(mailbox({ platform: { sendingEnabled: false, dispatcherEnabled: false } }));
+  it('a failing check: disabled, and the reason is shown in plain words', async () => {
+    open(ready([{ id: 'ACCOUNT_TESTED', status: 'fail', title: 'Test the Resend connection' }]));
     expect(await button()).toBeDisabled();
-    expect(
-      await screen.findByText(
-        'Test emails are switched off on this server until email sending is enabled.',
-      ),
-    ).toBeInTheDocument();
+    const why = await screen.findByLabelText('Why test emails are unavailable');
+    expect(why).toHaveTextContent('Test the Resend connection');
+    expect(why).not.toHaveTextContent('Email sending is available');
   });
 
-  it('Resend not tested: disabled, asks for the Resend test — not SMTP', async () => {
-    open(mailbox({ provider: { checkedAt: OK, okAt: null, error: 'bad key' } }));
-    expect(await button()).toBeDisabled();
-    expect(
-      await screen.findByText('Test the Resend connection in Email settings.'),
-    ).toBeInTheDocument();
-    expect(screen.queryByText(/Connect and test the email account first/)).not.toBeInTheDocument();
-  });
-
-  it('Resend domain unverified: disabled with that reason', async () => {
-    open(mailbox({ resend: { domainVerifiedAt: null } }));
-    expect(await button()).toBeDisabled();
-    expect(
-      await screen.findByText('Verify the sending domain in Resend, then test Resend again.'),
-    ).toBeInTheDocument();
-  });
-
-  it('SMTP account with SMTP tested: enabled', async () => {
+  it('a warning (the real campaign needs changes): still enabled, the warning is shown', async () => {
     open(
-      mailbox({
-        sendingProvider: 'SMTP',
-        smtp: { checkedAt: OK, okAt: OK, error: null },
-        provider: { checkedAt: null, okAt: null, error: null },
-        resend: { domainVerifiedAt: null },
-      }),
+      ready([
+        {
+          id: 'MESSAGE_FITS',
+          status: 'warn',
+          title: 'The test can be sent, but the real campaign needs changes',
+          detail: 'Broadcasts cannot carry attachments. Link to the catalogue instead.',
+        },
+      ]),
     );
     expect(await button()).toBeEnabled();
+    expect(await screen.findByLabelText('Test email notes')).toHaveTextContent(
+      'Broadcasts cannot carry attachments',
+    );
   });
 
-  it('SMTP account with SMTP not tested: disabled, asks for the SMTP test', async () => {
-    open(
-      mailbox({ sendingProvider: 'SMTP', provider: { checkedAt: null, okAt: null, error: null } }),
-    );
-    expect(await button()).toBeDisabled();
-    expect(
-      await screen.findByText('Test the SMTP (sending) connection in Email settings.'),
-    ).toBeInTheDocument();
+  it('asks the server for the TEST checklist of this campaign', async () => {
+    open(ready());
+    await button();
+    expect(apiClient.apiGet).toHaveBeenCalledWith('/email/campaigns/c1/readiness', {
+      intent: 'TEST',
+    });
   });
 });
 
 describe('One test control', () => {
   it('there is exactly one test field and one test button, prefilled with your own address', async () => {
-    open(mailbox());
+    open(ready());
     expect(await button()).toBeEnabled();
     expect(screen.getByLabelText('Send test to')).toHaveValue(ME);
     expect(screen.getAllByRole('button', { name: /^Send test/ })).toHaveLength(1);
@@ -176,13 +163,13 @@ describe('One test control', () => {
   });
 
   it('your own address goes as a self test: no recipient is posted', async () => {
-    const post = open(mailbox());
+    const post = open(ready());
     await userEvent.click(await button());
     expect(testCalls(post)).toEqual([['/email/campaigns/c1/test', {}]]);
   });
 
   it('your own address in other casing is still a self test', async () => {
-    const post = open(mailbox());
+    const post = open(ready());
     const field = await field_();
     await userEvent.clear(field);
     await userEvent.type(field, ME.toUpperCase());
@@ -191,7 +178,7 @@ describe('One test control', () => {
   });
 
   it('another address: the button names it and posts exactly it (trimmed, lowercased), never yours', async () => {
-    const post = open(mailbox());
+    const post = open(ready());
     const field = await field_();
     await userEvent.clear(field);
     expect(screen.getByRole('button', { name: 'Send test' })).toBeDisabled();
@@ -209,7 +196,7 @@ describe('One test control', () => {
   });
 
   it('never posts the campaign recipients, and says so on both cards', async () => {
-    const post = open(mailbox());
+    const post = open(ready());
     expect(await screen.findByText(/never to the campaign’s recipients/)).toBeInTheDocument();
     expect(screen.getByText(/Test emails never go to them/)).toBeInTheDocument();
     await userEvent.click(await button());
@@ -218,7 +205,7 @@ describe('One test control', () => {
   });
 
   it('shows the server refusal naming the address; it never falls back to your own', async () => {
-    const post = open(mailbox());
+    const post = open(ready());
     post.mockImplementation(((url: string) =>
       String(url).endsWith('/test')
         ? Promise.reject(
@@ -254,7 +241,7 @@ describe('One test control', () => {
   });
 
   it('never shows which addresses are approved', async () => {
-    open(mailbox());
+    open(ready());
     const section = (await screen.findByRole('heading', { name: 'Test email' })).closest(
       'section',
     )!;

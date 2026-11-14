@@ -65,6 +65,8 @@ function respond(url: string): unknown {
       provider: { okAt: '2026-11-12T13:25:28.000Z' },
       platform: { sendingEnabled: false, dispatcherEnabled: false },
     };
+  if (url === '/email/campaigns/c1/readiness')
+    return { intent: 'TEST', channel: 'RESEND_EMAIL', ok: true, checks: [] };
   if (url === '/email/campaigns/c1/preview')
     return { subject: draft.subject, html: draft.html, text: draft.text, attachments: [] };
   return [];

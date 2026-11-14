@@ -1,5 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
+  CampaignReadiness,
+  CampaignReadinessIntent,
   EmailAudienceOptions,
   EmailAssetView,
   EmailAudiencePreview,
@@ -68,6 +70,7 @@ export const emailKeys = {
     ['email', 'campaign', id, 'recipients', status] as const,
   replies: (id: string) => ['email', 'campaign', id, 'replies'] as const,
   preview: (id: string) => ['email', 'campaign', id, 'preview'] as const,
+  readiness: (id: string) => ['email', 'campaign', id, 'readiness'] as const,
 };
 
 // --- mailbox -------------------------------------------------------------------
@@ -252,7 +255,17 @@ export function useSaveCampaign() {
       client.setQueryData(emailKeys.campaign(view.id), view);
       void client.invalidateQueries({ queryKey: emailKeys.campaigns });
       void client.invalidateQueries({ queryKey: emailKeys.preview(view.id) });
+      void client.invalidateQueries({ queryKey: emailKeys.readiness(view.id) });
     },
+  });
+}
+
+/** The server's pre-send checklist for a test email or the real send. */
+export function useCampaignReadiness(id: string, intent: CampaignReadinessIntent, enabled = true) {
+  return useQuery({
+    queryKey: [...emailKeys.readiness(id), intent] as const,
+    queryFn: () => apiGet<CampaignReadiness>(`/email/campaigns/${id}/readiness`, { intent }),
+    enabled: enabled && Boolean(id),
   });
 }
 

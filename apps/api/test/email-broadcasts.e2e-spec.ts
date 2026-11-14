@@ -793,6 +793,124 @@ describe('Email broadcasts (Resend Marketing)', () => {
     });
   });
 
+  describe('readiness checklist — the same rules as the send guards', () => {
+    /** A promotional draft for `count` eligible leads, not confirmed. */
+    const drafted = async (count: number, over: Record<string, unknown> = {}) => {
+      const city = tag();
+      const emails = Array.from({ length: count }, (_, i) =>
+        `r${i}.${city}@cust.example`.toLowerCase(),
+      );
+      for (const [i, email] of emails.entries()) await lead(city, email, `Name${i}`);
+      expect((await grant(emails)).status).toBe(200);
+      const res = await ctx
+        .http()
+        .post('/api/v1/email/campaigns')
+        .set(owner())
+        .send({
+          name: `Ready ${city}`,
+          category: 'PROMOTIONAL_OFFER',
+          purpose: 'PROMOTIONAL',
+          subject: 'Our new catalogue',
+          html: '<p>Dear {{first_name}}, the new range is out.</p>',
+          filter: { cities: [city] },
+          ...over,
+        });
+      expect(res.status).toBe(201);
+      return { id: res.body.data.id as string, emails };
+    };
+    const readiness = (id: string, intent: string, as = owner()) =>
+      ctx.http().get(`/api/v1/email/campaigns/${id}/readiness`).query({ intent }).set(as);
+    const confirm = (id: string, eligibleCount: number) =>
+      ctx
+        .http()
+        .post(`/api/v1/email/campaigns/${id}/confirm`)
+        .set(owner())
+        .send({ submitKey: randomUUID().replace(/-/g, ''), eligibleCount });
+    const failed = (body: { data: { checks: { id: string; status: string }[] } }) =>
+      body.data.checks.filter((c) => c.status === 'fail').map((c) => c.id);
+
+    it('ready: the checklist passes and confirmation is accepted', async () => {
+      const { id } = await drafted(2);
+      const res = await readiness(id, 'CONFIRM');
+      expect(res.status).toBe(200);
+      expect(res.body.data).toMatchObject({ ok: true, channel: 'RESEND_BROADCAST' });
+      expect(
+        res.body.data.checks.find((c: { id: string }) => c.id === 'AUDIENCE_ELIGIBLE').title,
+      ).toBe('2 people can receive it');
+      expect((await confirm(id, 2)).status).toBe(200);
+    });
+
+    it('content a broadcast cannot carry: the checklist fails and so does confirmation, with the same reason', async () => {
+      const { id } = await drafted(1, { html: '<p>Hello {{company}}</p>' });
+      const res = await readiness(id, 'CONFIRM');
+      expect(res.body.data.ok).toBe(false);
+      expect(failed(res.body)).toEqual(['MESSAGE_FITS']);
+      const fits = res.body.data.checks.find((c: { id: string }) => c.id === 'MESSAGE_FITS');
+      expect(fits.detail).toContain('{{company}}');
+      const refused = await confirm(id, 1);
+      expect(refused.status).toBe(400);
+      expect(refused.body.error.message).toContain('{{company}}');
+    });
+
+    it('recipients not approved on this server: both refuse, and neither names the approved list', async () => {
+      const { id } = await drafted(1);
+      const config = ctx.app.get(AppConfig);
+      const real = config.get.bind(config);
+      const spy = jest
+        .spyOn(config, 'get')
+        .mockImplementation(((key: string) =>
+          key === 'EMAIL_SENDING_UNRESTRICTED'
+            ? false
+            : key === 'EMAIL_ALLOWED_ORGANIZATION_ID'
+              ? ctx.orgA.id
+              : key === 'EMAIL_RECIPIENT_ALLOWLIST'
+                ? 'only.this@approved.example'
+                : real(key as never)) as typeof config.get);
+      try {
+        const res = await readiness(id, 'CONFIRM');
+        expect(failed(res.body)).toEqual(['RECIPIENTS_APPROVED']);
+        expect(JSON.stringify(res.body)).not.toContain('only.this@approved.example');
+        expect(JSON.stringify(res.body)).not.toContain(ctx.orgA.id);
+        expect((await confirm(id, 1)).status).toBe(400);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('a test email with dispatch off: the checklist says so and the test send refuses', async () => {
+      // This suite runs with EMAIL_DISPATCH_ENABLED=false.
+      const { id } = await drafted(1);
+      const res = await readiness(id, 'TEST');
+      expect(res.body.data.ok).toBe(false);
+      expect(failed(res.body)).toEqual(['SENDING_AVAILABLE']);
+      expect(JSON.stringify(res.body)).not.toMatch(/EMAIL_[A-Z_]+/);
+      ctx.redis.flush();
+      const test = await ctx
+        .http()
+        .post(`/api/v1/email/campaigns/${id}/test`)
+        .set(owner())
+        .send({});
+      expect(test.status).toBe(400);
+      expect(test.body.error.message).toContain('Test emails are switched off');
+    });
+
+    it('stays inside the organization; needs sign-in and a known intent; changes nothing', async () => {
+      const { id } = await drafted(1);
+      expect((await readiness(id, 'CONFIRM', auth(ctx.orgB.owner.accessToken))).status).toBe(404);
+      expect(
+        (
+          await ctx
+            .http()
+            .get(`/api/v1/email/campaigns/${id}/readiness`)
+            .query({ intent: 'CONFIRM' })
+        ).status,
+      ).toBe(401);
+      expect((await readiness(id, 'SEND_NOW')).status).toBe(400);
+      expect((await campaign(id))!.status).toBe('DRAFT');
+      expect(await recipients(id)).toEqual([]);
+    });
+  });
+
   describe('NEEDS_REVIEW recovery (campaign page)', () => {
     it('the campaign view shows the broadcast state, last provider check, failure reason, Resend id and whether anyone may have the email', async () => {
       const { id, campaign: c } = await inReview(1);
