@@ -788,10 +788,12 @@ export class LeadsRepository {
    * this organization, within `since`. audit_logs is not covered by the tenant
    * extension, so the organization is filtered explicitly.
    */
-  async findBulkResult(key: string, since: Date): Promise<unknown> {
+  async findBulkResult(key: string, actorUserId: string, since: Date): Promise<unknown> {
     const row = await this.prisma.client.auditLog.findFirst({
       where: {
         organizationId: this.tenantContext.requireOrganizationId(),
+        // Only the person who made the request gets its answer back.
+        actorUserId,
         action: 'lead.bulk.applied',
         createdAt: { gte: since },
         after: { path: ['idempotencyKey'], equals: key },

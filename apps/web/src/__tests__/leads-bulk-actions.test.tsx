@@ -78,6 +78,7 @@ describe('BulkActionBar', () => {
         action: 'SET_PRIORITY',
         dryRun: body.dryRun,
         replayed: false,
+        snapshotAt: '2026-11-14T10:05:00.000Z',
         summary: body.dryRun
           ? summary({ willChange: 1, refused: 1 })
           : summary({ changed: 1, refused: 1 }),
@@ -114,7 +115,12 @@ describe('BulkActionBar', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Apply to 1' }));
     expect(await screen.findByText(/1 lead changed/)).toBeInTheDocument();
     const applied = post.mock.calls[1]!;
-    expect(applied[1]).toMatchObject({ dryRun: false, action: 'SET_PRIORITY' });
+    expect(applied[1]).toMatchObject({
+      dryRun: false,
+      action: 'SET_PRIORITY',
+      // Exactly the previewed leads, with the preview's server-side snapshot.
+      selection: { ids: ['a', 'b'], snapshotAt: '2026-11-14T10:05:00.000Z' },
+    });
     expect((applied[2] as { headers: Record<string, string> }).headers['Idempotency-Key']).toMatch(
       /^[0-9a-f]{32}$/,
     );
@@ -140,6 +146,7 @@ describe('BulkActionBar', () => {
       action: 'SET_PRIORITY',
       dryRun: true,
       replayed: false,
+      snapshotAt: '2026-11-14T10:05:00.000Z',
       summary: summary({ willChange: 36 }),
       items: [],
     } as never);

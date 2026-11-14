@@ -9,6 +9,7 @@ import {
 } from '@leadflow/api-types';
 import { AppException } from '../../common/errors/app.exception';
 import { AuditRepository } from '../../common/audit/audit.repository';
+import { RedisService } from '../../common/redis/redis.service';
 import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
 import { LeadsRepository } from './leads.repository';
 import { LeadsService } from './leads.service';
@@ -39,14 +40,17 @@ const REPLAY_WINDOW_MS = 24 * 3_600_000;
  * queue, customer promotion, activities and per-lead audit are identical. On
  * top of that this adds what only a bulk change needs:
  *
- *   selection    explicit ids, or "all matching these filters", resolved here
- *                with the caller's own visibility; capped at LEAD_BULK_LIMIT
+ *   selection    a PREVIEW may use "all matching these filters", resolved here
+ *                with the caller's own visibility; APPLY takes the exact ids
+ *                that preview returned, so nothing unreviewed is changed
  *   dry run      a per-lead plan (will change / unchanged / refused + why)
- *                before anything is written
- *   concurrency  a lead changed after the person's snapshot is skipped as
- *                CONFLICT, never overwritten
+ *                and a server-clock snapshotAt, before anything is written
+ *   concurrency  on apply, a lead changed after the preview's snapshotAt is
+ *                skipped as CONFLICT, never overwritten (server clock only)
  *   partial      each lead commits on its own; one refusal never undoes others
- *   idempotency  the same Idempotency-Key replays the stored result
+ *   idempotency  the key is claimed atomically (Redis SET NX) before any write,
+ *                so a concurrent duplicate is refused; a later repeat by the
+ *                same person replays the stored result
  *   audit        one parent record with every lead's outcome
  *
  * WON is not available in bulk: a win needs a customer and a value per deal.
@@ -60,6 +64,7 @@ export class LeadBulkService {
     private readonly leads: LeadsService,
     private readonly mutations: LeadMutationsService,
     private readonly audit: AuditRepository,
+    private readonly redis: RedisService,
   ) {}
 
   async update(
@@ -77,7 +82,11 @@ export class LeadBulkService {
             ? {
                 status: dto.status!,
                 ...(dto.lostReason ? { lostReason: dto.lostReason } : {}),
-                ...(dto.nextFollowUpAt ? { nextFollowUpAt: dto.nextFollowUpAt } : {}),
+                // Only leads WITHOUT a next action get this date; an existing
+                // follow-up is never replaced by a stage change.
+                ...(dto.nextFollowUpAt && !lead.nextFollowUpAt && !isTerminal(dto.status!)
+                  ? { nextFollowUpAt: dto.nextFollowUpAt }
+                  : {}),
               }
             : dto.action === 'SET_PRIORITY'
               ? { priority: dto.priority! }
@@ -141,10 +150,30 @@ export class LeadBulkService {
           'An Idempotency-Key header (16–100 letters, digits, - or _) is required to apply a bulk change.',
         );
       }
-      const replay = await this.replay(idempotencyKey);
+      const replay = await this.replay(idempotencyKey, principal);
       if (replay) return { ...replay, replayed: true };
+      if (!selection.ids) {
+        throw AppException.validation(
+          'Preview the change first, then apply it to the leads the preview listed.',
+        );
+      }
+      const claimed = await this.redis.claimOnce(
+        `lead-bulk:${principal.organizationId}:${principal.userId}:${idempotencyKey}`,
+        REPLAY_WINDOW_MS / 1000,
+      );
+      if (claimed !== true) {
+        throw AppException.conflict(
+          ERROR_CODES.CONFLICT,
+          claimed === false
+            ? 'This change is already being applied. Wait a moment, then reload the list.'
+            : 'Bulk changes are unavailable right now. Nothing was changed; try again shortly.',
+        );
+      }
     }
 
+    // The server's clock, never the browser's: a preview stamps it, and the
+    // apply compares every lead against the preview's stamp.
+    const serverNow = new Date().toISOString();
     const ids = await this.resolve(selection, principal);
     const snapshot = new Date(selection.snapshotAt);
     const restrict = visibilityFilter(principal)?.assignedToId;
@@ -163,13 +192,13 @@ export class LeadBulkService {
         continue;
       }
       const name = displayName(lead);
-      if (lead.updatedAt.getTime() > snapshot.getTime()) {
+      if (!dryRun && lead.updatedAt.getTime() > snapshot.getTime()) {
         items.push({
           id,
           name,
           outcome: 'CONFLICT',
           code: 'STALE_RECORD',
-          reason: 'Someone changed this lead after you selected it. Reload and try again.',
+          reason: 'Someone changed this lead after your preview. Preview again to include it.',
         });
         continue;
       }
@@ -212,6 +241,7 @@ export class LeadBulkService {
       action,
       dryRun,
       replayed: false,
+      snapshotAt: dryRun ? serverNow : selection.snapshotAt,
       summary: summarise(items),
       items,
     };
@@ -349,9 +379,11 @@ export class LeadBulkService {
   }
 
   /** The stored answer for this key in this organization, within the replay window. */
-  private async replay(key: string): Promise<LeadBulkResult | null> {
+  /** This person's stored answer for this key, within the replay window. */
+  private async replay(key: string, principal: TenantPrincipal): Promise<LeadBulkResult | null> {
     return (await this.repository.findBulkResult(
       key,
+      principal.userId,
       new Date(Date.now() - REPLAY_WINDOW_MS),
     )) as LeadBulkResult | null;
   }

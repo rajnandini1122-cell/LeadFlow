@@ -3,6 +3,7 @@ import { createTestContext, type TestContext } from './helpers/test-app';
 import { fixtureMobile } from './helpers/phone-fixtures';
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import { TenantContextService } from '../src/common/tenancy/tenant-context.service';
+import { RedisService } from '../src/common/redis/redis.service';
 
 /**
  * Bulk lead changes: one server request, every lead through the single-edit
@@ -240,6 +241,82 @@ describe('Leads — bulk changes', () => {
     });
     expect(res.status).toBe(200);
     expect(res.body.data.items.map((i: { id: string }) => i.id)).toEqual([ids[0]]);
+  });
+
+  it('apply takes only the previewed ids — "all matching" must be previewed first', async () => {
+    const res = await bulk(
+      {
+        action: 'SET_PRIORITY',
+        priority: 'LOW',
+        selection: { query: { search: 'x' }, snapshotAt: snapshot() },
+      },
+      { ...owner(), 'Idempotency-Key': key() },
+    );
+    expect(res.status).toBe(400);
+    expect(res.body.error.message).toContain('Preview the change first');
+  });
+
+  it('a preview stamps the server clock; the browser clock never causes a conflict in a preview', async () => {
+    const a = await createLead();
+    const res = await bulk({
+      action: 'SET_PRIORITY',
+      priority: 'URGENT',
+      dryRun: true,
+      selection: { ids: [a], snapshotAt: '2000-01-01T00:00:00.000Z' },
+    });
+    expect(res.body.data.items[0].outcome).toBe('WILL_CHANGE');
+    expect(Math.abs(Date.parse(res.body.data.snapshotAt) - Date.now())).toBeLessThan(60_000);
+  });
+
+  it('a stage change never replaces an existing follow-up; it only fills a missing one', async () => {
+    const a = await createLead({ nextFollowUpAt: inDays(2) });
+    const before = (await lead(a))!.nextFollowUpAt!.toISOString();
+    const res = await bulk(
+      {
+        action: 'SET_STATUS',
+        status: 'CONTACTED',
+        nextFollowUpAt: inDays(9),
+        selection: { ids: [a], snapshotAt: snapshot() },
+      },
+      { ...owner(), 'Idempotency-Key': key() },
+    );
+    expect(res.body.data.summary.changed).toBe(1);
+    expect((await lead(a))!.nextFollowUpAt!.toISOString()).toBe(before);
+  });
+
+  it('a duplicate in flight is refused; another person never gets a stored answer that is not theirs', async () => {
+    const a = await createLead();
+    const k = key();
+    const body = {
+      action: 'SET_PRIORITY',
+      priority: 'HIGH',
+      selection: { ids: [a], snapshotAt: snapshot() },
+    };
+    // Simulate a request with this key already running for the owner.
+    await ctx.app
+      .get(RedisService)
+      .claimOnce(`lead-bulk:${ctx.orgA.id}:${ctx.orgA.owner.id}:${k}`, 60);
+    const dup = await bulk(body, { ...owner(), 'Idempotency-Key': k });
+    expect(dup.status).toBe(409);
+    expect((await lead(a))!.priority).not.toBe('HIGH');
+
+    // The owner applies with a fresh key; the rep reusing that key is not replayed it.
+    const k2 = key();
+    expect(
+      (await bulk(body, { ...owner(), 'Idempotency-Key': k2 })).body.data.summary.changed,
+    ).toBe(1);
+    const repLead = await createLead({ assignedToId: ctx.orgA.rep.id });
+    const rep = await bulk(
+      {
+        action: 'SET_PRIORITY',
+        priority: 'LOW',
+        selection: { ids: [repLead], snapshotAt: snapshot() },
+      },
+      { ...auth(ctx.orgA.rep.accessToken), 'Idempotency-Key': k2 },
+    );
+    expect(rep.status).toBe(200);
+    expect(rep.body.data.replayed).toBe(false);
+    expect(rep.body.data.items.map((i: { id: string }) => i.id)).toEqual([repLead]);
   });
 
   it('refuses a selection larger than the bulk limit', async () => {

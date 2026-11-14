@@ -879,6 +879,11 @@ export interface LeadBulkResult {
   dryRun: boolean;
   /** True when this answer replays an earlier request with the same idempotency key. */
   replayed: boolean;
+  /**
+   * Server time of the preview. Apply sends it back; a lead changed after it is
+   * skipped as a CONFLICT.
+   */
+  snapshotAt: string;
   summary: {
     matched: number;
     willChange: number;

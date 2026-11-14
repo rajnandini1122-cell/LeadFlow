@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   LEAD_BULK_LIMIT,
@@ -168,17 +168,22 @@ function BulkDialog({
   const [owner, setOwner] = useState('');
   const [when, setWhen] = useState('');
   const [lostReason, setLostReason] = useState('');
-  const idempotencyKey = useMemo(() => crypto.randomUUID().replace(/-/g, ''), []);
   const users = useQuery({
     queryKey: ['leads', 'assignable-users'],
     queryFn: () => apiGet<{ id: string; fullName: string }[]>('/leads/assignable-users'),
     enabled: action === 'ASSIGN',
   });
 
-  const body = (dryRun: boolean): Record<string, unknown> => ({
-    dryRun,
-    selection:
-      selection.mode === 'ids'
+  /*
+   * Preview resolves the selection (ticked rows, or all matching minus the
+   * unticked); apply then names exactly the leads that preview listed, with the
+   * preview's server-side snapshot, so nothing unreviewed is ever changed.
+   */
+  const body = (previewed: LeadBulkResult | null): Record<string, unknown> => ({
+    dryRun: previewed === null,
+    selection: previewed
+      ? { ids: previewed.items.map((item) => item.id), snapshotAt: previewed.snapshotAt }
+      : selection.mode === 'ids'
         ? { ids: [...selection.ids], snapshotAt: selection.snapshotAt }
         : { query: filters, excludeIds: [...selection.excluded], snapshotAt: selection.snapshotAt },
     ...(action === 'ASSIGN'
@@ -197,10 +202,15 @@ function BulkDialog({
         }),
   });
   const path = action === 'ASSIGN' ? '/leads/bulk/assign' : '/leads/bulk';
-  const preview = useMutation({ mutationFn: () => apiPost<LeadBulkResult>(path, body(true)) });
+  // One key per preview: applying the same preview twice is applied once.
+  const [idempotencyKey, setIdempotencyKey] = useState('');
+  const preview = useMutation({
+    mutationFn: () => apiPost<LeadBulkResult>(path, body(null)),
+    onSuccess: () => setIdempotencyKey(crypto.randomUUID().replace(/-/g, '')),
+  });
   const apply = useMutation({
     mutationFn: () =>
-      apiPost<LeadBulkResult>(path, body(false), {
+      apiPost<LeadBulkResult>(path, body(preview.data!), {
         headers: { 'Idempotency-Key': idempotencyKey },
       }),
     onSuccess: () => void client.invalidateQueries({ queryKey: ['leads'] }),
