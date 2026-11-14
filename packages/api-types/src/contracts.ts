@@ -598,13 +598,7 @@ export const ENQUIRY_TYPES = [
 ] as const;
 export type EnquiryType = (typeof ENQUIRY_TYPES)[number];
 
-export const INTAKE_STATUSES = [
-  'RECEIVED',
-  'DUPLICATE',
-  'PROCESSED',
-  'FAILED',
-  'BLOCKED',
-] as const;
+export const INTAKE_STATUSES = ['RECEIVED', 'DUPLICATE', 'PROCESSED', 'FAILED', 'BLOCKED'] as const;
 export type IntakeStatus = (typeof INTAKE_STATUSES)[number];
 
 /**
@@ -853,4 +847,50 @@ export interface PlatformOrganizationView {
     subscriptionStatus: string | null;
     planCode: string | null;
   };
+}
+
+// --- Bulk lead operations ------------------------------------------------------
+
+/** Most leads one bulk request may touch; a larger selection must be narrowed. */
+export const LEAD_BULK_LIMIT = 200;
+
+export const LEAD_BULK_ACTIONS = [
+  'SET_STATUS',
+  'SET_PRIORITY',
+  'SCHEDULE_FOLLOW_UP',
+  'ASSIGN',
+] as const;
+export type LeadBulkAction = (typeof LEAD_BULK_ACTIONS)[number];
+
+/** What happened, or would happen, to one lead in a bulk request. */
+export type LeadBulkOutcome = 'WILL_CHANGE' | 'CHANGED' | 'UNCHANGED' | 'REFUSED' | 'CONFLICT';
+
+export interface LeadBulkItemResult {
+  id: string;
+  name: string | null;
+  outcome: LeadBulkOutcome;
+  /** Plain-language reason for REFUSED / CONFLICT / UNCHANGED. */
+  reason?: string;
+  code?: string;
+}
+
+export interface LeadBulkResult {
+  action: LeadBulkAction;
+  dryRun: boolean;
+  /** True when this answer replays an earlier request with the same idempotency key. */
+  replayed: boolean;
+  /**
+   * Server time of the preview. Apply sends it back; a lead changed after it is
+   * skipped as a CONFLICT.
+   */
+  snapshotAt: string;
+  summary: {
+    matched: number;
+    willChange: number;
+    changed: number;
+    unchanged: number;
+    refused: number;
+    conflicts: number;
+  };
+  items: LeadBulkItemResult[];
 }

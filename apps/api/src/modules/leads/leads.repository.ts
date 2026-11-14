@@ -127,7 +127,9 @@ export const LEAD_SUMMARY_INCLUDE = {
     where: { isPrimary: true },
     take: 1,
     select: {
-      contact: { select: { id: true, firstName: true, lastName: true, designation: true, mobile: true } },
+      contact: {
+        select: { id: true, firstName: true, lastName: true, designation: true, mobile: true },
+      },
     },
   },
   _count: { select: { contactLinks: { where: { inactiveAt: null } } } },
@@ -147,7 +149,10 @@ export class LeadsRepository {
    * Extracted so the two cannot drift: a total computed from different filters
    * than the page is worse than no total at all.
    */
-  private listWhere(filters: LeadListFilters, searchPhone: string | null = null): Record<string, unknown> {
+  private listWhere(
+    filters: LeadListFilters,
+    searchPhone: string | null = null,
+  ): Record<string, unknown> {
     const where: Record<string, unknown> = { deletedAt: null };
 
     /*
@@ -175,12 +180,16 @@ export class LeadsRepository {
     if (filters.awaiting) {
       and.push({
         status: { notIn: ['WON', 'LOST'] },
-        OR: [{ lastOutcome: { in: [...AWAITING_RESPONSE_OUTCOMES] } }, { status: 'QUOTATION_SENT' }],
+        OR: [
+          { lastOutcome: { in: [...AWAITING_RESPONSE_OUTCOMES] } },
+          { status: 'QUOTATION_SENT' },
+        ],
       });
     }
     if (filters.lastOutcome) and.push({ lastOutcome: filters.lastOutcome });
     if (filters.qualification) and.push({ qualification: filters.qualification });
-    if (filters.market && filters.homeCountry) and.push(marketWhere(filters.market, filters.homeCountry));
+    if (filters.market && filters.homeCountry)
+      and.push(marketWhere(filters.market, filters.homeCountry));
     if (and.length > 0) where['AND'] = and;
     if (filters.productId) where['productId'] = filters.productId;
     if (filters.accountId) where['accountId'] = filters.accountId;
@@ -608,7 +617,8 @@ export class LeadsRepository {
        */
       await this.lockLeadNumbering(tx);
       const leadNumber = await this.nextLeadNumber(tx);
-      const qualification = input.qualification ?? ((await this.qualificationEnabled(tx)) ? 'ROUGH' : 'REFINED');
+      const qualification =
+        input.qualification ?? ((await this.qualificationEnabled(tx)) ? 'ROUGH' : 'REFINED');
 
       const created = await tx.lead.create({
         data: {
@@ -774,6 +784,27 @@ export class LeadsRepository {
   }
 
   /**
+   * The stored answer of an earlier bulk request with this idempotency key, in
+   * this organization, within `since`. audit_logs is not covered by the tenant
+   * extension, so the organization is filtered explicitly.
+   */
+  async findBulkResult(key: string, actorUserId: string, since: Date): Promise<unknown> {
+    const row = await this.prisma.client.auditLog.findFirst({
+      where: {
+        organizationId: this.tenantContext.requireOrganizationId(),
+        // Only the person who made the request gets its answer back.
+        actorUserId,
+        action: 'lead.bulk.applied',
+        createdAt: { gte: since },
+        after: { path: ['idempotencyKey'], equals: key },
+      },
+      orderBy: { createdAt: 'desc' },
+      select: { after: true },
+    });
+    return (row?.after as { result?: unknown } | null)?.result ?? null;
+  }
+
+  /**
    * Confirms a user is an ACTIVE member of the current organization.
    *
    * Necessary because leads.assigned_to references the GLOBAL users table:
@@ -802,7 +833,9 @@ export class LeadsRepository {
         status: 'ACTIVE',
         role: {
           permissions: {
-            some: { permission: { key: { in: [PERMISSIONS.LEAD_VIEW_ALL, PERMISSIONS.LEAD_VIEW_TEAM] } } },
+            some: {
+              permission: { key: { in: [PERMISSIONS.LEAD_VIEW_ALL, PERMISSIONS.LEAD_VIEW_TEAM] } },
+            },
           },
         },
       },
@@ -1061,7 +1094,8 @@ export class LeadsRepository {
           updatedBy: input.actorId,
         },
       });
-      if (updated.count === 0) return { leadsChanged: 0, followUpsMoved: 0, followUpCreated: false };
+      if (updated.count === 0)
+        return { leadsChanged: 0, followUpsMoved: 0, followUpCreated: false };
 
       const moved = input.previousOwnerId
         ? await tx.followUp.updateMany({
@@ -1197,7 +1231,11 @@ export class LeadsRepository {
       closesLead,
       winsLead: input.status === 'WON',
       activityType:
-        input.status === 'WON' ? 'LEAD_WON' : input.status === 'LOST' ? 'LEAD_LOST' : 'STATUS_CHANGED',
+        input.status === 'WON'
+          ? 'LEAD_WON'
+          : input.status === 'LOST'
+            ? 'LEAD_LOST'
+            : 'STATUS_CHANGED',
       description:
         input.status === 'LOST' && input.lostReason
           ? `Marked lost: ${input.lostReason}`

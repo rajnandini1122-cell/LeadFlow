@@ -3,6 +3,7 @@ import {
   Controller,
   Delete,
   Get,
+  Headers,
   HttpCode,
   HttpStatus,
   Param,
@@ -12,7 +13,14 @@ import {
   Query,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { PERMISSIONS, type LeadSourceIntake, type Paginated } from '@leadflow/api-types';
+import {
+  PERMISSIONS,
+  type LeadBulkResult,
+  type LeadSourceIntake,
+  type Paginated,
+} from '@leadflow/api-types';
+import { BulkAssignLeadsDto, BulkUpdateLeadsDto } from './dto/bulk-leads.dto';
+import { LeadBulkService } from './lead-bulk.service';
 import type { TenantPrincipal } from '../../common/tenancy/tenant-context.service';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
@@ -20,19 +28,10 @@ import { IdempotencyKey } from '../../common/web/idempotency-key.decorator';
 import { LeadsService, type LeadSummary } from './leads.service';
 import { ListLeadsDto } from './dto/leads.dto';
 import { CreateLeadDto } from './dto/create-lead.dto';
-import {
-  AssignLeadDto,
-  CreateNoteDto,
-  LogActivityDto,
-  UpdateLeadDto,
-} from './dto/update-lead.dto';
+import { AssignLeadDto, CreateNoteDto, LogActivityDto, UpdateLeadDto } from './dto/update-lead.dto';
 import { LeadMutationsService } from './lead-mutations.service';
 import { LeadImportService } from './import/lead-import.service';
-import {
-  ImportLeadsDto,
-  PreviewImportDto,
-  SaveMappingTemplateDto,
-} from './dto/import-leads.dto';
+import { ImportLeadsDto, PreviewImportDto, SaveMappingTemplateDto } from './dto/import-leads.dto';
 import { LeadLifecycleService } from './lead-lifecycle.service';
 import { DeactivateLeadDto, ReactivateLeadDto } from './dto/lead-lifecycle.dto';
 import { FollowUpsService } from '../follow-ups/follow-ups.service';
@@ -59,7 +58,41 @@ export class LeadsController {
     @Inject(forwardRef(() => FollowUpsService))
     private readonly followUps: FollowUpsService,
     private readonly intakes: IntakeOperationsService,
+    private readonly bulk: LeadBulkService,
   ) {}
+
+  /*
+   * Bulk changes. Declared before the :id routes so 'bulk' is never parsed as a
+   * lead id. Each lead goes through the same domain rules as a single edit.
+   */
+  @Post('bulk')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSIONS.LEAD_UPDATE)
+  @ApiOperation({
+    summary: 'Change the stage, priority or next follow-up of many leads',
+    description:
+      'dryRun: true previews the per-lead outcome without writing. Applying requires an ' +
+      'Idempotency-Key header; leads changed after selection.snapshotAt are skipped as conflicts.',
+  })
+  async bulkUpdate(
+    @Body() dto: BulkUpdateLeadsDto,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @CurrentUser() principal: TenantPrincipal,
+  ): Promise<LeadBulkResult> {
+    return this.bulk.update(dto, principal, idempotencyKey);
+  }
+
+  @Post('bulk/assign')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSIONS.LEAD_ASSIGN)
+  @ApiOperation({ summary: 'Assign many leads to one person (preview with dryRun: true)' })
+  async bulkAssign(
+    @Body() dto: BulkAssignLeadsDto,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @CurrentUser() principal: TenantPrincipal,
+  ): Promise<LeadBulkResult> {
+    return this.bulk.assign(dto, principal, idempotencyKey);
+  }
 
   @Get()
   @RequirePermissions(PERMISSIONS.LEAD_VIEW_OWN)
@@ -118,10 +151,7 @@ export class LeadsController {
       'import is legible, whereas one bad row rolling back a whole file is ' +
       'not. Duplicates of existing active leads are skipped by default.',
   })
-  async importLeads(
-    @Body() dto: ImportLeadsDto,
-    @CurrentUser() principal: TenantPrincipal,
-  ) {
+  async importLeads(@Body() dto: ImportLeadsDto, @CurrentUser() principal: TenantPrincipal) {
     return this.imports.import(dto, principal);
   }
 
@@ -147,9 +177,7 @@ export class LeadsController {
   @Get('import/batches/:batchId')
   @RequirePermissions(PERMISSIONS.LEAD_IMPORT)
   @ApiOperation({ summary: 'One past CSV import' })
-  async importBatch(
-    @Param('batchId', new ParseUUIDPipe({ version: '7' })) batchId: string,
-  ) {
+  async importBatch(@Param('batchId', new ParseUUIDPipe({ version: '7' })) batchId: string) {
     return this.imports.findBatch(batchId);
   }
 
@@ -305,7 +333,7 @@ export class LeadsController {
   @ApiOperation({
     summary: 'Reactivate a lead',
     description:
-      'Can fail with 409: deactivation released this lead\'s mobile and ' +
+      "Can fail with 409: deactivation released this lead's mobile and " +
       'email, so another active lead may have taken them in the meantime. ' +
       'The response names the lead that holds the identifier.',
   })
